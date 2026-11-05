@@ -40,7 +40,7 @@ el panel del advisor, las métricas y la geometría.** La sección 6 de `CLAUDE.
 
 **Verificado:**
 
-- 258 tests. La geometría del layout completo coincide con lo medido en las imágenes, en `test/layout.test.ts`.
+- 260 tests. La geometría del layout completo coincide con lo medido en las imágenes, en `test/layout.test.ts`.
 - En 370 tamaños entre 80x30 y 240x70, los paneles no se pisan, caben, y cada camino parte y llega a su panel.
 - **Sesión interactiva real, seguida a 120x30** con la salida en un emulador: fue esta misma sesión de trabajo. Mostró
   todos los apartados, detectó el `CLAUDE.md` cargado al iniciar, 166 herramientas y 1 error, y salió con código 0. Es la
