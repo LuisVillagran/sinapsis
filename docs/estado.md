@@ -61,10 +61,12 @@ Bitácora para retomar el trabajo solo con este archivo. Ver `CLAUDE.md` para el
 - **256 colores:** fondo plano, porque la viñeta se veía como anillos.
 - **Interfaz en inglés, mensajes de la línea de comandos en español:** la interfaz sigue los rótulos de la
   imagen de referencia y `CLAUDE.md`.
-- **`dist/` versionado (desviación de `CLAUDE.md`, a revisar):** `npm install -g` desde git fallaba porque el npm
-  interno que prepara la dependencia hereda el modo global y no instala `tsup`. `prepare` ahora compila si `tsup`
-  existe y, si no, usa `dist/`. `test/dist.test.ts` falla si `dist/` queda atrás: hay que ejecutar `npm run build`
-  antes de cada commit que toque `src/`.
+- **`dist/` versionado y sin `prepare` (desviación de `CLAUDE.md`, a revisar):** con `prepare`, `npm install -g`
+  desde git falla: el npm interno que prepara la dependencia hereda el modo global y no instala `tsup`, y npm 11
+  además bloquea esos scripts en instalaciones globales (`allow-scripts`). `test/dist.test.ts` falla si `dist/`
+  queda atrás: hay que ejecutar `npm run build` antes de cada commit que toque `src/`.
+  **Riesgo abierto:** instalar desde un tarball funciona (`--version` y `demo` verificados), pero `git+file://`
+  deja la carpeta vacía en este equipo. La prueba definitiva con `github:` real es de la Fase 6.
 - **Privacidad:** el fixture antiguo traía en una línea la salida de una revisión anterior, con fragmentos
   de nombres de otros proyectos. Se limpió también en el historial local con `git filter-branch`, antes del
   primer push. Por eso los hashes de la Fase 0 cambiaron.
