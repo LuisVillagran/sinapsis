@@ -36,7 +36,7 @@ sinapsis --help | --version
 | Opción | Efecto |
 | --- | --- |
 | `--speed <N>` | Velocidad del replay |
-| `--fps <N>` | Fija los cuadros por segundo. Por defecto se adapta entre 30 y 60 |
+| `--fps <N>` | Fija los cuadros por segundo. Por defecto, entre 30 y 60 con animación según lo que dé la terminal, y mucho menos en reposo |
 | `--print-events` | Sin interfaz: imprime los eventos como texto, uno por línea |
 
 | Tecla | Acción |
@@ -102,6 +102,8 @@ Las pruebas conectan la aplicación a un emulador de terminal (xterm.js), inclui
 desarrolló en Windows 11 con Node 24. **No se ha comprobado en una ventana de terminal real, ni en Linux o macOS.**
 
 ## Desarrollo
+
+Usar Sinapsis pide Node 20. Desarrollarlo pide Node 22.18 o superior, por `tsup` y `vitest`.
 
 ```bash
 npm install
