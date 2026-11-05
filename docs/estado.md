@@ -157,7 +157,8 @@ Ninguno.
 Se revisaron todos los blobs de todo el historial, con términos calculados en la máquina: usuario, correo, cuenta,
 carpeta personal y nombres de otros proyectos, además de patrones de secretos. Sin hallazgos: las coincidencias con
 carpetas de otros proyectos son palabras comunes del español. El nombre de la cuenta solo aparece en las URL del
-repositorio. Las capturas se revisaron a la vista. `referencia/` nunca entró al historial.
+repositorio. Las capturas se revisaron a la vista. `referencia/` nunca entró al historial. La identidad global de git,
+distinta de la local, tampoco aparece: 0 coincidencias en 203 blobs de texto y binarios omitidos.
 
 ## Para revisar al volver
 
@@ -167,5 +168,9 @@ repositorio. Las capturas se revisaron a la vista. `referencia/` nunca entró al
   Al ser público, ese correo queda visible en cada commit.
 - **`dist/` versionado y sin `prepare`:** ver Decisiones. Se aparta de lo que pedía `CLAUDE.md`.
 - **Cuenta:** la de `gh` y el nombre de git son distintos. La URL de instalación usa la cuenta de `gh`.
+- **Detalle cosmético conocido:** durante los primeros 1,6 s de `demo`, mientras los eventos esperan al arranque, el
+  encabezado dice `WAITING FOR A SESSION` y la barra `no session`. También se ve en el GIF.
+- **Sin verificar además:** seguimiento de una sesión interactiva (solo se probó con `claude -p`), teclas en modo raw de
+  una terminal real, y Node 20 anterior a 20.20.
 - **Inferencias a validar con el uso:** los motivos de consulta y el agrupamiento en tres hitos del panel.
 - **Fuera de alcance, como sugerencia:** comprobar en Linux y macOS, y un modo que muestre todas las consultas.
