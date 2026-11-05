@@ -4,9 +4,12 @@ Bitácora para retomar el trabajo solo con este archivo. Ver `CLAUDE.md` para el
 
 ## Fase actual
 
-**Fase 2 — Fuentes de eventos.** Fases 0 y 1 cerradas.
+**Fase 3 — Maqueta estática.** Fases 0, 1 y 2 cerradas.
 
 ## Hecho
+
+- **Fase 2:** `src/sources/`: seguimiento por offset con líneas partidas, descubrimiento, cambio de sesión,
+  replay determinista y `--print-events`. El retraso en Windows no depende de `stat` (ver `docs/eventos.md`).
 
 - **Fase 1:** `src/core/` con parser y reductor. 41 tests: totales frente a un conteo independiente, trampas
   de `docs/eventos.md`, reglas de motivo y estado final igual en orden de archivo, de timestamp y de llegada
@@ -32,6 +35,10 @@ Bitácora para retomar el trabajo solo con este archivo. Ver `CLAUDE.md` para el
   `assistant_text`, `subagent_info`, `subagent_result`, `api_error` y `compaction`. Los pide el reductor.
 - **Resumen de un subagente:** último bloque de `toolUseResult.content`. El texto del `tool_result` trae
   envoltorios del arnés.
+- **Sesión activa:** la modificada hace menos de 24 h. Otra sesión la reemplaza si es al menos 5 s más reciente.
+- **Replay:** las líneas de un mensaje llegan juntas, a la hora de la última, como en vivo. Los tiempos muertos
+  se acortan a 8 s de sesión.
+- **Modo sin interfaz:** opción `--print-events`, aplicable a cualquier comando.
 - **Privacidad:** el fixture antiguo traía en una línea la salida de una revisión anterior, con fragmentos
   de nombres de otros proyectos. Se limpió también en el historial local con `git filter-branch`, antes del
   primer push. Por eso los hashes de la Fase 0 cambiaron.

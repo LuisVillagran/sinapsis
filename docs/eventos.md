@@ -253,6 +253,30 @@ respuesta, lo que es imposible si se hubiera escrito en ese momento.
 La causa probable es que los bloques se escriben al terminar el mensaje de la API, y la
 consulta ocurre dentro de ese mismo mensaje porque es una herramienta de servidor.
 
+### El retraso no depende de `stat`, pero los avisos del sistema sí fallan
+
+Medición en Windows 11 con NTFS y Node 24, en procesos separados: 25 líneas, una cada 150 ms, midiendo un
+método por corrida para que abrir el archivo no refresque los metadatos de otro. Latencia en ms hasta detectar
+cada línea:
+
+| Método | Escritor abre y cierra (p50 / p95) | Escritor deja el descriptor abierto (p50 / p95) |
+| --- | --- | --- |
+| `stat` cada 10 ms | 16 / 16 | 0 / 16 |
+| Abrir y leer cada 10 ms | 16 / 16 | 0 / 1 |
+| `fs.watch` | 0 / 1 | **3.394 / 5.114** (1 aviso en toda la corrida) |
+| `chokidar` | 1 / 2 | **3.387 / 5.106** (1 aviso en toda la corrida) |
+
+Conclusiones:
+
+- **`stat` ve el tamaño correcto de inmediato** en ambos casos: no causa retraso en este equipo. Lo que se
+  atrasa en vivo es la escritura de Claude Code, que guarda los bloques al terminar cada mensaje.
+- **Los avisos del sistema no bastan:** si el escritor mantiene el archivo abierto, `fs.watch` y `chokidar`
+  no avisan hasta el cierre.
+- **Por eso `src/sources/live.ts` usa ambos:** `chokidar` despierta la lectura al instante y un sondeo con
+  `stat` cada 100 ms garantiza que nada se quede esperando.
+
+No se comprobó en otros sistemas de archivos, ni en Linux o macOS.
+
 ### Qué implica para el visor
 
 - **En vivo:** `api-request` avisa unos 100 ms después de que empieza cada petición.
