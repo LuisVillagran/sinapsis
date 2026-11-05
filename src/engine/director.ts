@@ -336,7 +336,7 @@ export class Director {
   }
 
   private examplePackets(now: number): PacketView[] {
-    if (!this.connected) return [];
+    if (!this.exampleRunning) return [];
     const packets: PacketView[] = [];
     for (const flow of EXAMPLE_FLOW) {
       if (flow.whileRunning && !this.hasRunningCards) continue;
@@ -350,7 +350,7 @@ export class Director {
   }
 
   private exampleMilestone(now: number): NonNullable<AnimFrame['memoryPulse']> | undefined {
-    if (!this.connected) return undefined;
+    if (!this.exampleRunning) return undefined;
     const cycle = now / EXAMPLE_MILESTONE_MS;
     const phase = cycle - Math.floor(cycle);
     const amount = 1 - easeOutCubic(Math.min(1, phase * 2.2));
@@ -400,7 +400,12 @@ export class Director {
 
   /** Hay algo moviéndose que exige la frecuencia alta. La demo siempre tiene paquetes de ejemplo circulando. */
   isBusy(now: number): boolean {
-    return (this.illustrative && this.connected) || this.isAnimating(now);
+    return this.exampleRunning || this.isAnimating(now);
+  }
+
+  /** La actividad de ejemplo acompaña a la sesión: si la pantalla dice que terminó, nada debe seguir moviéndose. */
+  private get exampleRunning(): boolean {
+    return this.illustrative && this.connected && !this.shown.ended;
   }
 
   /** Lo que depende de datos reales sigue en movimiento. Al terminar, lo visible ya es definitivo. */

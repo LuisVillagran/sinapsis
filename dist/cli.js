@@ -1034,7 +1034,7 @@ var Director = class {
     return this.shown.subagents.some((s) => s.running);
   }
   examplePackets(now) {
-    if (!this.connected) return [];
+    if (!this.exampleRunning) return [];
     const packets = [];
     for (const flow of EXAMPLE_FLOW) {
       if (flow.whileRunning && !this.hasRunningCards) continue;
@@ -1047,7 +1047,7 @@ var Director = class {
     return packets;
   }
   exampleMilestone(now) {
-    if (!this.connected) return void 0;
+    if (!this.exampleRunning) return void 0;
     const cycle = now / EXAMPLE_MILESTONE_MS;
     const phase = cycle - Math.floor(cycle);
     const amount = 1 - easeOutCubic(Math.min(1, phase * 2.2));
@@ -1091,7 +1091,11 @@ var Director = class {
   }
   /** Hay algo moviéndose que exige la frecuencia alta. La demo siempre tiene paquetes de ejemplo circulando. */
   isBusy(now) {
-    return this.illustrative && this.connected || this.isAnimating(now);
+    return this.exampleRunning || this.isAnimating(now);
+  }
+  /** La actividad de ejemplo acompaña a la sesión: si la pantalla dice que terminó, nada debe seguir moviéndose. */
+  get exampleRunning() {
+    return this.illustrative && this.connected && !this.shown.ended;
   }
   /** Lo que depende de datos reales sigue en movimiento. Al terminar, lo visible ya es definitivo. */
   isAnimating(now) {
@@ -1822,7 +1826,7 @@ function drawAdvisorBox(buf, view, r) {
     color: mix(panelBorder(theme.advisor, view), theme.subBright, pulse * 0.6),
     dashed: true,
     fill: mix(theme.panel, theme.advisor, pulse * 0.06),
-    halo: pulse * 0.3,
+    halo: pulse * 0.12,
     bold: pulse > 0.5
   });
   const inner = r.w - 2;
@@ -2092,7 +2096,7 @@ function drawPrompt(buf, view, y, x, width, note) {
     { text: " ", color: theme.text }
   ]);
   if (Math.floor(view.now / 530) % 2 === 0) buf.put(end, y, "\u2588", theme.metrics);
-  const label = note ?? (view.illustrativeDemo ? "demo: % and memory are illustrative" : "reconstructed, not literal");
+  const label = note ?? (view.illustrativeDemo ? "demo: illustrative activity" : "reconstructed, not literal");
   if (end + cellLength(label) + 3 < x + width) rightText(buf, x + width - 2, y, label, view.illustrativeDemo && !note ? theme.caption : theme.faint);
 }
 function drawStatus(buf, view, y, x, width) {

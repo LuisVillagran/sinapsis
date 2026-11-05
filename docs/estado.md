@@ -28,7 +28,7 @@ el panel del advisor, las métricas y la geometría.** La sección 6 de `CLAUDE.
 - **Se quitó el panel de distribución de herramientas**, porque la referencia no lo tiene. Quedan el total en
   `PROJECT MEMORY`, el contador por tarjeta y el log. También salieron de pantalla `routine turns` y el texto que seguía
   al consejo, y la línea de tiempo de motivos pasó al log.
-- **La demo corre en bucle**, con 9 s de pausa al final. No estaba pedido, pero sin esto queda quieta tras unos 35 s.
+- **La demo corre en bucle**, con 9 s de pausa al final, en que la actividad de ejemplo se detiene. No estaba pedido, pero sin esto queda quieta tras unos 35 s.
 - **Los tres hitos son inferidos**, con reglas en `docs/eventos.md`. `repeat failure` se activa con un solo error, no
   con uno repetido.
 - **Textos fijos de la imagen en `PROJECT MEMORY`** ("saved findings…", "build then debug…"): son una explicación general
@@ -41,7 +41,7 @@ el panel del advisor, las métricas y la geometría.** La sección 6 de `CLAUDE.
 **Verificado:**
 
 - 258 tests. La geometría del layout completo coincide con lo medido en las imágenes, en `test/layout.test.ts`.
-- En 400 tamaños entre 80x30 y 150x62, los paneles no se pisan, caben, y cada camino parte y llega a su panel.
+- En 370 tamaños entre 80x30 y 240x70, los paneles no se pisan, caben, y cada camino parte y llega a su panel.
 - **Sesión interactiva real, seguida a 120x30** con la salida en un emulador: fue esta misma sesión de trabajo. Mostró
   todos los apartados, detectó el `CLAUDE.md` cargado al iniciar, 166 herramientas y 1 error, y salió con código 0. Es la
   primera vez que se prueba con una sesión interactiva.

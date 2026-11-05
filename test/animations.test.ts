@@ -673,7 +673,7 @@ describe('demo ilustrada', () => {
     expect(text).toMatch(/\d+%/);
     expect(text).toContain('recall');
     expect(text).toContain('memory · illustrative activity');
-    expect(text).toContain('demo: % and memory are illustrative');
+    expect(text).toContain('demo: illustrative activity');
   });
 
   it('el rótulo no se pierde en el tamaño mínimo', () => {
@@ -722,6 +722,27 @@ describe('demo ilustrada', () => {
       expect(packet.t).toBeGreaterThanOrEqual(0);
       expect(packet.t).toBeLessThan(1);
     }
+  });
+
+  it('cuando la sesión termina, la actividad de ejemplo también se detiene', () => {
+    const ended: SinapsisEvent = { type: 'session_end', t: 20, costUSD: 0.5 };
+    const director = new Director({ illustrative: true });
+    director.ingest({ kind: 'events', events: [models, start, info], historical: true }, 0);
+    expect(director.isBusy(0)).toBe(true);
+    director.ingest({ kind: 'events', events: [ended], historical: true }, 0);
+    for (let now = 0; now < 15_000; now += 50) {
+      const anim = director.view(now).anim;
+      expect(anim?.packets).toEqual([]);
+      expect(anim?.memoryPulse).toBeUndefined();
+    }
+    expect(director.isBusy(15_000)).toBe(false);
+  });
+
+  it('al volver a empezar, tras un reset, la actividad de ejemplo regresa', () => {
+    const director = new Director({ illustrative: true });
+    director.ingest({ kind: 'events', events: [models, start, info, { type: 'session_end', t: 20 }], historical: true }, 0);
+    director.ingest({ kind: 'reset', sessionId: 'replay' }, 100);
+    expect(director.isBusy(100)).toBe(true);
   });
 
   it('es reproducible: el mismo instante da el mismo frame', () => {

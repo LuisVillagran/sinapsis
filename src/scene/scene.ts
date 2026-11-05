@@ -334,7 +334,7 @@ function drawAdvisorBox(buf: CellBuffer, view: SceneView, r: Rect): void {
     color: mix(panelBorder(theme.advisor, view), theme.subBright, pulse * 0.6),
     dashed: true,
     fill: mix(theme.panel, theme.advisor, pulse * 0.06),
-    halo: pulse * 0.3,
+    halo: pulse * 0.12,
     bold: pulse > 0.5,
   });
   const inner = r.w - 2;
@@ -666,7 +666,7 @@ function drawPrompt(buf: CellBuffer, view: SceneView, y: number, x: number, widt
   ]);
   // Cursor parpadeante.
   if (Math.floor(view.now / 530) % 2 === 0) buf.put(end, y, '█', theme.metrics);
-  const label = note ?? (view.illustrativeDemo ? 'demo: % and memory are illustrative' : 'reconstructed, not literal');
+  const label = note ?? (view.illustrativeDemo ? 'demo: illustrative activity' : 'reconstructed, not literal');
   if (end + cellLength(label) + 3 < x + width) rightText(buf, x + width - 2, y, label, view.illustrativeDemo && !note ? theme.caption : theme.faint);
 }
 
