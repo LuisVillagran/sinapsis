@@ -27,8 +27,11 @@ export class TerminalSession {
   constructor(
     private readonly output: TerminalOutput,
     private readonly input: TerminalInput | undefined,
-    /** Escritura sincrónica para los casos en que el proceso muere enseguida. */
-    private readonly writeSync: (data: string) => void = (data) => {
+    /**
+     * Por defecto usa la misma salida que los frames: una escritura aparte podría adelantarse a los que siguen en
+     * cola, y estos quedarían escritos sobre la pantalla normal.
+     */
+    private readonly writeRestore: (data: string) => void = (data) => {
       output.write(data);
     },
   ) {}
@@ -48,7 +51,7 @@ export class TerminalSession {
     if (this.restored) return;
     this.restored = true;
     try {
-      this.writeSync(RESTORE_SEQUENCE);
+      this.writeRestore(RESTORE_SEQUENCE);
     } catch {
       // La salida ya pudo cerrarse: no hay nada más que hacer.
     }

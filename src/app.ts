@@ -29,7 +29,6 @@ export interface AppOptions {
   replay?: ReplaySource;
   output: TerminalOutput;
   input?: TerminalInput;
-  writeSync?: (data: string) => void;
   size: () => Size;
   /** Avisa de un cambio de tamaño. Devuelve cómo dejar de escuchar. */
   onResize?: (listener: () => void) => () => void;
@@ -54,7 +53,7 @@ export interface App {
 export function runApp(options: AppOptions): App {
   const now = options.now ?? (() => performance.now());
   const director = new Director({ boot: true });
-  const session = new TerminalSession(options.output, options.input, options.writeSync);
+  const session = new TerminalSession(options.output, options.input);
   const { source, replay, output } = options;
 
   let front: CellBuffer | null = null;

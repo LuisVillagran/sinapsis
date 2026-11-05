@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // src/cli.ts
-import { existsSync, readFileSync as readFileSync2, writeSync } from "fs";
+import { existsSync, readFileSync as readFileSync2 } from "fs";
 import { fileURLToPath } from "url";
 
 // src/core/describe.ts
@@ -1970,16 +1970,16 @@ function encodeFrame(prev, next, mode) {
 // src/tui/terminal.ts
 var RESTORE_SEQUENCE = `${SYNC_END}${LEAVE_SCREEN}`;
 var TerminalSession = class {
-  constructor(output, input, writeSync2 = (data) => {
+  constructor(output, input, writeRestore = (data) => {
     output.write(data);
   }) {
     this.output = output;
     this.input = input;
-    this.writeSync = writeSync2;
+    this.writeRestore = writeRestore;
   }
   output;
   input;
-  writeSync;
+  writeRestore;
   restored = false;
   keyListener;
   enter(onKey) {
@@ -1996,7 +1996,7 @@ var TerminalSession = class {
     if (this.restored) return;
     this.restored = true;
     try {
-      this.writeSync(RESTORE_SEQUENCE);
+      this.writeRestore(RESTORE_SEQUENCE);
     } catch {
     }
     try {
@@ -2023,7 +2023,7 @@ var PACE_TOLERANCE_MS = process.platform === "win32" ? 8 : 0.5;
 function runApp(options) {
   const now = options.now ?? (() => performance.now());
   const director = new Director({ boot: true });
-  const session = new TerminalSession(options.output, options.input, options.writeSync);
+  const session = new TerminalSession(options.output, options.input);
   const { source, replay, output } = options;
   let front = null;
   let back = null;
@@ -2984,16 +2984,12 @@ async function runInterface(args, source) {
     return;
   }
   const replay = args.command.kind === "follow" ? void 0 : source;
-  const fd = stdout.fd;
   const app = runApp({
     source,
     replay,
     output: stdout,
-    input: stdin.isTTY ? stdin : void 0,
-    // Al morir el proceso no se alcanza a vaciar una escritura asíncrona.
-    writeSync: (data) => {
-      writeSync(fd, data);
-    },
+    // En el modo de prueba las teclas llegan por stdin, aunque no sea una terminal.
+    input: stdin.isTTY || forced ? stdin : void 0,
     size: () => forced ?? { cols: stdout.columns || 80, rows: stdout.rows || 24 },
     onResize: (listener) => {
       stdout.on("resize", listener);
@@ -3051,10 +3047,13 @@ async function main() {
   }
   await runInterface(args, source);
 }
+function flushAndExit() {
+  process.stdout.write("", () => process.stderr.write("", () => process.exit()));
+}
 main().catch((error) => {
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}
 `);
   if (error instanceof ArgsError) process.stderr.write(`
 ${USAGE}`);
   process.exitCode = 1;
-});
+}).finally(flushAndExit);

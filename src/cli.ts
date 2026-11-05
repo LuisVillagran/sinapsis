@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { type App, runApp } from './app.js';
 import { ArgsError, type ParsedArgs, USAGE, parseArgs } from './args.js';
@@ -43,16 +43,12 @@ async function runInterface(args: ParsedArgs, source: EventSource): Promise<void
   }
 
   const replay = args.command.kind === 'follow' ? undefined : (source as ReplaySource);
-  const fd = stdout.fd;
   const app: App = runApp({
     source,
     replay,
     output: stdout,
-    input: stdin.isTTY ? stdin : undefined,
-    // Al morir el proceso no se alcanza a vaciar una escritura asíncrona.
-    writeSync: (data) => {
-      writeSync(fd, data);
-    },
+    // En el modo de prueba las teclas llegan por stdin, aunque no sea una terminal.
+    input: stdin.isTTY || forced ? stdin : undefined,
     size: () => forced ?? { cols: stdout.columns || 80, rows: stdout.rows || 24 },
     onResize: (listener) => {
       stdout.on('resize', listener);
@@ -113,8 +109,18 @@ async function main(): Promise<void> {
   await runInterface(args, source);
 }
 
-main().catch((error: unknown) => {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  if (error instanceof ArgsError) process.stderr.write(`\n${USAGE}`);
-  process.exitCode = 1;
-});
+/**
+ * Sale de forma explícita: en Windows, un stdin en pausa puede mantener vivo el proceso. Antes espera a que se
+ * vacíe lo escrito, para no perder la secuencia que restaura la terminal.
+ */
+function flushAndExit(): void {
+  process.stdout.write('', () => process.stderr.write('', () => process.exit()));
+}
+
+main()
+  .catch((error: unknown) => {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    if (error instanceof ArgsError) process.stderr.write(`\n${USAGE}`);
+    process.exitCode = 1;
+  })
+  .finally(flushAndExit);
