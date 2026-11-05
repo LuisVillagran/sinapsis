@@ -1,58 +1,66 @@
-// Muestrea la paleta de la imagen de referencia, que es local y no se publica. Solo para desarrollo.
+// Muestrea colores de las imágenes de referencia, que no se publican. Solo para desarrollo.
 //
 // Uso: npx tsx tools/sample-colors.ts
 //
-// Rellenos: mediana de una zona sin texto. Cuadros de la leyenda: su color sólido.
-// Bordes y texto: el píxel más brillante o más saturado de la zona, porque el resto está suavizado.
+// Son fotos JPEG de una pantalla: el borde de un panel ocupa un píxel y se mezcla con el fondo. Por eso los colores
+// sólidos salen de un promedio y los trazos finos, del píxel más saturado de una ventana pequeña.
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { PNG } from 'pngjs';
+import { chromium } from 'playwright-core';
 
-const png = PNG.sync.read(readFileSync(join(import.meta.dirname, '..', 'referencia', 'diseño.png')));
-const { width, data } = png;
+const IMAGE = join(import.meta.dirname, '..', 'referencia', 'Referencia (1).jpeg');
 
-type Color = [number, number, number];
-const pixel = (x: number, y: number): Color => {
-  const i = (y * width + x) * 4;
-  return [data[i] as number, data[i + 1] as number, data[i + 2] as number];
+const SAMPLES: Record<string, [number, number]> = {
+  fondo: [120, 1075],
+  'fondo, otro lado': [710, 620],
+  'barra de ventana': [200, 363],
+  'barra de tarjeta': [270, 876],
+  'barra de memoria': [460, 637],
+  'borde de sesión principal': [450, 546],
+  'borde de memoria de agentes': [450, 601],
+  'borde de memoria de proyecto': [100, 455],
+  'borde de tarjeta': [290, 822],
+  'borde del log': [400, 1097],
+  'leyenda, principal': [48, 435],
+  'leyenda, subagentes': [222, 435],
+  'leyenda, memoria': [398, 435],
+  'leyenda, notas': [527, 435],
 };
-const hex = (c: Color): string => `#${c.map((v) => v.toString(16).padStart(2, '0')).join('')}`;
-const luma = (c: Color): number => 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
-const saturation = (c: Color): number => Math.max(...c) - Math.min(...c);
 
-function region(x0: number, y0: number, x1: number, y1: number): Color[] {
-  const out: Color[] = [];
-  for (let y = y0; y <= y1; y += 1) for (let x = x0; x <= x1; x += 1) out.push(pixel(x, y));
+const browser = await chromium.launch({ channel: 'chrome' });
+const page = await browser.newPage();
+await page.setContent(`<img id="i" src="data:image/jpeg;base64,${readFileSync(IMAGE).toString('base64')}">`);
+await page.waitForFunction(() => document.images[0]?.complete);
+
+const result = await page.evaluate((samples) => {
+  const image = document.getElementById('i') as HTMLImageElement;
+  const canvas = document.createElement('canvas');
+  canvas.width = image.naturalWidth;
+  canvas.height = image.naturalHeight;
+  const context = canvas.getContext('2d') as CanvasRenderingContext2D;
+  context.drawImage(image, 0, 0);
+  const hex = (values: number[]): string => `#${values.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('')}`;
+  const out: Record<string, { promedio: string; vivo: string }> = {};
+  for (const [name, [x, y]] of Object.entries(samples)) {
+    const flat = context.getImageData(x - 2, y - 2, 5, 5).data;
+    const sum = [0, 0, 0];
+    for (let i = 0; i < flat.length; i += 4) for (let c = 0; c < 3; c += 1) sum[c] = (sum[c] as number) + (flat[i + c] as number);
+    const area = context.getImageData(x - 4, y - 4, 9, 9).data;
+    let vivid = [0, 0, 0];
+    let score = -1;
+    for (let i = 0; i < area.length; i += 4) {
+      const pixel = [area[i] as number, area[i + 1] as number, area[i + 2] as number];
+      const value = Math.max(...pixel) - Math.min(...pixel) + Math.max(...pixel) * 0.2;
+      if (value > score) {
+        score = value;
+        vivid = pixel;
+      }
+    }
+    out[name] = { promedio: hex(sum.map((v) => v / (flat.length / 4))), vivo: hex(vivid) };
+  }
   return out;
-}
+}, SAMPLES);
+await browser.close();
 
-function median(pixels: Color[]): Color {
-  const channel = (i: 0 | 1 | 2): number => [...pixels].map((p) => p[i]).sort((a, b) => a - b)[Math.floor(pixels.length / 2)] as number;
-  return [channel(0), channel(1), channel(2)];
-}
-const pick = (pixels: Color[], score: (c: Color) => number): Color => pixels.reduce((best, c) => (score(c) > score(best) ? c : best));
-const brightest = (pixels: Color[]): Color => pick(pixels, luma);
-const vivid = (pixels: Color[]): Color => pick(pixels, (c) => saturation(c) + luma(c) * 0.3);
-
-const samples: Array<[string, string, Color]> = [
-  ['bgEdge', 'mediana, esquina superior izquierda', median(region(4, 80, 12, 110))],
-  ['bgEdge (abajo)', 'mediana, esquina inferior derecha', median(region(838, 1000, 848, 1040))],
-  ['bgCenter', 'mediana, entre tarjetas', median(region(436, 610, 444, 640))],
-  ['panel', 'mediana, interior de la sesión principal', median(region(360, 225, 680, 240))],
-  ['panel (tarjeta)', 'mediana, interior de una tarjeta', median(region(260, 612, 295, 628))],
-  ['chip', 'mediana, fondo de la línea de estado de la sesión', median(region(365, 225, 380, 228))],
-  ['main', 'cuadro sólido de la leyenda', median(region(26, 95, 32, 102))],
-  ['advisor', 'cuadro sólido de la leyenda', median(region(426, 95, 432, 102))],
-  ['metrics', 'cuadro sólido de la leyenda', median(region(634, 95, 640, 102))],
-  ['sub', 'más brillante, borde de tarjeta', brightest(region(242, 590, 248, 610))],
-  ['subBright', 'más brillante, borde de back to lead', brightest(region(378, 820, 384, 840))],
-  ['barGood', 'más saturado, barra verde', vivid(region(508, 342, 590, 352))],
-  ['barAlert', 'más saturado, barra naranja', vivid(region(508, 386, 555, 396))],
-  ['barSub', 'más saturado, barra de tarjeta', vivid(region(258, 595, 350, 606))],
-  ['barTrack', 'mediana, riel de barra de tarjeta', median(region(362, 596, 376, 604))],
-  ['text', 'más brillante, título', brightest(region(150, 52, 330, 70))],
-  ['faint', 'más brillante, hora del log', brightest(region(30, 905, 95, 918))],
-];
-
-for (const [name, method, color] of samples) process.stdout.write(`${name.padEnd(16)} ${hex(color)}  ${method}\n`);
+for (const [name, { promedio, vivo }] of Object.entries(result)) process.stdout.write(`${name.padEnd(30)} promedio ${promedio}   vivo ${vivo}\n`);

@@ -6,7 +6,7 @@
 import type { LogKind } from '../core/describe.js';
 import type { SinapsisEvent } from '../core/events.js';
 
-export type ItemKind = 'instant' | 'tool' | 'advisor' | 'advisor-reply' | 'subagent-start' | 'subagent-end' | 'error' | 'note';
+export type ItemKind = 'instant' | 'tool' | 'memory' | 'advisor' | 'advisor-reply' | 'subagent-start' | 'subagent-end' | 'error' | 'note';
 
 export interface QueueItem {
   kind: ItemKind;
@@ -28,6 +28,7 @@ export type QueueStep = { phase: 'start'; active: ActiveItem } | { phase: 'end';
 const BASE: Record<ItemKind, number> = {
   instant: 0,
   tool: 450,
+  memory: 800,
   advisor: 1000,
   'advisor-reply': 900,
   'subagent-start': 800,
@@ -40,6 +41,7 @@ const BASE: Record<ItemKind, number> = {
 const MINIMUM: Record<ItemKind, number> = {
   instant: 0,
   tool: 120,
+  memory: 300,
   // Consulta y respuesta separadas suman el mínimo acordado de 1,5 s.
   advisor: 1000,
   'advisor-reply': 500,
@@ -71,7 +73,9 @@ const GROUP_MAX_EVENTS = 40;
 function classify(event: SinapsisEvent, known: Set<string>): ItemKind {
   switch (event.type) {
     case 'tool_call':
-      return 'tool';
+      return event.memory ? 'memory' : 'tool';
+    case 'memory_load':
+      return 'memory';
     case 'tool_result':
       return event.isError ? 'error' : 'instant';
     case 'advisor_consult':
@@ -105,6 +109,7 @@ const isNeutral = (item: QueueItem): boolean => item.events.every((e) => e.type 
 const KIND_COLOR: Record<ItemKind, LogKind> = {
   instant: 'tool',
   tool: 'tool',
+  memory: 'memory',
   advisor: 'advisor',
   'advisor-reply': 'advisor',
   'subagent-start': 'sub',

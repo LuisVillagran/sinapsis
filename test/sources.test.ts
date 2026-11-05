@@ -295,6 +295,34 @@ describe('replay con reloj falso', () => {
     expect(replay.finished).toBe(true);
   });
 
+  it('sin bucle, termina y no vuelve a emitir nada', () => {
+    const replay = createReplay(timed([line('00')]));
+    replay.tick(0);
+    expect(replay.finished).toBe(true);
+    expect(replay.tick(1_000_000)).toEqual([]);
+  });
+
+  it('con bucle, deja el final a la vista y vuelve a empezar desde cero', () => {
+    const replay = createReplay(timed([line('00'), line('01')]), { loopDelayMs: 5000 });
+    expect(promptsOf(replay.tick(0))).toEqual(['prompt 00']);
+    expect(promptsOf(replay.tick(1000))).toEqual(['prompt 01']);
+    expect(replay.tick(5999)).toEqual([]);
+    const restart = replay.tick(6000);
+    expect(restart.map((u) => u.kind)).toEqual(['reset']);
+    expect(promptsOf(replay.tick(6001))).toEqual(['prompt 00']);
+    expect(promptsOf(replay.tick(7001))).toEqual(['prompt 01']);
+  });
+
+  it('con bucle, en pausa no se reinicia y al detenerse tampoco', async () => {
+    const replay = createReplay(timed([line('00')]), { loopDelayMs: 100 });
+    replay.tick(0);
+    replay.togglePause();
+    expect(replay.tick(10_000)).toEqual([]);
+    replay.togglePause();
+    await replay.stop();
+    expect(replay.tick(20_000)).toEqual([]);
+  });
+
   it('con velocidad 1, en tiempo real', () => {
     const replay = createReplay(timed([line('00'), line('02')]));
     replay.tick(0);

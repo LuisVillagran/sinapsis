@@ -19,8 +19,8 @@ const budgetIndex = process.argv.indexOf('--budget');
 const budget = budgetIndex >= 0 ? (process.argv[budgetIndex + 1] as string) : '2';
 mkdirSync(outDir, { recursive: true });
 
-const COLS = 96;
-const ROWS = 48;
+const COLS = 90;
+const ROWS = 47;
 const PROMPT = [
   'Sin modificar ningún archivo, haz esto en orden:',
   '1. Consulta al advisor antes de planificar.',
@@ -132,11 +132,11 @@ const checks: Array<[string, boolean]> = [
   [`la TUI salió con código 0 (fue ${tuiCode})`, tuiCode === 0],
   ['la TUI no escribió errores', tuiStderr === ''],
   ['la terminal quedó restaurada', bytes.endsWith(RESTORE_SEQUENCE)],
-  [`total de herramientas en pantalla: ${toolCalls}`, new RegExp(`calls\\s+${toolCalls}\\b`).test(finalScreen)],
-  [`consultas en pantalla: ${consults}`, new RegExp(`calls\\s+${consults}\\s`).test(finalScreen)],
+  [`total de herramientas en pantalla: ${toolCalls}`, new RegExp(`tools\\s+${toolCalls}\\b`).test(finalScreen)],
+  [`consultas en pantalla: ${consults}`, new RegExp(`\\b${consults} · `).test(finalScreen)],
   [`tokens leídos en pantalla: ${tokensText}`, finalScreen.includes(tokensText)],
   ['la sesión aparece terminada', finalScreen.includes('session ended')],
-  ...(errors > 0 ? ([[`hay ${errors} error(es) marcados en pantalla`, / err\b/.test(finalScreen)]] as Array<[string, boolean]>) : []),
+  ...(errors > 0 ? ([[`hay ${errors} error(es) marcados en pantalla`, /errors\s+\d/.test(finalScreen)]] as Array<[string, boolean]>) : []),
 ];
 
 process.stdout.write(`\nSesión ${sessionId}: ${toolCalls} herramientas, ${consults} consultas, ${errors} errores, ${subs.length} subagentes, ${(bytes.length / 1024).toFixed(0)} KB emitidos\n`);

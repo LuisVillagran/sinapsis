@@ -5,21 +5,21 @@
 
 import { describeEvent } from '../core/describe.js';
 import type { SinapsisEvent } from '../core/events.js';
-import { type SessionState, applyEvent, createState } from '../core/state.js';
+import { type SessionState, applyEvent, createState, memoryMilestone } from '../core/state.js';
 import { BOOT_MS } from '../scene/boot.js';
-import { type RouteName, consultSlot } from '../scene/layout.js';
+import type { RouteName } from '../scene/layout.js';
 import type { PacketView } from '../scene/packets.js';
-import type { AnimFrame, CardView, ReplayStatus, SceneView, ShownLogEntry, ShownNumbers } from '../scene/view.js';
+import type { AnimFrame, CardView, IllustrativeFrame, ReplayStatus, SceneView, ShownLogEntry, ShownNumbers } from '../scene/view.js';
 import type { SourceUpdate } from '../sources/types.js';
 import { easeOutCubic, progress } from './easing.js';
 import { type ActiveItem, AnimationQueue } from './queue.js';
 import { TweenSet } from './tweens.js';
 
 const LOG_LIMIT = 200;
-/** Parte de la consulta que ocupa cada viaje. El resto es la espera, con el panel latiendo. */
+/** Parte de la consulta que ocupa cada viaje. El resto es la espera, con la caja latiendo. */
 const PACKET_SHARE = 0.35;
 const PULSE_PERIOD_MS = 170;
-const TYPE_CHARS_PER_MS = 0.03;
+const MEMORY_PULSE_MS = 1200;
 /** Los eventos esperan a que el arranque casi termine, para que no se mezclen con él. */
 const QUEUE_AFTER_BOOT_MS = 1600;
 
@@ -53,7 +53,30 @@ interface CardAnim {
 export interface DirectorOptions {
   /** Anima el arranque. Las pruebas de datos lo omiten. */
   boot?: boolean;
+  /** Solo para `sinapsis demo`: agrega actividad de ejemplo, rotulada, sin tocar el estado de la sesión. */
+  illustrative?: boolean;
 }
+
+/** Periodo, desfase y duración de los paquetes de ejemplo. Dependen solo del tiempo, así que son reproducibles. */
+const EXAMPLE_FLOW: Array<{ route: RouteName; period: number; offset: number; duration: number; whileRunning: boolean }> = [
+  { route: 'tool', period: 2300, offset: 0, duration: 800, whileRunning: false },
+  { route: 'work-0', period: 3100, offset: 300, duration: 1300, whileRunning: true },
+  { route: 'work-1', period: 3400, offset: 1500, duration: 900, whileRunning: true },
+  { route: 'work-2', period: 2900, offset: 2200, duration: 1300, whileRunning: true },
+  { route: 'back-0', period: 3700, offset: 900, duration: 1700, whileRunning: true },
+  { route: 'back-1', period: 4100, offset: 2500, duration: 1200, whileRunning: true },
+  { route: 'back-2', period: 3300, offset: 1800, duration: 1700, whileRunning: true },
+];
+const EXAMPLE_MILESTONE_MS = 3600;
+const EXAMPLE_MILESTONE_ROUTE_MS = 1100;
+
+/** Avance de ejemplo de una tarjeta: rápido al principio y sin llegar nunca al 100 % antes de terminar. */
+export function examplePercent(elapsedMs: number, seed: number): number {
+  const pace = 7000 + (seed % 5) * 2600;
+  return Math.min(97, Math.floor(100 * (1 - Math.exp(-Math.max(0, elapsedMs) / pace))));
+}
+
+const hashOf = (text: string): number => [...text].reduce((sum, char) => (sum * 31 + (char.codePointAt(0) as number)) % 9973, 7);
 
 export class Director {
   truth: SessionState = createState();
@@ -66,9 +89,9 @@ export class Director {
   version = 0;
   private bootStart: number | undefined;
   private readonly animateBoot: boolean;
+  private readonly illustrative: boolean;
   private packets: Array<{ route: RouteName; start: number; duration: number }> = [];
-  private consultAnim: { id: string; start: number } | undefined;
-  private readonly consultSlotById = new Map<string, 0 | 1 | 2>();
+  private memoryPulse: { slot: 0 | 1 | 2; start: number; card?: number } | undefined;
   private cards: Array<CardAnim | undefined> = [undefined, undefined, undefined];
   /** Subagentes activos sin tarjeta libre. */
   private waitingCards: string[] = [];
@@ -79,6 +102,7 @@ export class Director {
 
   constructor(options: DirectorOptions = {}) {
     this.animateBoot = options.boot ?? false;
+    this.illustrative = options.illustrative ?? false;
   }
 
   private bootElapsed(now: number): number | undefined {
@@ -93,8 +117,7 @@ export class Director {
       this.shown = createState();
       this.queue.clear();
       this.packets = [];
-      this.consultAnim = undefined;
-      this.consultSlotById.clear();
+      this.memoryPulse = undefined;
       this.cards = [undefined, undefined, undefined];
       this.waitingCards = [];
       this.leadGlowStart = undefined;
@@ -166,22 +189,30 @@ export class Director {
 
     if (item.kind === 'error') {
       this.flashStart = start;
-    } else if (item.kind === 'tool' && first?.type === 'tool_call' && !first.agentId) {
-      this.addPacket('tool', start, duration);
+    } else if (item.kind === 'tool' && first?.type === 'tool_call') {
+      // Las del principal bajan por el tronco. Las de un subagente, por la rama de su tarjeta.
+      if (!first.agentId) {
+        this.addPacket('tool', start, duration);
+      } else {
+        const slot = this.cards.findIndex((card) => card?.id === first.agentId);
+        if (slot >= 0) this.addPacket(`work-${slot as 0 | 1 | 2}`, start, duration);
+      }
+    } else if (item.kind === 'memory') {
+      const slot = first?.type === 'tool_call' ? memoryMilestone(this.shown, { t: first.t }) : 0;
+      const agentId = first?.type === 'tool_call' ? first.agentId : undefined;
+      const card = agentId ? this.cards.findIndex((c) => c?.id === agentId) : -1;
+      this.addPacket(`memory-${slot}`, start, duration);
+      this.memoryPulse = { slot, start, ...(card >= 0 ? { card } : {}) };
     } else if (item.kind === 'advisor' && first?.type === 'advisor_consult') {
-      const slot = consultSlot(first.reason);
-      this.consultSlotById.set(first.id, slot);
-      this.consultAnim = { id: first.id, start };
       if (item.endEvents.length) {
         // Ida, espera y vuelta dentro del mismo elemento.
-        this.addPacket(`advisor-out-${slot}`, start, duration * PACKET_SHARE);
-        this.addPacket(`advisor-back-${slot}`, start + duration * (1 - PACKET_SHARE), duration * PACKET_SHARE);
+        this.addPacket('advisor-out', start, duration * PACKET_SHARE);
+        this.addPacket('advisor-back', start + duration * (1 - PACKET_SHARE), duration * PACKET_SHARE);
       } else {
-        this.addPacket(`advisor-out-${slot}`, start, duration * 0.6);
+        this.addPacket('advisor-out', start, duration * 0.6);
       }
     } else if (item.kind === 'advisor-reply' && first?.type === 'advisor_reply') {
-      const slot = this.consultSlotById.get(first.id) ?? 0;
-      this.addPacket(`advisor-back-${slot}`, start, duration);
+      this.addPacket('advisor-back', start, duration);
     } else if (item.kind === 'subagent-start' && first?.type === 'subagent_start') {
       // El paquete sale primero y la tarjeta crece cuando llega.
       const growStart = start + duration * 0.4;
@@ -228,25 +259,29 @@ export class Director {
 
   /** Valores que persiguen el estado visible, para que los números suban y las barras crezcan. */
   private shownNumbers(now: number): ShownNumbers {
-    const { advisor, toolCalls, tools } = this.shown;
+    const { advisor, toolCalls } = this.shown;
     const follow = (key: string, target: number, duration = COUNT_MS): number => this.tweens.track(key, target, now, duration);
     return {
       toolCalls: follow('toolCalls', toolCalls),
       calls: follow('calls', advisor.calls),
       tokensRead: follow('tokensRead', advisor.tokensRead, TOKENS_MS),
-      routineTurns: follow('routineTurns', advisor.routineTurns),
-      tools: Object.fromEntries(Object.entries(tools).map(([name, stat]) => [name, follow(`tool:${name}`, stat.count)])),
+      memory: Object.fromEntries(Object.entries(this.memoryCounts()).map(([id, count]) => [id, follow(`memory:${id}`, count)])),
     };
+  }
+
+  private memoryCounts(): Record<string, number> {
+    const counts: Record<string, number> = {};
+    for (const touch of this.shown.memory.touches) if (touch.agentId) counts[touch.agentId] = (counts[touch.agentId] ?? 0) + 1;
+    return counts;
   }
 
   /** Lleva los contadores a su valor sin animarlos: lo que ya había ocurrido no se cuenta otra vez. */
   private settleNumbers(): void {
-    const { advisor, toolCalls, tools } = this.shown;
+    const { advisor, toolCalls } = this.shown;
     this.tweens.settle('toolCalls', toolCalls);
     this.tweens.settle('calls', advisor.calls);
     this.tweens.settle('tokensRead', advisor.tokensRead);
-    this.tweens.settle('routineTurns', advisor.routineTurns);
-    for (const [name, stat] of Object.entries(tools)) this.tweens.settle(`tool:${name}`, stat.count);
+    for (const [id, count] of Object.entries(this.memoryCounts())) this.tweens.settle(`memory:${id}`, count);
   }
 
   private errorFlash(now: number): number | undefined {
@@ -274,15 +309,71 @@ export class Director {
 
   private activePackets(now: number): PacketView[] {
     this.packets = this.packets.filter((p) => now < p.start + p.duration);
-    return this.packets.filter((p) => now >= p.start).map((p) => ({ route: p.route, t: progress(now, p.start, p.duration) }));
+    const real = this.packets.filter((p) => now >= p.start).map((p) => ({ route: p.route, t: progress(now, p.start, p.duration) }));
+    return this.illustrative ? [...real, ...this.examplePackets(now)] : real;
   }
 
-  private advisorMotion(now: number): Pick<AnimFrame, 'advisorPulse' | 'typingConsult'> {
+  private advisorMotion(now: number): Pick<AnimFrame, 'advisorPulse'> {
     const active = this.queue.active;
     if (!active || (active.item.kind !== 'advisor' && active.item.kind !== 'advisor-reply')) return {};
-    const elapsed = now - active.start;
-    const typing = this.consultAnim ? { id: this.consultAnim.id, chars: Math.floor((now - this.consultAnim.start) * TYPE_CHARS_PER_MS) } : undefined;
-    return { advisorPulse: 0.5 + 0.5 * Math.sin(elapsed / PULSE_PERIOD_MS), typingConsult: typing };
+    return { advisorPulse: 0.5 + 0.5 * Math.sin((now - active.start) / PULSE_PERIOD_MS) };
+  }
+
+  private memoryMotion(now: number): Pick<AnimFrame, 'memoryPulse'> {
+    const example = this.illustrative ? this.exampleMilestone(now) : undefined;
+    const pulse = this.memoryPulse;
+    if (pulse && now >= pulse.start && now < pulse.start + MEMORY_PULSE_MS) {
+      const amount = 1 - easeOutCubic(progress(now, pulse.start, MEMORY_PULSE_MS));
+      return { memoryPulse: { slot: pulse.slot, amount, ...(pulse.card !== undefined ? { card: pulse.card } : {}) } };
+    }
+    return example ? { memoryPulse: example } : {};
+  }
+
+  // --- Actividad de ejemplo, solo en la demo. No toca `truth` ni `shown`. ---
+
+  private get hasRunningCards(): boolean {
+    return this.shown.subagents.some((s) => s.running);
+  }
+
+  private examplePackets(now: number): PacketView[] {
+    if (!this.connected) return [];
+    const packets: PacketView[] = [];
+    for (const flow of EXAMPLE_FLOW) {
+      if (flow.whileRunning && !this.hasRunningCards) continue;
+      const t = ((now + flow.offset) % flow.period) / flow.duration;
+      if (t < 1) packets.push({ route: flow.route, t });
+    }
+    const cycle = now / EXAMPLE_MILESTONE_MS;
+    const t = (cycle - Math.floor(cycle)) * (EXAMPLE_MILESTONE_MS / EXAMPLE_MILESTONE_ROUTE_MS);
+    if (t < 1) packets.push({ route: `memory-${Math.floor(cycle) % 3 as 0 | 1 | 2}`, t });
+    return packets;
+  }
+
+  private exampleMilestone(now: number): NonNullable<AnimFrame['memoryPulse']> | undefined {
+    if (!this.connected) return undefined;
+    const cycle = now / EXAMPLE_MILESTONE_MS;
+    const phase = cycle - Math.floor(cycle);
+    const amount = 1 - easeOutCubic(Math.min(1, phase * 2.2));
+    if (amount <= 0) return undefined;
+    const slot = (Math.floor(cycle) % 3) as 0 | 1 | 2;
+    return { slot, amount, ...(slot === 1 ? { card: 0 } : {}) };
+  }
+
+  private exampleFrame(now: number): IllustrativeFrame {
+    const percents = this.cards.map((card) => {
+      if (!card) return undefined;
+      return examplePercent(now - (card.enter?.start ?? 0), hashOf(card.id));
+    });
+    const memory = this.cards.map((card, i) => {
+      if (!card) return { fraction: 0, label: 'recall' as const };
+      const seed = hashOf(card.id) % 7;
+      const wave = Math.sin(now / (1700 + seed * 240) + i * 1.7);
+      // Solo unos pocos niveles: una barra que cambia en cada frame no se lee y gasta bytes.
+      const fraction = 0.68 + Math.round((wave + 1) * 6) / 6 * 0.14;
+      const checking = (now + i * 2900) % 9000 < 2200;
+      return { fraction: checking ? 0.55 : fraction, label: checking ? ('check' as const) : ('recall' as const) };
+    });
+    return { percents, memory };
   }
 
   /** Avanza hasta `now`. Devuelve si algo de los datos cambió. */
@@ -307,12 +398,18 @@ export class Director {
     return this.queue.isEmpty;
   }
 
-  /** Hay algo moviéndose que exige la frecuencia alta. */
+  /** Hay algo moviéndose que exige la frecuencia alta. La demo siempre tiene paquetes de ejemplo circulando. */
   isBusy(now: number): boolean {
+    return (this.illustrative && this.connected) || this.isAnimating(now);
+  }
+
+  /** Lo que depende de datos reales sigue en movimiento. Al terminar, lo visible ya es definitivo. */
+  isAnimating(now: number): boolean {
     const boot = this.bootElapsed(now);
     return (
       !this.queue.isEmpty ||
       this.packets.length > 0 ||
+      (this.memoryPulse !== undefined && now < this.memoryPulse.start + MEMORY_PULSE_MS) ||
       this.tweens.isActive(now) ||
       this.cardsMoving(now) ||
       (this.flashStart !== undefined && now < this.flashStart + ERROR_FLASH_MS) ||
@@ -332,6 +429,8 @@ export class Director {
       breath: breathLevel(now),
       errorFlash: this.errorFlash(now),
       ...this.advisorMotion(now),
+      ...this.memoryMotion(now),
+      ...(this.illustrative ? { illustrative: this.exampleFrame(now) } : {}),
     };
   }
 
@@ -344,6 +443,8 @@ export class Director {
       replay,
       connected: this.connected,
       flatBackground,
+      illustrativeDemo: this.illustrative,
+      preview: { main: this.truth.mainModel, advisor: this.truth.advisorModel },
       anim: this.animFrame(now),
     };
   }

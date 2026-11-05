@@ -5,29 +5,41 @@
 import { easeInOutCubic, easeOutCubic, segment } from '../engine/easing.js';
 import type { CellBuffer } from '../tui/buffer.js';
 import type { Rect } from './draw.js';
-import { FULL, FULL_COLS } from './layout.js';
+import type { SceneLayout } from './layout.js';
 import { theme } from './theme.js';
 
 export const BOOT_MS = 2200;
 
+interface PanelTiming {
+  rect: Rect;
+  from: number;
+  to: number;
+}
+
+const timingCache = new WeakMap<SceneLayout, PanelTiming[]>();
+
 /** Cuándo empieza y termina cada panel, en ms. */
-const PANELS: Array<{ rect: Rect; from: number; to: number }> = [
-  { rect: FULL.advisor, from: 150, to: 1150 },
-  { rect: FULL.main, from: 350, to: 1250 },
-  { rect: FULL.advisorState, from: 500, to: 1300 },
-  { rect: FULL.metrics, from: 650, to: 1450 },
-  { rect: FULL.cards[0], from: 850, to: 1550 },
-  { rect: FULL.cards[1], from: 950, to: 1650 },
-  { rect: FULL.cards[2], from: 1050, to: 1750 },
-  { rect: FULL.lead, from: 1200, to: 1850 },
-  { rect: FULL.log, from: 1300, to: 2000 },
-];
+function panelsOf(layout: SceneLayout): PanelTiming[] {
+  let panels = timingCache.get(layout);
+  if (!panels) {
+    panels = [
+      { rect: layout.project, from: 150, to: 1150 },
+      { rect: layout.main, from: 350, to: 1250 },
+      { rect: layout.advisor, from: 500, to: 1300 },
+      { rect: layout.memory, from: 650, to: 1450 },
+      { rect: layout.cards[0], from: 850, to: 1550 },
+      { rect: layout.cards[1], from: 950, to: 1650 },
+      { rect: layout.cards[2], from: 1050, to: 1750 },
+      { rect: layout.lead, from: 1200, to: 1850 },
+      { rect: layout.log, from: 1300, to: 2000 },
+    ];
+    timingCache.set(layout, panels);
+  }
+  return panels;
+}
 
 /** Hasta aquí llega el borde; el resto del tramo es para que entre el contenido. */
 const BORDER_SHARE = 0.6;
-/** Celdas que el halo ocupa alrededor de un panel. */
-const MARGIN_X = 2;
-const MARGIN_Y = 1;
 
 type BaseColor = (x: number, y: number) => number;
 
@@ -49,21 +61,14 @@ function perimeter(r: Rect): Array<[number, number]> {
 
 const perimeterCache = new Map<Rect, Array<[number, number]>>();
 
-const insideRect = (r: Rect, x: number, y: number): boolean => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
-
 function revealPanel(buf: CellBuffer, r: Rect, t: number, base: BaseColor): void {
   if (t >= 1) return;
   const borderT = easeInOutCubic(segment(t, 0, BORDER_SHARE));
   const contentT = easeOutCubic(segment(t, BORDER_SHARE, 1));
 
-  // Interior y halo: ocultos hasta que el borde termina, y luego se funden desde el fondo.
-  for (let y = r.y - MARGIN_Y; y < r.y + r.h + MARGIN_Y; y += 1) {
-    for (let x = r.x - MARGIN_X; x < r.x + r.w + MARGIN_X; x += 1) {
-      const inside = insideRect(r, x, y);
-      const onBorder = inside && (x === r.x || x === r.x + r.w - 1 || y === r.y || y === r.y + r.h - 1);
-      if (onBorder) continue;
-      // El margen de un panel no debe borrar a un vecino.
-      if (!inside && PANELS.some(({ rect }) => rect !== r && insideRect(rect, x, y))) continue;
+  // Interior: oculto hasta que el borde termina, y luego se funde desde el fondo.
+  for (let y = r.y + 1; y < r.y + r.h - 1; y += 1) {
+    for (let x = r.x + 1; x < r.x + r.w - 1; x += 1) {
       if (contentT <= 0) {
         hide(buf, x, y, base);
       } else {
@@ -88,23 +93,24 @@ function revealPanel(buf: CellBuffer, r: Rect, t: number, base: BaseColor): void
 }
 
 /** Oculta las columnas de una fila desde `fromCol`. */
-function hideRow(buf: CellBuffer, y: number, fromCol: number, base: BaseColor): void {
-  for (let x = fromCol; x < FULL_COLS; x += 1) hide(buf, x, y, base);
+function hideRow(buf: CellBuffer, y: number, fromCol: number, width: number, base: BaseColor): void {
+  for (let x = fromCol; x < width; x += 1) hide(buf, x, y, base);
 }
 
-function fadeRow(buf: CellBuffer, y: number, amount: number, base: BaseColor): void {
-  for (let x = 0; x < FULL_COLS; x += 1) {
+function fadeRow(buf: CellBuffer, y: number, width: number, amount: number, base: BaseColor): void {
+  for (let x = 0; x < width; x += 1) {
     buf.tintFg(x, y, base(x, y), amount);
     buf.blendBg(x, y, base(x, y), amount);
   }
 }
 
-/** Filas entre paneles que llevan conectores: entran al final. */
-function fadeConnectors(buf: CellBuffer, amount: number, base: BaseColor): void {
-  const panelCells = (x: number, y: number): boolean => PANELS.some(({ rect: r }) => x >= r.x - MARGIN_X && x < r.x + r.w + MARGIN_X && y >= r.y - MARGIN_Y && y < r.y + r.h + MARGIN_Y);
-  for (let y = FULL.rows.legend + 1; y < FULL.log.y; y += 1) {
-    for (let x = 0; x < FULL_COLS; x += 1) {
-      if (panelCells(x, y)) continue;
+/** Celdas entre paneles, donde van los conectores: entran al final. */
+function fadeConnectors(buf: CellBuffer, layout: SceneLayout, amount: number, base: BaseColor): void {
+  const panels = panelsOf(layout);
+  const inPanel = (x: number, y: number): boolean => panels.some(({ rect: r }) => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
+  for (let y = layout.rows.legend + 1; y < layout.log.y; y += 1) {
+    for (let x = 0; x < layout.width; x += 1) {
+      if (inPanel(x, y)) continue;
       if (amount >= 1) {
         hide(buf, x, y, base);
       } else {
@@ -115,23 +121,22 @@ function fadeConnectors(buf: CellBuffer, amount: number, base: BaseColor): void 
   }
 }
 
-/** Aplica la animación al layout completo. `headerStart` y `headerLength` delimitan el texto del encabezado. */
-export function applyBootFull(buf: CellBuffer, ms: number, headerStart: number, headerLength: number, base: BaseColor): void {
+/** Aplica la animación a la escena. `headerStart` y `headerLength` delimitan el texto del encabezado. */
+export function applyBootFull(buf: CellBuffer, ms: number, layout: SceneLayout, headerStart: number, headerLength: number, base: BaseColor): void {
+  const { rows, width } = layout;
   // Encabezado: máquina de escribir.
   const typed = Math.floor(easeInOutCubic(segment(ms, 0, 800)) * headerLength);
-  hideRow(buf, FULL.rows.header, headerStart + typed, base);
-  if (typed > 0 && typed < headerLength) {
-    buf.put(headerStart + typed, FULL.rows.header, '▌', theme.main);
-  }
-  fadeRow(buf, FULL.rows.separator, 1 - easeOutCubic(segment(ms, 300, 800)), base);
-  fadeRow(buf, FULL.rows.legend, 1 - easeOutCubic(segment(ms, 450, 950)), base);
+  hideRow(buf, rows.header, headerStart + typed, width, base);
+  if (typed > 0 && typed < headerLength) buf.put(headerStart + typed, rows.header, '▌', theme.main);
+  if (rows.separator !== undefined) fadeRow(buf, rows.separator, width, 1 - easeOutCubic(segment(ms, 300, 800)), base);
+  fadeRow(buf, rows.legend, width, 1 - easeOutCubic(segment(ms, 450, 950)), base);
 
-  fadeConnectors(buf, 1 - easeOutCubic(segment(ms, 1500, 2100)), base);
-  for (const panel of PANELS) revealPanel(buf, panel.rect, segment(ms, panel.from, panel.to), base);
+  fadeConnectors(buf, layout, 1 - easeOutCubic(segment(ms, 1500, 2100)), base);
+  for (const panel of panelsOf(layout)) revealPanel(buf, panel.rect, segment(ms, panel.from, panel.to), base);
 
   const bottom = 1 - easeOutCubic(segment(ms, 1700, BOOT_MS));
-  fadeRow(buf, FULL.rows.prompt, bottom, base);
-  fadeRow(buf, FULL.rows.status, bottom, base);
+  fadeRow(buf, rows.prompt, width, bottom, base);
+  fadeRow(buf, rows.status, width, bottom, base);
 }
 
 /** El layout reducido entra con un fundido de toda la pantalla. */

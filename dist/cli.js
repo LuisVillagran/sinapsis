@@ -34,11 +34,13 @@ function subagentName(state, id) {
   const sub = state.subagents.find((s) => s.id === id);
   return sub?.description ?? sub?.agentType ?? id.slice(0, 7);
 }
+function agentLabel(state, id) {
+  const sub = state.subagents.find((s) => s.id === id);
+  return (sub?.agentType ?? sub?.description?.split(/\s+/)[0] ?? id.slice(0, 7)).toLowerCase();
+}
 function who(state, agentId) {
-  if (!agentId) return { who: modelAlias(state.mainModel), kind: "main" };
-  const sub = state.subagents.find((s) => s.id === agentId);
-  const short = (sub?.description ?? sub?.agentType ?? agentId.slice(0, 7)).split(/\s+/)[0]?.toLowerCase() ?? "";
-  return { who: `${modelAlias(sub?.model ?? state.mainModel)}:${short}`, kind: "sub" };
+  if (!agentId) return { who: displayModel(state.mainModel), kind: "main" };
+  return { who: agentLabel(state, agentId), kind: "sub" };
 }
 function describeEvent(event, state) {
   const { t } = event;
@@ -46,7 +48,13 @@ function describeEvent(event, state) {
   switch (event.type) {
     case "user_prompt":
       return { t, who: "you", kind: "main", text: plainText(event.text) };
+    case "memory_load":
+      return { t, who: "memory", kind: "memory", text: `loaded ${event.files.map((f) => f.file).join(", ")}` };
     case "tool_call":
+      if (event.memory) {
+        const actor = event.agentId ? `${agentLabel(state, event.agentId)} \xB7 ` : "";
+        return { t, who: "memory", kind: "memory", text: `${actor}${event.memory.op === "write" ? "save" : "recall"} ${event.memory.file}` };
+      }
       return { t, ...who(state, event.agentId), text: event.summary ? `${event.name} \xB7 ${event.summary.replace(/\s+/g, " ")}` : event.name };
     case "tool_result":
       if (!event.isError) return void 0;
@@ -61,7 +69,7 @@ function describeEvent(event, state) {
         text: `${event.isError ? "failed" : "sealed reply"} \xB7 ${formatDuration(event.durationMs)} \xB7 ${formatTokens(event.tokensRead)} read \xB7 ${formatTokens(event.tokensWritten)} written`
       };
     case "subagent_start":
-      return { t, who: `${modelAlias(event.model ?? state.mainModel)}:${event.subagentId.slice(0, 7)}`, kind: "sub", text: "subagent started" };
+      return { t, who: agentLabel(state, event.subagentId), kind: "sub", text: "subagent started" };
     case "subagent_info":
       return event.description ? { t, ...who(state, event.subagentId), kind: "sub", text: `delegated \xB7 ${plainText(event.description)}` } : void 0;
     case "subagent_end":
@@ -80,6 +88,26 @@ function describeEvent(event, state) {
 }
 
 // src/core/state.ts
+function insertSorted(list, value) {
+  let i = list.length;
+  while (i > 0 && list[i - 1] > value) i -= 1;
+  list.splice(i, 0, value);
+}
+function lastUpTo(list, t) {
+  for (let i = list.length - 1; i >= 0; i -= 1) if (list[i] <= t) return list[i];
+  return void 0;
+}
+function memoryMilestone(state, touch) {
+  const turnStart = lastUpTo(state.promptTimes, touch.t) ?? Number.NEGATIVE_INFINITY;
+  const inTurn = (t) => t !== void 0 && t >= turnStart && t < touch.t;
+  if (state.errorTimes.some(inTurn)) return 1;
+  if (state.subagents.some((s) => inTurn(s.endedAt))) return 2;
+  return 0;
+}
+function memoryLabel(state, touch) {
+  if (touch.op === "write") return "save";
+  return memoryMilestone(state, touch) === 1 ? "check" : "recall";
+}
 var internals = /* @__PURE__ */ new WeakMap();
 function createState() {
   const state = {
@@ -96,7 +124,10 @@ function createState() {
     tokens: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
     messages: 0,
     advisor: { calls: 0, tokensRead: 0, tokensWritten: 0, routineTurns: 0, consults: [] },
-    subagents: []
+    subagents: [],
+    memory: { loaded: [], touches: [] },
+    errorTimes: [],
+    promptTimes: []
   };
   internals.set(state, { usage: /* @__PURE__ */ new Map(), calls: /* @__PURE__ */ new Map(), openMain: [] });
   return state;
@@ -126,6 +157,7 @@ function countToolError(state, internal, id) {
   call.counted = true;
   (state.tools[call.name] ??= { count: 0, errors: 0 }).errors += 1;
   state.toolErrors += 1;
+  if (call.errorAt !== void 0) insertSorted(state.errorTimes, call.errorAt);
   if (call.agentId) {
     const sub = state.subagents.find((s) => s.id === call.agentId);
     if (sub) sub.errors += 1;
@@ -159,6 +191,7 @@ function applyEvent(state, event) {
     }
     case "user_prompt":
       state.prompts += 1;
+      insertSorted(state.promptTimes, event.t);
       state.ended = false;
       state.status = "working";
       break;
@@ -196,6 +229,13 @@ function applyEvent(state, event) {
       internal.calls.set(event.id, call);
       (state.tools[event.name] ??= { count: 0, errors: 0 }).count += 1;
       state.toolCalls += 1;
+      if (event.memory) {
+        const touch = { t: event.t, ...event.memory, ...event.agentId ? { agentId: event.agentId } : {} };
+        const { touches } = state.memory;
+        let at = touches.length;
+        while (at > 0 && touches[at - 1].t > touch.t) at -= 1;
+        touches.splice(at, 0, touch);
+      }
       if (event.agentId) {
         const sub = upsertSubagent(state, event.agentId, event.t);
         if (!sub.finalized) sub.toolCount += 1;
@@ -211,6 +251,7 @@ function applyEvent(state, event) {
       const call = internal.calls.get(event.id) ?? {};
       call.done = true;
       call.error = event.isError;
+      if (event.isError) call.errorAt = event.t;
       call.agentId = call.agentId ?? event.agentId;
       internal.calls.set(event.id, call);
       countToolError(state, internal, event.id);
@@ -224,6 +265,11 @@ function applyEvent(state, event) {
       }
       break;
     }
+    case "memory_load":
+      for (const file of event.files) {
+        if (!state.memory.loaded.some((known) => known.file === file.file && known.scope === file.scope)) state.memory.loaded.push(file);
+      }
+      break;
     case "advisor_consult": {
       const consult = upsertConsult(state, event.id, event.t);
       consult.t = event.t;
@@ -333,67 +379,6 @@ function segment(t, from, to) {
   return to <= from ? t >= to ? 1 : 0 : clamp01((t - from) / (to - from));
 }
 
-// src/scene/layout.ts
-var FULL_COLS = 96;
-var FULL_ROWS = 48;
-var MIN_COLS = 80;
-var MIN_ROWS = 24;
-var span = (x0, x1, y0, y1) => ({ x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 });
-var FULL = {
-  advisor: span(2, 23, 5, 38),
-  main: span(39, 76, 5, 11),
-  advisorState: span(78, 94, 5, 11),
-  metrics: span(38, 83, 13, 19),
-  cards: [span(28, 48, 24, 30), span(50, 71, 24, 30), span(73, 94, 24, 30)],
-  lead: span(43, 78, 35, 38),
-  log: span(2, 94, 39, 44),
-  rows: { windowBar: 0, header: 2, separator: 3, legend: 4, delegate: 21, prompt: 45, status: 46 },
-  /** Columna de la columna vertebral y centros de las tarjetas. */
-  spine: 61,
-  cardCenters: [38, 61, 84],
-  arrows: { main: 9, cards: 26, lead: 35 }
-};
-function route(...points) {
-  const cells = [points[0]];
-  for (let i = 1; i < points.length; i += 1) {
-    const [tx, ty] = points[i];
-    let [x, y] = cells[cells.length - 1];
-    while (x !== tx || y !== ty) {
-      x += Math.sign(tx - x);
-      y += Math.sign(ty - y);
-      cells.push([x, y]);
-    }
-  }
-  return cells;
-}
-var delegateRoute = (center) => route([FULL.spine, 20], [FULL.spine, 22], [center, 22], [center, 23]);
-var backRoute = (center) => route([center, 31], [center, 32], [FULL.spine, 32], [FULL.spine, 34]);
-var advisorRow = (from, y) => route([from, y], [24, y]);
-var ROUTES = {
-  tool: route([FULL.spine, 11], [FULL.spine, 13]),
-  "delegate-0": delegateRoute(FULL.cardCenters[0]),
-  "delegate-1": delegateRoute(FULL.cardCenters[1]),
-  "delegate-2": delegateRoute(FULL.cardCenters[2]),
-  "back-0": backRoute(FULL.cardCenters[0]),
-  "back-1": backRoute(FULL.cardCenters[1]),
-  "back-2": backRoute(FULL.cardCenters[2]),
-  "advisor-out-0": advisorRow(38, FULL.arrows.main),
-  "advisor-out-1": advisorRow(27, FULL.arrows.cards),
-  "advisor-out-2": advisorRow(42, FULL.arrows.lead + 1),
-  "advisor-back-0": advisorRow(38, FULL.arrows.main).reverse(),
-  "advisor-back-1": advisorRow(27, FULL.arrows.cards).reverse(),
-  "advisor-back-2": advisorRow(42, FULL.arrows.lead + 1).reverse()
-};
-function consultSlot(reason) {
-  if (reason === "after errors" || reason === "after subagents") return 1;
-  return reason === "before done" ? 2 : 0;
-}
-function layoutKind(cols, rows) {
-  if (cols >= FULL_COLS && rows >= FULL_ROWS) return "full";
-  if (cols >= MIN_COLS && rows >= MIN_ROWS) return "reduced";
-  return "too-small";
-}
-
 // src/tui/color.ts
 var rgb = (hex) => Number.parseInt(hex.replace("#", ""), 16);
 var red = (c) => c >> 16 & 255;
@@ -441,26 +426,36 @@ function to256(c) {
 
 // src/scene/theme.ts
 var theme = {
-  /** Fondo: viñeta de esquinas oscuras a un centro más claro. */
-  bgEdge: rgb("#13182d"),
-  bgCenter: rgb("#232b4e"),
-  /** Interior de los paneles, más oscuro que el fondo que los rodea. */
-  panel: rgb("#0f1225"),
-  chip: rgb("#161d32"),
-  windowBar: rgb("#0f1426"),
-  main: rgb("#7ec2ed"),
-  sub: rgb("#afd5ff"),
-  subBright: rgb("#e6ffff"),
-  advisor: rgb("#adacfa"),
-  metrics: rgb("#75c8a6"),
-  alert: rgb("#e08a4f"),
-  text: rgb("#eaefff"),
-  dim: rgb("#7c88a8"),
-  faint: rgb("#4c5164"),
-  barTrack: rgb("#253352"),
-  barGood: rgb("#34977a"),
-  barAlert: rgb("#bb763d"),
-  barSub: rgb("#5797c8"),
+  /** Fondo plano, sin viñeta: los paneles comparten el color del fondo. */
+  bg: rgb("#191e24"),
+  panel: rgb("#191e24"),
+  chip: rgb("#262c36"),
+  windowBar: rgb("#242831"),
+  /** Modelo principal: sesión principal y "back to lead". */
+  main: rgb("#e38d63"),
+  /** Subagentes y sus barras. */
+  sub: rgb("#81b0f6"),
+  /** Paquetes de regreso y destellos. */
+  subBright: rgb("#f2f6ff"),
+  /** Memoria de agentes. */
+  metrics: rgb("#77ce9b"),
+  /** Memoria de proyecto. */
+  notes: rgb("#af9eec"),
+  /** El advisor no está en la referencia: lleva un tono propio para no confundirse con la memoria. */
+  advisor: rgb("#e59ad8"),
+  /** Errores: más rojo que el naranjo del modelo principal, para que se distingan. */
+  alert: rgb("#f0695a"),
+  /** Pie del panel de memoria. */
+  caption: rgb("#e8b56e"),
+  text: rgb("#dfe3ea"),
+  dim: rgb("#8b909b"),
+  faint: rgb("#50555f"),
+  /** Conectores en reposo y borde del log. */
+  line: rgb("#4a505c"),
+  barTrack: rgb("#3a404b"),
+  barGood: rgb("#76d099"),
+  barAlert: rgb("#c9574b"),
+  barSub: rgb("#8cc0ff"),
   dotRed: rgb("#ff5f57"),
   dotYellow: rgb("#febc2e"),
   dotGreen: rgb("#28c840")
@@ -468,20 +463,26 @@ var theme = {
 
 // src/scene/boot.ts
 var BOOT_MS = 2200;
-var PANELS = [
-  { rect: FULL.advisor, from: 150, to: 1150 },
-  { rect: FULL.main, from: 350, to: 1250 },
-  { rect: FULL.advisorState, from: 500, to: 1300 },
-  { rect: FULL.metrics, from: 650, to: 1450 },
-  { rect: FULL.cards[0], from: 850, to: 1550 },
-  { rect: FULL.cards[1], from: 950, to: 1650 },
-  { rect: FULL.cards[2], from: 1050, to: 1750 },
-  { rect: FULL.lead, from: 1200, to: 1850 },
-  { rect: FULL.log, from: 1300, to: 2e3 }
-];
+var timingCache = /* @__PURE__ */ new WeakMap();
+function panelsOf(layout) {
+  let panels = timingCache.get(layout);
+  if (!panels) {
+    panels = [
+      { rect: layout.project, from: 150, to: 1150 },
+      { rect: layout.main, from: 350, to: 1250 },
+      { rect: layout.advisor, from: 500, to: 1300 },
+      { rect: layout.memory, from: 650, to: 1450 },
+      { rect: layout.cards[0], from: 850, to: 1550 },
+      { rect: layout.cards[1], from: 950, to: 1650 },
+      { rect: layout.cards[2], from: 1050, to: 1750 },
+      { rect: layout.lead, from: 1200, to: 1850 },
+      { rect: layout.log, from: 1300, to: 2e3 }
+    ];
+    timingCache.set(layout, panels);
+  }
+  return panels;
+}
 var BORDER_SHARE = 0.6;
-var MARGIN_X = 2;
-var MARGIN_Y = 1;
 function hide(buf, x, y, base) {
   buf.clearCell(x, y, base(x, y));
 }
@@ -496,17 +497,12 @@ function perimeter(r) {
   return cells;
 }
 var perimeterCache = /* @__PURE__ */ new Map();
-var insideRect = (r, x, y) => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
 function revealPanel(buf, r, t, base) {
   if (t >= 1) return;
   const borderT = easeInOutCubic(segment(t, 0, BORDER_SHARE));
   const contentT = easeOutCubic(segment(t, BORDER_SHARE, 1));
-  for (let y = r.y - MARGIN_Y; y < r.y + r.h + MARGIN_Y; y += 1) {
-    for (let x = r.x - MARGIN_X; x < r.x + r.w + MARGIN_X; x += 1) {
-      const inside = insideRect(r, x, y);
-      const onBorder = inside && (x === r.x || x === r.x + r.w - 1 || y === r.y || y === r.y + r.h - 1);
-      if (onBorder) continue;
-      if (!inside && PANELS.some(({ rect }) => rect !== r && insideRect(rect, x, y))) continue;
+  for (let y = r.y + 1; y < r.y + r.h - 1; y += 1) {
+    for (let x = r.x + 1; x < r.x + r.w - 1; x += 1) {
       if (contentT <= 0) {
         hide(buf, x, y, base);
       } else {
@@ -527,20 +523,21 @@ function revealPanel(buf, r, t, base) {
     else if (i >= drawn - 3 && borderT < 1) buf.tintFg(x, y, theme.subBright, 1 - (drawn - i) / 4);
   });
 }
-function hideRow(buf, y, fromCol, base) {
-  for (let x = fromCol; x < FULL_COLS; x += 1) hide(buf, x, y, base);
+function hideRow(buf, y, fromCol, width, base) {
+  for (let x = fromCol; x < width; x += 1) hide(buf, x, y, base);
 }
-function fadeRow(buf, y, amount, base) {
-  for (let x = 0; x < FULL_COLS; x += 1) {
+function fadeRow(buf, y, width, amount, base) {
+  for (let x = 0; x < width; x += 1) {
     buf.tintFg(x, y, base(x, y), amount);
     buf.blendBg(x, y, base(x, y), amount);
   }
 }
-function fadeConnectors(buf, amount, base) {
-  const panelCells = (x, y) => PANELS.some(({ rect: r }) => x >= r.x - MARGIN_X && x < r.x + r.w + MARGIN_X && y >= r.y - MARGIN_Y && y < r.y + r.h + MARGIN_Y);
-  for (let y = FULL.rows.legend + 1; y < FULL.log.y; y += 1) {
-    for (let x = 0; x < FULL_COLS; x += 1) {
-      if (panelCells(x, y)) continue;
+function fadeConnectors(buf, layout, amount, base) {
+  const panels = panelsOf(layout);
+  const inPanel = (x, y) => panels.some(({ rect: r }) => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
+  for (let y = layout.rows.legend + 1; y < layout.log.y; y += 1) {
+    for (let x = 0; x < layout.width; x += 1) {
+      if (inPanel(x, y)) continue;
       if (amount >= 1) {
         hide(buf, x, y, base);
       } else {
@@ -550,19 +547,18 @@ function fadeConnectors(buf, amount, base) {
     }
   }
 }
-function applyBootFull(buf, ms, headerStart, headerLength, base) {
+function applyBootFull(buf, ms, layout, headerStart, headerLength, base) {
+  const { rows, width } = layout;
   const typed = Math.floor(easeInOutCubic(segment(ms, 0, 800)) * headerLength);
-  hideRow(buf, FULL.rows.header, headerStart + typed, base);
-  if (typed > 0 && typed < headerLength) {
-    buf.put(headerStart + typed, FULL.rows.header, "\u258C", theme.main);
-  }
-  fadeRow(buf, FULL.rows.separator, 1 - easeOutCubic(segment(ms, 300, 800)), base);
-  fadeRow(buf, FULL.rows.legend, 1 - easeOutCubic(segment(ms, 450, 950)), base);
-  fadeConnectors(buf, 1 - easeOutCubic(segment(ms, 1500, 2100)), base);
-  for (const panel of PANELS) revealPanel(buf, panel.rect, segment(ms, panel.from, panel.to), base);
+  hideRow(buf, rows.header, headerStart + typed, width, base);
+  if (typed > 0 && typed < headerLength) buf.put(headerStart + typed, rows.header, "\u258C", theme.main);
+  if (rows.separator !== void 0) fadeRow(buf, rows.separator, width, 1 - easeOutCubic(segment(ms, 300, 800)), base);
+  fadeRow(buf, rows.legend, width, 1 - easeOutCubic(segment(ms, 450, 950)), base);
+  fadeConnectors(buf, layout, 1 - easeOutCubic(segment(ms, 1500, 2100)), base);
+  for (const panel of panelsOf(layout)) revealPanel(buf, panel.rect, segment(ms, panel.from, panel.to), base);
   const bottom = 1 - easeOutCubic(segment(ms, 1700, BOOT_MS));
-  fadeRow(buf, FULL.rows.prompt, bottom, base);
-  fadeRow(buf, FULL.rows.status, bottom, base);
+  fadeRow(buf, rows.prompt, width, bottom, base);
+  fadeRow(buf, rows.status, width, bottom, base);
 }
 function applyBootFade(buf, ms, base) {
   const amount = 1 - easeOutCubic(segment(ms, 0, 700));
@@ -579,6 +575,7 @@ function applyBootFade(buf, ms, base) {
 var BASE = {
   instant: 0,
   tool: 450,
+  memory: 800,
   advisor: 1e3,
   "advisor-reply": 900,
   "subagent-start": 800,
@@ -589,6 +586,7 @@ var BASE = {
 var MINIMUM = {
   instant: 0,
   tool: 120,
+  memory: 300,
   // Consulta y respuesta separadas suman el mínimo acordado de 1,5 s.
   advisor: 1e3,
   "advisor-reply": 500,
@@ -612,7 +610,9 @@ var GROUP_MAX_EVENTS = 40;
 function classify(event, known) {
   switch (event.type) {
     case "tool_call":
-      return "tool";
+      return event.memory ? "memory" : "tool";
+    case "memory_load":
+      return "memory";
     case "tool_result":
       return event.isError ? "error" : "instant";
     case "advisor_consult":
@@ -640,6 +640,7 @@ var isNeutral = (item) => item.events.every((e) => e.type === "message_usage" ||
 var KIND_COLOR = {
   instant: "tool",
   tool: "tool",
+  memory: "memory",
   advisor: "advisor",
   "advisor-reply": "advisor",
   "subagent-start": "sub",
@@ -780,7 +781,7 @@ var TweenSet = class {
 var LOG_LIMIT = 200;
 var PACKET_SHARE = 0.35;
 var PULSE_PERIOD_MS = 170;
-var TYPE_CHARS_PER_MS = 0.03;
+var MEMORY_PULSE_MS = 1200;
 var QUEUE_AFTER_BOOT_MS = 1600;
 var LEAD_GLOW_MS = 900;
 var ERROR_FLASH_MS = 750;
@@ -793,6 +794,22 @@ function breathLevel(now) {
   const wave = 0.5 + 0.5 * Math.sin(now / BREATH_PERIOD_MS * 2 * Math.PI);
   return Math.round(wave * BREATH_LEVELS) / BREATH_LEVELS;
 }
+var EXAMPLE_FLOW = [
+  { route: "tool", period: 2300, offset: 0, duration: 800, whileRunning: false },
+  { route: "work-0", period: 3100, offset: 300, duration: 1300, whileRunning: true },
+  { route: "work-1", period: 3400, offset: 1500, duration: 900, whileRunning: true },
+  { route: "work-2", period: 2900, offset: 2200, duration: 1300, whileRunning: true },
+  { route: "back-0", period: 3700, offset: 900, duration: 1700, whileRunning: true },
+  { route: "back-1", period: 4100, offset: 2500, duration: 1200, whileRunning: true },
+  { route: "back-2", period: 3300, offset: 1800, duration: 1700, whileRunning: true }
+];
+var EXAMPLE_MILESTONE_MS = 3600;
+var EXAMPLE_MILESTONE_ROUTE_MS = 1100;
+function examplePercent(elapsedMs, seed) {
+  const pace = 7e3 + seed % 5 * 2600;
+  return Math.min(97, Math.floor(100 * (1 - Math.exp(-Math.max(0, elapsedMs) / pace))));
+}
+var hashOf = (text) => [...text].reduce((sum, char) => (sum * 31 + char.codePointAt(0)) % 9973, 7);
 var Director = class {
   truth = createState();
   shown = createState();
@@ -804,9 +821,9 @@ var Director = class {
   version = 0;
   bootStart;
   animateBoot;
+  illustrative;
   packets = [];
-  consultAnim;
-  consultSlotById = /* @__PURE__ */ new Map();
+  memoryPulse;
   cards = [void 0, void 0, void 0];
   /** Subagentes activos sin tarjeta libre. */
   waitingCards = [];
@@ -816,6 +833,7 @@ var Director = class {
   flashStart;
   constructor(options = {}) {
     this.animateBoot = options.boot ?? false;
+    this.illustrative = options.illustrative ?? false;
   }
   bootElapsed(now) {
     if (!this.animateBoot) return void 0;
@@ -828,8 +846,7 @@ var Director = class {
       this.shown = createState();
       this.queue.clear();
       this.packets = [];
-      this.consultAnim = void 0;
-      this.consultSlotById.clear();
+      this.memoryPulse = void 0;
       this.cards = [void 0, void 0, void 0];
       this.waitingCards = [];
       this.leadGlowStart = void 0;
@@ -893,21 +910,28 @@ var Director = class {
     const first = item.events[0];
     if (item.kind === "error") {
       this.flashStart = start;
-    } else if (item.kind === "tool" && first?.type === "tool_call" && !first.agentId) {
-      this.addPacket("tool", start, duration);
-    } else if (item.kind === "advisor" && first?.type === "advisor_consult") {
-      const slot = consultSlot(first.reason);
-      this.consultSlotById.set(first.id, slot);
-      this.consultAnim = { id: first.id, start };
-      if (item.endEvents.length) {
-        this.addPacket(`advisor-out-${slot}`, start, duration * PACKET_SHARE);
-        this.addPacket(`advisor-back-${slot}`, start + duration * (1 - PACKET_SHARE), duration * PACKET_SHARE);
+    } else if (item.kind === "tool" && first?.type === "tool_call") {
+      if (!first.agentId) {
+        this.addPacket("tool", start, duration);
       } else {
-        this.addPacket(`advisor-out-${slot}`, start, duration * 0.6);
+        const slot = this.cards.findIndex((card) => card?.id === first.agentId);
+        if (slot >= 0) this.addPacket(`work-${slot}`, start, duration);
+      }
+    } else if (item.kind === "memory") {
+      const slot = first?.type === "tool_call" ? memoryMilestone(this.shown, { t: first.t }) : 0;
+      const agentId = first?.type === "tool_call" ? first.agentId : void 0;
+      const card = agentId ? this.cards.findIndex((c) => c?.id === agentId) : -1;
+      this.addPacket(`memory-${slot}`, start, duration);
+      this.memoryPulse = { slot, start, ...card >= 0 ? { card } : {} };
+    } else if (item.kind === "advisor" && first?.type === "advisor_consult") {
+      if (item.endEvents.length) {
+        this.addPacket("advisor-out", start, duration * PACKET_SHARE);
+        this.addPacket("advisor-back", start + duration * (1 - PACKET_SHARE), duration * PACKET_SHARE);
+      } else {
+        this.addPacket("advisor-out", start, duration * 0.6);
       }
     } else if (item.kind === "advisor-reply" && first?.type === "advisor_reply") {
-      const slot = this.consultSlotById.get(first.id) ?? 0;
-      this.addPacket(`advisor-back-${slot}`, start, duration);
+      this.addPacket("advisor-back", start, duration);
     } else if (item.kind === "subagent-start" && first?.type === "subagent_start") {
       const growStart = start + duration * 0.4;
       const slot = this.placeCard(first.subagentId, now, { start: growStart, duration: duration * 0.6 });
@@ -948,24 +972,27 @@ var Director = class {
   }
   /** Valores que persiguen el estado visible, para que los números suban y las barras crezcan. */
   shownNumbers(now) {
-    const { advisor, toolCalls, tools } = this.shown;
+    const { advisor, toolCalls } = this.shown;
     const follow = (key, target, duration = COUNT_MS) => this.tweens.track(key, target, now, duration);
     return {
       toolCalls: follow("toolCalls", toolCalls),
       calls: follow("calls", advisor.calls),
       tokensRead: follow("tokensRead", advisor.tokensRead, TOKENS_MS),
-      routineTurns: follow("routineTurns", advisor.routineTurns),
-      tools: Object.fromEntries(Object.entries(tools).map(([name, stat]) => [name, follow(`tool:${name}`, stat.count)]))
+      memory: Object.fromEntries(Object.entries(this.memoryCounts()).map(([id, count]) => [id, follow(`memory:${id}`, count)]))
     };
+  }
+  memoryCounts() {
+    const counts = {};
+    for (const touch of this.shown.memory.touches) if (touch.agentId) counts[touch.agentId] = (counts[touch.agentId] ?? 0) + 1;
+    return counts;
   }
   /** Lleva los contadores a su valor sin animarlos: lo que ya había ocurrido no se cuenta otra vez. */
   settleNumbers() {
-    const { advisor, toolCalls, tools } = this.shown;
+    const { advisor, toolCalls } = this.shown;
     this.tweens.settle("toolCalls", toolCalls);
     this.tweens.settle("calls", advisor.calls);
     this.tweens.settle("tokensRead", advisor.tokensRead);
-    this.tweens.settle("routineTurns", advisor.routineTurns);
-    for (const [name, stat] of Object.entries(tools)) this.tweens.settle(`tool:${name}`, stat.count);
+    for (const [id, count] of Object.entries(this.memoryCounts())) this.tweens.settle(`memory:${id}`, count);
   }
   errorFlash(now) {
     if (this.flashStart === void 0) return void 0;
@@ -985,14 +1012,63 @@ var Director = class {
   }
   activePackets(now) {
     this.packets = this.packets.filter((p) => now < p.start + p.duration);
-    return this.packets.filter((p) => now >= p.start).map((p) => ({ route: p.route, t: progress(now, p.start, p.duration) }));
+    const real = this.packets.filter((p) => now >= p.start).map((p) => ({ route: p.route, t: progress(now, p.start, p.duration) }));
+    return this.illustrative ? [...real, ...this.examplePackets(now)] : real;
   }
   advisorMotion(now) {
     const active = this.queue.active;
     if (!active || active.item.kind !== "advisor" && active.item.kind !== "advisor-reply") return {};
-    const elapsed = now - active.start;
-    const typing = this.consultAnim ? { id: this.consultAnim.id, chars: Math.floor((now - this.consultAnim.start) * TYPE_CHARS_PER_MS) } : void 0;
-    return { advisorPulse: 0.5 + 0.5 * Math.sin(elapsed / PULSE_PERIOD_MS), typingConsult: typing };
+    return { advisorPulse: 0.5 + 0.5 * Math.sin((now - active.start) / PULSE_PERIOD_MS) };
+  }
+  memoryMotion(now) {
+    const example = this.illustrative ? this.exampleMilestone(now) : void 0;
+    const pulse = this.memoryPulse;
+    if (pulse && now >= pulse.start && now < pulse.start + MEMORY_PULSE_MS) {
+      const amount = 1 - easeOutCubic(progress(now, pulse.start, MEMORY_PULSE_MS));
+      return { memoryPulse: { slot: pulse.slot, amount, ...pulse.card !== void 0 ? { card: pulse.card } : {} } };
+    }
+    return example ? { memoryPulse: example } : {};
+  }
+  // --- Actividad de ejemplo, solo en la demo. No toca `truth` ni `shown`. ---
+  get hasRunningCards() {
+    return this.shown.subagents.some((s) => s.running);
+  }
+  examplePackets(now) {
+    if (!this.connected) return [];
+    const packets = [];
+    for (const flow of EXAMPLE_FLOW) {
+      if (flow.whileRunning && !this.hasRunningCards) continue;
+      const t2 = (now + flow.offset) % flow.period / flow.duration;
+      if (t2 < 1) packets.push({ route: flow.route, t: t2 });
+    }
+    const cycle = now / EXAMPLE_MILESTONE_MS;
+    const t = (cycle - Math.floor(cycle)) * (EXAMPLE_MILESTONE_MS / EXAMPLE_MILESTONE_ROUTE_MS);
+    if (t < 1) packets.push({ route: `memory-${Math.floor(cycle) % 3}`, t });
+    return packets;
+  }
+  exampleMilestone(now) {
+    if (!this.connected) return void 0;
+    const cycle = now / EXAMPLE_MILESTONE_MS;
+    const phase = cycle - Math.floor(cycle);
+    const amount = 1 - easeOutCubic(Math.min(1, phase * 2.2));
+    if (amount <= 0) return void 0;
+    const slot = Math.floor(cycle) % 3;
+    return { slot, amount, ...slot === 1 ? { card: 0 } : {} };
+  }
+  exampleFrame(now) {
+    const percents = this.cards.map((card) => {
+      if (!card) return void 0;
+      return examplePercent(now - (card.enter?.start ?? 0), hashOf(card.id));
+    });
+    const memory = this.cards.map((card, i) => {
+      if (!card) return { fraction: 0, label: "recall" };
+      const seed = hashOf(card.id) % 7;
+      const wave = Math.sin(now / (1700 + seed * 240) + i * 1.7);
+      const fraction = 0.68 + Math.round((wave + 1) * 6) / 6 * 0.14;
+      const checking = (now + i * 2900) % 9e3 < 2200;
+      return { fraction: checking ? 0.55 : fraction, label: checking ? "check" : "recall" };
+    });
+    return { percents, memory };
   }
   /** Avanza hasta `now`. Devuelve si algo de los datos cambió. */
   update(now) {
@@ -1013,10 +1089,14 @@ var Director = class {
   get settled() {
     return this.queue.isEmpty;
   }
-  /** Hay algo moviéndose que exige la frecuencia alta. */
+  /** Hay algo moviéndose que exige la frecuencia alta. La demo siempre tiene paquetes de ejemplo circulando. */
   isBusy(now) {
+    return this.illustrative && this.connected || this.isAnimating(now);
+  }
+  /** Lo que depende de datos reales sigue en movimiento. Al terminar, lo visible ya es definitivo. */
+  isAnimating(now) {
     const boot = this.bootElapsed(now);
-    return !this.queue.isEmpty || this.packets.length > 0 || this.tweens.isActive(now) || this.cardsMoving(now) || this.flashStart !== void 0 && now < this.flashStart + ERROR_FLASH_MS || this.lastLogBorn !== void 0 && now < this.lastLogBorn + LOG_MOTION_MS || boot !== void 0 && boot < BOOT_MS;
+    return !this.queue.isEmpty || this.packets.length > 0 || this.memoryPulse !== void 0 && now < this.memoryPulse.start + MEMORY_PULSE_MS || this.tweens.isActive(now) || this.cardsMoving(now) || this.flashStart !== void 0 && now < this.flashStart + ERROR_FLASH_MS || this.lastLogBorn !== void 0 && now < this.lastLogBorn + LOG_MOTION_MS || boot !== void 0 && boot < BOOT_MS;
   }
   animFrame(now) {
     const boot = this.bootElapsed(now);
@@ -1028,7 +1108,9 @@ var Director = class {
       numbers: this.shownNumbers(now),
       breath: breathLevel(now),
       errorFlash: this.errorFlash(now),
-      ...this.advisorMotion(now)
+      ...this.advisorMotion(now),
+      ...this.memoryMotion(now),
+      ...this.illustrative ? { illustrative: this.exampleFrame(now) } : {}
     };
   }
   view(now, replay, flatBackground = false) {
@@ -1040,6 +1122,8 @@ var Director = class {
       replay,
       connected: this.connected,
       flatBackground,
+      illustrativeDemo: this.illustrative,
+      preview: { main: this.truth.mainModel, advisor: this.truth.advisorModel },
       anim: this.animFrame(now)
     };
   }
@@ -1179,8 +1263,8 @@ var CellBuffer = class {
 };
 
 // src/scene/draw.ts
-var HEAVY = { h: "\u2501", v: "\u2503", tl: "\u250F", tr: "\u2513", bl: "\u2517", br: "\u251B" };
-var DASHED = { h: "\u254D", v: "\u254F", tl: "\u250F", tr: "\u2513", bl: "\u2517", br: "\u251B" };
+var THIN = { h: "\u2500", v: "\u2502", tl: "\u250C", tr: "\u2510", bl: "\u2514", br: "\u2518" };
+var DASHED = { h: "\u254C", v: "\u254E", tl: "\u250C", tr: "\u2510", bl: "\u2514", br: "\u2518" };
 function halo(buf, r, color, strength) {
   if (strength <= 0) return;
   const ring = (dx, dy, amount) => {
@@ -1197,7 +1281,7 @@ function halo(buf, r, color, strength) {
   ring(1, 0, strength * 0.13);
 }
 function box(buf, r, options) {
-  const glyphs = options.dashed ? DASHED : HEAVY;
+  const glyphs = options.dashed ? DASHED : THIN;
   const attrs = options.bold ? BOLD : 0;
   if (options.halo) halo(buf, r, options.color, options.halo);
   if (options.fill !== void 0) buf.fill(r.x + 1, r.y + 1, r.w - 2, r.h - 2, options.fill);
@@ -1232,153 +1316,301 @@ function rightText(buf, rightEdge, y, text, color, bold = false) {
   buf.text(rightEdge - cellLength(text) + 1, y, text, color, bold ? BOLD : 0);
 }
 var PARTIAL = ["", "\u258F", "\u258E", "\u258D", "\u258C", "\u258B", "\u258A", "\u2589"];
-function bar(buf, x, y, width, fraction, color, track = theme.barTrack) {
+function track(buf, x, y, color) {
+  buf.clearCell(x, y, theme.bg);
+  buf.put(x, y, "\u2591", color);
+}
+function bar(buf, x, y, width, fraction, color, rail = theme.barTrack) {
   const total = Math.max(0, Math.min(1, fraction)) * width;
   const full = Math.floor(total);
   const eighths = Math.floor((total - full) * 8);
   for (let i = 0; i < width; i += 1) {
-    buf.clearCell(x + i, y, track);
-    if (i < full) buf.put(x + i, y, "\u2588", color);
-    else if (i === full && eighths > 0) buf.put(x + i, y, PARTIAL[eighths], color);
+    if (i < full) {
+      buf.clearCell(x + i, y, theme.bg);
+      buf.put(x + i, y, "\u2588", color);
+    } else if (i === full && eighths > 0) {
+      buf.clearCell(x + i, y, theme.bg);
+      buf.put(x + i, y, PARTIAL[eighths], color);
+    } else {
+      track(buf, x + i, y, rail);
+    }
   }
 }
-function thinBar(buf, x, y, width, fraction, color, track = theme.barTrack) {
-  const halves = Math.round(Math.max(0, Math.min(1, fraction)) * width * 2);
-  for (let i = 0; i < width; i += 1) {
-    const filled = halves - i * 2;
-    if (filled >= 2) buf.put(x + i, y, "\u2584", color);
-    else if (filled === 1) {
-      buf.put(x + i, y, "\u2596", color);
-    } else buf.put(x + i, y, "\u2584", track);
-  }
-}
-function indeterminateBar(buf, x, y, width, phase, color, track = theme.barTrack) {
+function indeterminateBar(buf, x, y, width, phase, color, rail = theme.barTrack) {
   const band = Math.max(3, width * 0.32);
   const start = (phase - Math.floor(phase)) * (width + band) - band;
   const end = start + band;
   for (let i = 0; i < width; i += 1) {
-    buf.clearCell(x + i, y, track);
+    track(buf, x + i, y, rail);
     const covered = Math.min(i + 1, end) - Math.max(i, start);
     if (covered <= 0) continue;
+    buf.clearCell(x + i, y, theme.bg);
     if (covered >= 1) {
       buf.put(x + i, y, "\u2588", color);
     } else if (start > i) {
       buf.setBg(x + i, y, color);
-      buf.put(x + i, y, PARTIAL[Math.max(1, Math.round((1 - covered) * 8))] ?? "\u258F", track);
+      buf.put(x + i, y, PARTIAL[Math.max(1, Math.round((1 - covered) * 8))] ?? "\u258F", theme.bg);
     } else {
       buf.put(x + i, y, PARTIAL[Math.max(1, Math.round(covered * 8))] ?? "\u2589", color);
     }
   }
 }
 var SPINNER = ["|", "/", "-", "\\"];
+var DISC = ["\u25D0", "\u25D3", "\u25D1", "\u25D2"];
+var discFrame = (now, offset = 0, period = 160) => DISC[Math.floor(now / period + offset) % DISC.length];
 var spinnerFrame = (now, period = 120) => SPINNER[Math.floor(now / period) % SPINNER.length];
-function wrap(text, width, maxLines) {
-  const lines = [];
-  let line = "";
-  for (const raw of toCells(text).split(/\s+/)) {
-    let word = raw;
-    while (cellLength(word) > width) {
-      if (line) {
-        lines.push(line);
-        line = "";
-      }
-      const chars = [...word];
-      lines.push(chars.slice(0, width).join(""));
-      word = chars.slice(width).join("");
+
+// src/scene/layout.ts
+var FULL_COLS = 90;
+var FULL_ROWS = 46;
+var COMPACT_COLS = 80;
+var COMPACT_ROWS = 30;
+var MIN_COLS = 80;
+var MIN_ROWS = 24;
+var COMPACT_MAX_CARD = 26;
+function layoutKind(cols, rows) {
+  if (cols >= FULL_COLS && rows >= FULL_ROWS) return "full";
+  if (cols >= COMPACT_COLS && rows >= COMPACT_ROWS) return "compact";
+  if (cols >= MIN_COLS && rows >= MIN_ROWS) return "reduced";
+  return "too-small";
+}
+var COMPACT_HEIGHTS = { separator: 0, main: 4, stem: 1, memory: 5, afterMemory: 0, afterDelegate: 0, cardArrow: 0, card: 5, cardStem: 0, leadArrow: 0, lead: 3, beforeLog: 0, log: 5 };
+var FULL_HEIGHTS = { separator: 1, main: 6, stem: 2, memory: 7, afterMemory: 1, afterDelegate: 1, cardArrow: 1, card: 7, cardStem: 1, leadArrow: 1, lead: 4, beforeLog: 1, log: 6 };
+var SPARE_ORDER = ["log", "memory", "card", "memory", "card", "main", "main", "separator", "stem", "afterMemory", "afterDelegate", "cardArrow", "cardStem", "leadArrow", "lead", "beforeLog"];
+var span = (x0, x1, y0, y1) => ({ x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 });
+function route(...points) {
+  const cells = [points[0]];
+  for (let i = 1; i < points.length; i += 1) {
+    const [tx, ty] = points[i];
+    let [x, y] = cells[cells.length - 1];
+    while (x !== tx || y !== ty) {
+      x += Math.sign(tx - x);
+      y += Math.sign(ty - y);
+      cells.push([x, y]);
     }
-    const next = line ? `${line} ${word}` : word;
-    if (cellLength(next) > width) {
-      lines.push(line);
-      line = word;
+  }
+  return cells;
+}
+var FULL_COLUMNS = {
+  width: FULL_COLS,
+  project: { x: 3, w: 21 },
+  main: { x0: 44, x1: 70 },
+  advisor: { x0: 74, x1: 87 },
+  memory: { x0: 36, x1: 78 },
+  cards: [[26, 45], [47, 66], [68, 87]],
+  centers: [36, 57, 78],
+  lead: { x0: 41, x1: 73 },
+  log: { x0: 3, x1: 87 },
+  spine: 57
+};
+function compactColumns(cols) {
+  const left = 21;
+  const card = Math.min(COMPACT_MAX_CARD, Math.floor((cols - left - 2) / 3));
+  const used = card * 3 + 2;
+  const width = Math.min(cols, left + 3 + used);
+  const start = width - used;
+  const cards = [
+    [start, start + card - 1],
+    [start + card + 1, start + 2 * card],
+    [start + 2 * card + 2, start + 3 * card + 1]
+  ];
+  const centers = [cards[0][0] + (card >> 1), cards[1][0] + (card >> 1), cards[2][0] + (card >> 1)];
+  const spine = centers[1];
+  const advisorWidth = 13;
+  const half = Math.min(17, width - 1 - advisorWidth - 3 - spine);
+  const mainEnd = spine + half;
+  return {
+    width,
+    project: { x: 0, w: 20 },
+    main: { x0: spine - half, x1: mainEnd },
+    advisor: { x0: mainEnd + 4, x1: mainEnd + 3 + advisorWidth },
+    memory: { x0: spine - 20, x1: spine + 20 },
+    cards,
+    centers,
+    lead: { x0: spine - 16, x1: spine + 16 },
+    log: { x0: 0, x1: width - 1 },
+    spine
+  };
+}
+function build(c, h, kind, cols, rows) {
+  let y = 0;
+  const next = (n = 1) => {
+    const at = y;
+    y += n;
+    return at;
+  };
+  const header = next();
+  const separator = h.separator ? next() : void 0;
+  const legend = next();
+  const mainY = next(h.main);
+  next(h.stem);
+  const memoryY = next(h.memory);
+  next(h.afterMemory);
+  const delegate = next();
+  next(h.afterDelegate);
+  const bus = next();
+  const cardArrowRow = h.cardArrow ? next() : void 0;
+  const cardY = next(h.card);
+  next(h.cardStem);
+  const merge = next();
+  const leadArrowRow = h.leadArrow ? next() : void 0;
+  const leadY = next(h.lead);
+  next(h.beforeLog);
+  const logY = next(h.log);
+  const prompt = next();
+  const status = next();
+  const height = y;
+  const rect = (span_, top, rowCount) => span(span_.x0, span_.x1, top, top + rowCount - 1);
+  const main2 = rect(c.main, mainY, h.main);
+  const advisor = rect(c.advisor, mainY, h.main);
+  const memory = rect(c.memory, memoryY, h.memory);
+  const cards = c.cards.map(([x0, x1]) => span(x0, x1, cardY, cardY + h.card - 1));
+  const lead = rect(c.lead, leadY, h.lead);
+  const log = rect(c.log, logY, h.log);
+  const project = { x: c.project.x, y: mainY, w: c.project.w, h: leadY + h.lead - mainY };
+  const milestones = [mainY + (h.main >= 5 ? 3 : 2), cardY + (h.card >= 7 ? 3 : 2), leadY + 1];
+  const advisorLink = mainY + 1;
+  const projectEdge = project.x + project.w - 1;
+  const { spine } = c;
+  const mainBottom = mainY + h.main - 1;
+  const memoryBottom = memoryY + h.memory - 1;
+  const trunk = [...route([spine, mainBottom], [spine, memoryY]), ...route([spine, memoryBottom], [spine, memoryBottom + h.afterMemory]), ...h.afterDelegate ? route([spine, delegate + 1], [spine, bus]) : [[spine, bus]]];
+  const branch = (center) => route([spine, bus], [center, bus], [center, cardY]);
+  const toCard = (center) => [...trunk, ...branch(center).slice(1)];
+  const home = (center) => route([center, cardY + h.card - 1], [center, merge], [spine, merge], [spine, leadY]);
+  const [c0, c1, c2] = c.centers;
+  const advisorOut = route([main2.x + main2.w - 1, advisorLink], [advisor.x, advisorLink]);
+  const routes = {
+    tool: route([spine, mainBottom], [spine, memoryY]),
+    "advisor-out": advisorOut,
+    "advisor-back": [...advisorOut].reverse(),
+    "delegate-0": toCard(c0),
+    "delegate-1": toCard(c1),
+    "delegate-2": toCard(c2),
+    "work-0": branch(c0),
+    "work-1": branch(c1),
+    "work-2": branch(c2),
+    "back-0": home(c0),
+    "back-1": home(c1),
+    "back-2": home(c2),
+    "memory-0": route([projectEdge, milestones[0]], [main2.x, milestones[0]]),
+    "memory-1": route([projectEdge, milestones[1]], [cards[0].x, milestones[1]]),
+    "memory-2": route([projectEdge, milestones[2]], [lead.x, milestones[2]])
+  };
+  const windowBar = rows > height;
+  return {
+    kind,
+    width: c.width,
+    height,
+    originX: Math.max(0, Math.floor((cols - c.width) / 2)),
+    originY: Math.max(0, Math.floor((rows - height - (windowBar ? 1 : 0)) / 2)) + (windowBar ? 1 : 0),
+    windowBar,
+    rows: { header, separator, legend, delegate, bus, merge, prompt, status },
+    project,
+    main: main2,
+    advisor,
+    memory,
+    cards,
+    lead,
+    log,
+    spine,
+    cardCenters: c.centers,
+    milestones,
+    advisorLink,
+    cardArrowRow,
+    leadArrowRow,
+    routes
+  };
+}
+var cache = /* @__PURE__ */ new Map();
+function layoutFor(cols, rows) {
+  const kind = layoutKind(cols, rows);
+  if (kind !== "full" && kind !== "compact") return void 0;
+  const key = `${cols}x${rows}`;
+  let layout = cache.get(key);
+  if (!layout) {
+    if (kind === "full") {
+      layout = build(FULL_COLUMNS, FULL_HEIGHTS, "full", cols, rows);
     } else {
-      line = next;
+      const heights = { ...COMPACT_HEIGHTS };
+      const spare = Math.max(0, rows - COMPACT_ROWS);
+      for (const part of SPARE_ORDER.slice(0, spare)) heights[part] += 1;
+      layout = build(compactColumns(cols), heights, "compact", cols, rows);
     }
+    cache.set(key, layout);
   }
-  if (line) lines.push(line);
-  if (lines.length > maxLines) {
-    const kept = lines.slice(0, maxLines);
-    const last = kept[maxLines - 1];
-    kept[maxLines - 1] = cellLength(last) >= width ? fit(last, width) : `${last}\u2026`;
-    return kept;
-  }
-  return lines;
+  return layout;
 }
 
 // src/scene/packets.ts
-var TRAIL_CELLS = 5;
+var TRAIL_CELLS = 3;
+var TRAIL_GLYPHS = ["\u2022", "\xB7", "\xB7"];
 function packetColor(route2) {
   if (route2.startsWith("advisor")) return theme.advisor;
-  if (route2 === "tool") return theme.metrics;
-  return route2.startsWith("back") ? theme.subBright : theme.sub;
+  if (route2.startsWith("memory")) return theme.notes;
+  if (route2 === "tool") return theme.main;
+  return route2.startsWith("back") ? theme.subBright : theme.barSub;
 }
 var isText = (char) => /[\p{L}\p{N}]/u.test(char);
-function drawPacket(buf, packet) {
-  const cells = ROUTES[packet.route];
+function drawPacket(buf, packet, layout) {
+  const cells = layout.routes[packet.route];
   const color = packetColor(packet.route);
-  const bright = mix(color, theme.subBright, 0.6);
   const head = packet.t * (cells.length - 1 + TRAIL_CELLS);
+  const headCell = Math.round(head);
   cells.forEach(([x, y], i) => {
     const distance = head - i;
-    if (distance < -1 || distance > TRAIL_CELLS) return;
-    const intensity = distance < 0 ? 1 + distance : (1 - distance / TRAIL_CELLS) ** 2;
-    buf.tintFg(x, y, bright, intensity);
-    buf.blendBg(x, y, color, intensity * 0.3);
+    if (distance < -1 || distance > TRAIL_CELLS + 1) return;
+    const intensity = distance < 0 ? 1 + distance : (1 - distance / (TRAIL_CELLS + 1)) ** 2;
+    buf.tintFg(x, y, color, intensity);
+    buf.blendBg(x, y, color, intensity * 0.05);
+    if (isText(buf.charAtDraw(x, y))) return;
+    const behind = headCell - i;
+    if (behind === 0) buf.put(x, y, "\u25CF", color);
+    else if (behind > 0 && behind <= TRAIL_GLYPHS.length) buf.put(x, y, TRAIL_GLYPHS[behind - 1], mix(color, theme.bg, (behind - 1) * 0.25));
   });
-  const headCell = Math.round(head);
-  const cell = cells[headCell];
-  if (cell && !isText(buf.charAtDraw(cell[0], cell[1]))) buf.put(cell[0], cell[1], "\u25CF", bright);
 }
 
 // src/scene/scene.ts
-var backgroundCache = /* @__PURE__ */ new Map();
-function paintBackground(buf, flat) {
-  if (flat) {
-    buf.fill(0, 0, buf.width, buf.height, theme.bgEdge);
-    return;
-  }
-  const key = `${buf.width}x${buf.height}`;
-  let cached = backgroundCache.get(key);
-  if (!cached) {
-    cached = new Int32Array(buf.width * buf.height);
-    const cx = (buf.width - 1) / 2;
-    const cy = (buf.height - 1) / 2;
-    for (let y = 0; y < buf.height; y += 1) {
-      for (let x = 0; x < buf.width; x += 1) {
-        const distance = Math.hypot((x - cx) / (cx || 1), (y - cy) / (cy || 1)) / Math.SQRT2;
-        cached[y * buf.width + x] = mix(theme.bgCenter, theme.bgEdge, Math.min(1, distance * 1.15) ** 1.4);
-      }
-    }
-    backgroundCache.set(key, cached);
-  }
-  buf.bg.set(cached);
+function paintBackground(buf) {
+  buf.originX = 0;
+  buf.originY = 0;
+  buf.bg.fill(theme.bg);
+  buf.fg.fill(theme.bg);
   buf.chars.fill(32);
   buf.attrs.fill(0);
-  buf.fg.set(cached);
-}
-function baseColor(buf, flat) {
-  const cached = backgroundCache.get(`${buf.width}x${buf.height}`);
-  if (flat || !cached) return () => theme.bgEdge;
-  return (x, y) => cached[y * buf.width + x] ?? theme.bgEdge;
 }
 var folderName = (cwd) => cwd ? cwd.split(/[\\/]/).filter(Boolean).pop() ?? cwd : "no session";
-var mainName = (view) => displayModel(view.state.mainModel);
-var advisorName = (view) => displayModel(view.state.advisorModel);
-var EFFORT_LEVELS = { low: 1, medium: 2, high: 3, xhigh: 4, max: 5 };
-function effortMeter(effort) {
-  const level = effort ? EFFORT_LEVELS[effort] ?? 0 : 0;
-  return `${"\u25AE".repeat(level)}${"\u25AF".repeat(5 - level)}`;
+var mainModelOf = (view) => view.state.mainModel ?? view.preview?.main;
+var advisorModelOf = (view) => view.state.advisorModel ?? view.preview?.advisor;
+var mainName = (view) => displayModel(mainModelOf(view));
+var advisorName = (view) => displayModel(advisorModelOf(view));
+function builderName(view) {
+  const { subagents } = view.state;
+  const latest = [...subagents].reverse().find((s) => s.model);
+  return displayModel(latest?.model ?? mainModelOf(view));
 }
-function formatClock(t) {
-  if (t <= 0) return "--:--:--";
-  const d = new Date(t);
+var EFFORT_LEVELS = { low: 1, medium: 2, high: 3, xhigh: 4, max: 5 };
+function effortSegments(effort) {
+  const level = effort ? EFFORT_LEVELS[effort] ?? 0 : 0;
+  return [
+    { text: "effort ", color: theme.dim },
+    { text: "\u25AE".repeat(level), color: theme.main },
+    { text: "\u25AF".repeat(5 - level), color: theme.faint },
+    { text: ` ${effort ?? "\u2014"}`, color: theme.main }
+  ];
+}
+function formatElapsed(t, start) {
+  if (t <= 0 || start === void 0) return "--:--:--";
+  const total = Math.max(0, Math.floor((t - start) / 1e3));
   const pad = (n) => String(n).padStart(2, "0");
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  return `${pad(Math.floor(total / 3600))}:${pad(Math.floor(total / 60) % 60)}:${pad(total % 60)}`;
 }
 var KIND_COLOR2 = {
   main: theme.main,
   sub: theme.sub,
   advisor: theme.advisor,
-  tool: theme.metrics,
+  tool: theme.dim,
+  memory: theme.metrics,
   error: theme.alert
 };
 function mainActivity(view, width) {
@@ -1391,257 +1623,299 @@ function mainActivity(view, width) {
     return fit(toCells(summary ? `${name} \xB7 ${summary.replace(/\s+/g, " ")}` : name), width);
   }
   if (state.status === "working") return "working";
-  return "idle";
+  return `--model ${modelAlias(mainModelOf(view))}`;
 }
-function drawWindowBar(buf, view, y, width, ox) {
-  buf.fill(ox, y, width, 1, theme.windowBar);
+var isMainActive = (view) => view.connected && !view.state.ended && view.state.status !== "idle";
+function drawWindowBar(buf, view, y, ox) {
+  buf.fill(ox, y, buf.width, 1, theme.windowBar);
   buf.put(ox + 1, y, "\u25CF", theme.dotRed);
   buf.put(ox + 3, y, "\u25CF", theme.dotYellow);
   buf.put(ox + 5, y, "\u25CF", theme.dotGreen);
-  centerText(buf, ox, width, y, `${folderName(view.state.cwd)} \u2014 sinapsis \u2014 ${buf.width}x${buf.height}`, theme.dim);
+  centerText(buf, ox, buf.width, y, `${folderName(view.state.cwd)} \xB7 sinapsis \xB7 ${buf.width}x${buf.height}`, theme.dim);
 }
 function headerSegments(view) {
-  if (!view.state.mainModel) {
-    return [
-      { text: "CLAUDE CODE ADVISOR", color: theme.text, bold: true },
-      { text: "  \xB7  ", color: theme.dim },
-      { text: "WAITING FOR A SESSION", color: theme.dim }
-    ];
-  }
-  const main2 = mainName(view).toUpperCase();
-  const advisor = advisorName(view).toUpperCase();
+  const title = { text: "CLAUDE CODE ADVISOR", color: theme.text, bold: true };
+  const gap = { text: "  \xB7  ", color: theme.dim };
+  if (!mainModelOf(view)) return [title, gap, { text: "WAITING FOR A SESSION", color: theme.dim }];
   return [
-    { text: "CLAUDE CODE ADVISOR", color: theme.text, bold: true },
-    { text: "  \xB7  ", color: theme.dim },
-    { text: main2, color: theme.main, bold: true },
-    { text: " BUILDS", color: theme.text, bold: true },
-    { text: "  \xB7  ", color: theme.dim },
-    { text: advisor, color: theme.advisor, bold: true },
-    { text: " THINKS", color: theme.text, bold: true }
+    title,
+    gap,
+    { text: mainName(view).toUpperCase(), color: theme.main, bold: true },
+    { text: " LEADS", color: theme.text, bold: true },
+    { text: " \xB7 ", color: theme.text },
+    { text: builderName(view).toUpperCase(), color: theme.sub, bold: true },
+    { text: " BUILDS", color: theme.text, bold: true }
   ];
 }
-function drawLegend(buf, view, ox, oy) {
-  const y = oy + FULL.rows.legend;
-  const main2 = mainName(view).toLowerCase();
+function drawLegend(buf, view, L) {
   const items = [
-    [3, theme.main, `${main2} \xB7 main`],
-    [23, theme.sub, `${main2} \xB7 subagents`],
-    [48, theme.advisor, `${advisorName(view).toLowerCase()} \xB7 advisor`],
-    [71, theme.metrics, "tools"]
+    [theme.main, `${mainName(view)} \xB7 lead`],
+    [theme.sub, `${builderName(view)} \xB7 build`],
+    [theme.metrics, "memories"],
+    [theme.notes, "notes"],
+    [theme.advisor, `${advisorName(view)} \xB7 advisor`]
   ];
-  for (const [x, color, label] of items) {
-    buf.put(ox + x, y, "\u25A0", color);
-    buf.text(ox + x + 2, y, label, theme.dim);
+  const used = items.reduce((sum, [, label]) => sum + cellLength(label) + 2, 0);
+  const gap = Math.max(1, Math.floor((L.width - used) / (items.length + 1)));
+  let x = gap;
+  for (const [color, label] of items) {
+    buf.put(x, L.rows.legend, "\u25A0", color);
+    x = buf.text(x + 2, L.rows.legend, label, theme.dim) + gap;
   }
 }
 var BREATH_DEPTH = 0.22;
-var panelBorder = (color, view) => mix(color, theme.panel, 0.2 + BREATH_DEPTH * (view.anim?.breath ?? 0));
-var SLOTS = [
-  { row: FULL.arrows.main, index: 0, empty: "before a plan" },
-  { row: FULL.arrows.cards, index: 1, empty: "after errors" },
-  { row: FULL.arrows.lead, index: 2, empty: "before done" }
-];
-function drawSlot(buf, x, row, consults, empty, inner, typing) {
-  const last = consults[consults.length - 1];
-  if (!last) {
-    buf.put(x, row, "\u25C7", theme.faint);
-    buf.text(x + 2, row, empty, theme.faint);
-    return;
-  }
-  buf.put(x, row, "\u25C6", last.isError ? theme.alert : theme.advisor, BOLD);
-  const times = consults.length > 1 ? ` x${consults.length}` : "";
-  const label = fit(`${last.reason}${times}`, inner - 2);
-  if (typing?.id === last.id && typing.chars < cellLength(label)) {
-    const end = buf.text(x + 2, row, [...label].slice(0, typing.chars).join(""), theme.text);
-    buf.put(end, row, "\u258C", theme.advisor);
-    return;
-  }
-  buf.text(x + 2, row, label, theme.text);
-  const detail = last.open ? "replying\u2026" : `${formatDuration(last.durationMs)} \xB7 ${formatTokens(last.tokensRead)}`;
-  buf.text(x + 2, row + 1, fit(detail, inner - 2), theme.dim);
+var panelBorder = (color, view) => mix(color, theme.panel, 0.12 + BREATH_DEPTH * (view.anim?.breath ?? 0));
+var MILESTONES = ["before work", "repeat failure", "before sign-off"];
+var fireCounts = (view) => {
+  const counts = [view.state.memory.loaded.length ? 1 : 0, 0, 0];
+  for (const touch of view.state.memory.touches) counts[memoryMilestone(view.state, touch)] += 1;
+  return counts;
+};
+function memoryScopeLabel(view) {
+  const { touches, loaded } = view.state.memory;
+  return touches[touches.length - 1]?.scope ?? loaded[0]?.scope ?? (view.illustrativeDemo ? "project" : "\u2014");
 }
-function drawAdvisorPanel(buf, view, r) {
-  const { advisor } = view.state;
+var blank = { text: "", color: theme.dim };
+var caption = (text) => ({ text, color: theme.dim });
+function projectStats(view) {
+  const { state } = view;
+  const { touches, loaded } = state.memory;
+  const last = touches[touches.length - 1];
+  const actor = last ? last.agentId ? agentLabel(state, last.agentId) : modelAlias(state.mainModel) : loaded.length ? "session" : "none yet";
+  const file = last?.file ?? loaded[0]?.file ?? "no files seen";
+  const files = /* @__PURE__ */ new Set([...touches.map((t) => t.file), ...loaded.map((l) => l.file)]);
+  const wrote = touches.some((t) => t.op === "write");
+  const toolsShown = Math.round(view.anim?.numbers?.toolCalls ?? state.toolCalls);
+  return {
+    memory: [
+      caption("agent memories:"),
+      { text: `\xBB ${toCells(actor)}`, color: theme.notes },
+      { text: `  ${toCells(file)}`, color: theme.notes }
+    ],
+    stats: [
+      { text: "agents", color: theme.dim, value: String(state.subagents.length) },
+      { text: "memories", color: theme.dim, value: String(files.size) },
+      { text: "tools", color: theme.dim, value: String(toolsShown) },
+      ...state.toolErrors ? [{ text: "errors", color: theme.alert, value: String(state.toolErrors) }] : [],
+      wrote || files.size ? { text: wrote ? "persistent" : "read so far", color: theme.notes, bold: true } : { text: "none seen", color: theme.faint }
+    ]
+  };
+}
+function drawPanelLines(buf, r, x, from, to, lines) {
+  const width = r.x + r.w - 1 - x;
+  lines.slice(0, Math.max(0, to - from)).forEach((line, i) => {
+    const y = from + i;
+    buf.text(x, y, fit(line.text, line.value ? width - cellLength(line.value) - 1 : width), line.color, line.bold ? BOLD : 0);
+    if (line.value) rightText(buf, r.x + r.w - 2, y, line.value, theme.text);
+  });
+}
+function drawProject(buf, view, L) {
+  const r = L.project;
+  const memoryPulse = view.anim?.memoryPulse;
+  box(buf, r, { color: panelBorder(theme.notes, view), fill: theme.panel });
+  const [m0, m1, m2] = L.milestones;
+  const inner = r.w - 2;
+  const left = r.x + 1;
+  const scope = [{ text: `memory: ${memoryScopeLabel(view)}`, color: theme.notes }];
+  if (m0 - r.y >= 3) {
+    centerText(buf, left, inner, r.y + 1, "PROJECT MEMORY", theme.notes, true);
+    centerSegments(buf, left, inner, r.y + 2, scope);
+  } else {
+    buf.text(left + 1, r.y, " PROJECT MEMORY ", theme.notes, BOLD);
+    centerSegments(buf, left, inner, r.y + 1, scope);
+  }
+  const lineX = left;
+  for (let y = m0 + 1; y < m2; y += 1) buf.put(lineX, y, "\u254E", theme.faint);
+  const text = lineX + 2;
+  const { memory, stats } = projectStats(view);
+  const firstSpace = m1 - m0 - 1;
+  const notesA = [caption("saved findings"), caption("loaded next time"), caption("check old notes"), caption("against the code")];
+  const notesB = [caption("per-agent notes"), caption("across sessions")];
+  const a = firstSpace >= 18 ? [blank, ...notesA, blank, blank, ...memory, blank, ...stats, blank, ...notesB] : [...memory, blank, ...stats, ...firstSpace >= stats.length + 7 ? [blank, ...notesB] : []];
+  drawPanelLines(buf, r, text, m0 + 1, m1, a);
+  const workflow = [caption("build then debug"), caption("review the diff"), caption("save what held"), caption(r.w >= 21 ? "recheck old notes" : "recheck notes")];
+  const secondSpace = m2 - m1 - 1;
+  drawPanelLines(buf, r, text, m1 + 1, m2, secondSpace >= 6 ? [blank, ...workflow] : workflow);
+  const counts = fireCounts(view);
+  L.milestones.forEach((row, slot) => {
+    const pulse = memoryPulse?.slot === slot ? memoryPulse.amount : 0;
+    const fired = (counts[slot] ?? 0) > 0;
+    if (pulse > 0) for (let x = left; x < r.x + r.w - 1; x += 1) buf.setBg(x, row, mix(theme.panel, theme.notes, 0.12 + pulse * 0.16));
+    buf.put(lineX, row, fired || pulse > 0 ? "\u25C6" : "\u25C7", mix(theme.notes, theme.subBright, pulse * 0.6), fired || pulse > 0 ? BOLD : 0);
+    buf.text(text, row, fit(MILESTONES[slot], r.w - 4), fired || pulse > 0 ? theme.text : mix(theme.notes, theme.bg, 0.15));
+  });
+}
+function dashedArrow(buf, y, from, to, color) {
+  for (let x = from; x < to; x += 1) buf.put(x, y, "\u2504", color);
+  buf.put(to, y, "\u25B8", color);
+}
+var lineColor = (active, color) => active ? mix(color, theme.bg, 0.3) : theme.line;
+function drawConnectors(buf, view, L) {
+  const { spine, cardCenters, main: main2, memory, lead, cards, rows } = L;
+  const { subagents } = view.state;
+  const hasSubagents = subagents.length > 0;
+  const anyDone = subagents.some((s) => !s.running);
+  const counts = fireCounts(view);
+  const edge = L.project.x + L.project.w;
+  const targets = [main2.x - 1, cards[0].x - 1, lead.x - 1];
+  L.milestones.forEach((row, slot) => {
+    const pulse = view.anim?.memoryPulse?.slot === slot ? view.anim.memoryPulse.amount : 0;
+    const base = (counts[slot] ?? 0) > 0 ? mix(theme.notes, theme.bg, 0.35) : mix(theme.notes, theme.bg, 0.68);
+    dashedArrow(buf, row, edge, targets[slot], mix(base, theme.notes, pulse));
+  });
+  const consulted = view.state.advisor.calls > 0;
+  dashedArrow(buf, L.advisorLink, main2.x + main2.w, L.advisor.x - 1, consulted ? mix(theme.advisor, theme.bg, 0.3) : mix(theme.advisor, theme.bg, 0.65));
+  const trunk = lineColor(view.connected, theme.main);
+  for (let y = main2.y + main2.h; y < memory.y; y += 1) buf.put(spine, y, "\u2502", trunk);
+  const busColor = lineColor(hasSubagents, theme.sub);
+  for (let y = memory.y + memory.h; y < rows.bus; y += 1) if (y !== rows.delegate) buf.put(spine, y, "\u2502", busColor);
+  const [c0, c1, c2] = cardCenters;
+  for (let x = c0; x <= c2; x += 1) buf.put(x, rows.bus, "\u2500", busColor);
+  buf.put(c0, rows.bus, "\u250C", busColor);
+  buf.put(c2, rows.bus, "\u2510", busColor);
+  buf.put(c1, rows.bus, "\u253C", busColor);
+  const backColor = lineColor(anyDone, theme.sub);
+  const cardBottom = cards[0].y + cards[0].h;
+  for (const center of cardCenters) for (let y = cardBottom; y < rows.merge; y += 1) buf.put(center, y, "\u2502", backColor);
+  for (let x = c0; x <= c2; x += 1) buf.put(x, rows.merge, "\u2500", backColor);
+  buf.put(c0, rows.merge, "\u2514", backColor);
+  buf.put(c2, rows.merge, "\u2518", backColor);
+  buf.put(c1, rows.merge, "\u253C", backColor);
+  for (let y = rows.merge + 1; y < lead.y; y += 1) buf.put(spine, y, "\u2502", backColor);
+}
+function drawArrows(buf, L) {
+  const cardRow = L.cardArrowRow ?? L.cards[0].y;
+  for (const center of L.cardCenters) buf.put(center, cardRow, "\u25BC", theme.sub);
+  buf.put(L.spine, L.leadArrowRow ?? L.lead.y, "\u25BC", theme.main);
+}
+function drawMainPanel(buf, view, r) {
+  const { state } = view;
+  box(buf, r, { color: panelBorder(theme.main, view), fill: theme.panel });
+  const inner = r.w - 2;
+  const left = r.x + 1;
+  centerSegments(buf, left, inner, r.y + 1, [
+    { text: mainName(view), color: theme.main },
+    { text: " \xB7 main session", color: theme.main }
+  ]);
+  const task = state.title ?? state.lastPrompt;
+  const active = isMainActive(view);
+  const activity = [
+    { text: mainActivity(view, active ? inner - 4 : inner - 2), color: state.status === "tool" ? theme.sub : theme.dim },
+    { text: active ? ` ${spinnerFrame(view.now)}` : "", color: theme.main }
+  ];
+  const line = (y, segments) => centerSegments(buf, left, inner, y, segments);
+  if (r.h >= 6) {
+    centerText(buf, left + 1, inner - 2, r.y + 2, task ? plainText(task) : "no task yet", task ? theme.text : theme.faint);
+    line(r.y + 3, effortSegments(state.effort));
+    line(r.y + 4, activity);
+  } else if (r.h === 5) {
+    centerText(buf, left + 1, inner - 2, r.y + 2, task ? plainText(task) : "no task yet", task ? theme.text : theme.faint);
+    line(r.y + 3, active || !view.connected ? activity : effortSegments(state.effort));
+  } else {
+    line(r.y + 2, active || !view.connected || state.ended ? activity : effortSegments(state.effort));
+  }
+}
+function drawAdvisorBox(buf, view, r) {
+  const { state } = view;
   const pulse = view.anim?.advisorPulse ?? 0;
   box(buf, r, {
-    color: mix(panelBorder(theme.advisor, view), theme.subBright, pulse * 0.75),
-    fill: mix(theme.panel, theme.advisor, pulse * 0.08),
-    halo: 0.35 + pulse * 0.9,
+    color: mix(panelBorder(theme.advisor, view), theme.subBright, pulse * 0.6),
+    dashed: true,
+    fill: mix(theme.panel, theme.advisor, pulse * 0.06),
+    halo: pulse * 0.3,
     bold: pulse > 0.5
   });
   const inner = r.w - 2;
   const left = r.x + 1;
-  centerText(buf, left, inner, r.y + 1, advisorName(view).toUpperCase(), theme.advisor, true);
-  centerText(buf, left, inner, r.y + 2, view.state.advisorModel ? "advisor \xB7 on call" : "advisor \xB7 not seen", theme.dim);
-  const chip = `[ --advisor ${modelAlias(view.state.advisorModel)} ]`;
-  buf.fill(left + 1, r.y + 3, inner - 2, 1, theme.chip);
-  centerText(buf, left + 1, inner - 2, r.y + 3, chip, theme.dim);
-  const lineX = left;
-  const textWidth = inner - 2;
-  for (let y2 = r.y + 4; y2 < r.y + r.h - 1; y2 += 1) buf.put(lineX, y2, "\u254E", theme.faint);
-  for (const slot of SLOTS) {
-    drawSlot(buf, lineX, slot.row, advisor.consults.filter((c) => consultSlot(c.reason) === slot.index), slot.empty, textWidth + 1, view.anim?.typingConsult);
-  }
-  const text = lineX + 2;
-  let y = FULL.arrows.main + 3;
-  for (const line of ["reads the whole", "session, every", "tool call and", "result"]) {
-    buf.text(text, y, line, theme.dim);
-    y += 1;
-  }
-  y = 17;
-  const last = advisor.consults.filter((c) => !c.open).pop();
-  buf.text(text, y, "last consult:", theme.dim);
-  if (last) {
-    buf.text(text, y + 1, fit(`sealed \xB7 ${formatDuration(last.durationMs)}`, textWidth), theme.alert);
-    buf.text(text, y + 2, fit(`${formatTokens(last.tokensRead)} read`, textWidth), theme.alert);
-    buf.text(text, y + 3, fit(`${formatTokens(last.tokensWritten)} written`, textWidth), theme.alert);
-  } else {
-    buf.text(text, y + 1, "none yet", theme.faint);
-  }
-  const stat = (row, label, value) => {
-    buf.text(text, row, label, theme.dim);
-    rightText(buf, r.x + r.w - 3, row, value, theme.text, true);
-  };
-  const numbers = view.anim?.numbers;
-  stat(22, "calls", String(Math.round(numbers?.calls ?? advisor.calls)));
-  stat(23, "tokens read", formatTokens(Math.round(numbers?.tokensRead ?? advisor.tokensRead)));
-  stat(24, "routine turns", String(Math.round(numbers?.routineTurns ?? advisor.routineTurns)));
-  const followUp = last?.followUp;
-  buf.text(text, 29, `then ${mainName(view).toLowerCase()}:`, theme.dim);
-  if (followUp) {
-    wrap(plainText(followUp), textWidth, 4).forEach((line, i) => buf.text(text, 30 + i, line, theme.dim));
-  } else {
-    buf.text(text, 30, "\u2014", theme.faint);
-  }
-}
-function dashedArrow(buf, y, from, to, color) {
-  for (let x = from; x < to; x += 1) buf.put(x, y, "\u254C", color);
-  buf.put(to, y, "\u25B8", color);
-}
-function drawConnectors(buf, view) {
-  const { arrows, spine, cardCenters, metrics, main: main2, lead } = FULL;
-  const { advisor, subagents } = view.state;
-  const hasSubagents = subagents.length > 0;
-  const anyDone = subagents.some((s) => !s.running);
-  const edge = FULL.advisor.x + FULL.advisor.w;
-  const lit = (slot) => advisor.consults.some((c) => consultSlot(c.reason) === slot);
-  const arrowColor = (slot) => lit(slot) ? theme.advisor : mix(theme.advisor, theme.bgEdge, 0.6);
-  dashedArrow(buf, arrows.main, edge, main2.x - 1, arrowColor(0));
-  dashedArrow(buf, arrows.cards, edge, FULL.cards[0].x - 1, arrowColor(1));
-  dashedArrow(buf, arrows.lead + 1, edge, lead.x - 1, arrowColor(2));
-  buf.put(spine, main2.y + main2.h, "\u2503", theme.main);
-  const busColor = hasSubagents ? theme.sub : mix(theme.sub, theme.bgEdge, 0.65);
-  buf.put(spine, metrics.y + metrics.h, "\u2503", mix(theme.metrics, busColor, 0.5));
-  const top = FULL.rows.delegate + 1;
-  const [c0, c1, c2] = cardCenters;
-  for (let x = c0; x <= c2; x += 1) buf.put(x, top, "\u2501", busColor, BOLD);
-  buf.put(c0, top, "\u250F", busColor, BOLD);
-  buf.put(c2, top, "\u2513", busColor, BOLD);
-  buf.put(c1, top, "\u254B", busColor, BOLD);
-  for (const center of cardCenters) buf.put(center, top + 1, "\u25BC", busColor);
-  const bright = anyDone ? theme.subBright : mix(theme.sub, theme.bgEdge, 0.65);
-  const back = FULL.cards[0].y + FULL.cards[0].h;
-  for (const center of cardCenters) buf.put(center, back, "\u2503", bright, BOLD);
-  for (let x = c0; x <= c2; x += 1) buf.put(x, back + 1, "\u2501", bright, BOLD);
-  buf.put(c0, back + 1, "\u2517", bright, BOLD);
-  buf.put(c2, back + 1, "\u251B", bright, BOLD);
-  buf.put(c1, back + 1, "\u254B", bright, BOLD);
-  for (let y = back + 2; y < lead.y; y += 1) buf.put(spine, y, "\u2503", bright, BOLD);
-  const glow = view.anim?.leadGlow ?? 0;
-  if (anyDone) {
-    for (let x = c0; x <= c2; x += 1) buf.tintBg(x, back + 1, theme.sub, 0.08 + glow * 0.15);
-    for (let y = back; y < lead.y; y += 1) {
-      buf.tintBg(spine, y, theme.sub, 0.1 + glow * 0.25);
-      buf.tintBg(spine - 1, y, theme.sub, 0.06 + glow * 0.15);
-      buf.tintBg(spine + 1, y, theme.sub, 0.06 + glow * 0.15);
-    }
-  }
-}
-function drawMainPanel(buf, view, r) {
-  const { state } = view;
-  box(buf, r, { color: panelBorder(theme.main, view), fill: theme.panel, halo: 0.4 });
-  const inner = r.w - 2;
-  const left = r.x + 1;
-  centerSegments(buf, left, inner, r.y + 1, [
-    { text: mainName(view), color: theme.main, bold: true },
-    { text: " \xB7 main session", color: theme.text }
-  ]);
-  const task = state.title ?? state.lastPrompt;
-  centerText(buf, left, inner - 2, r.y + 2, task ? plainText(task) : "no task yet", task ? theme.text : theme.faint);
-  centerSegments(buf, left, inner, r.y + 3, [
-    { text: "effort ", color: theme.dim },
-    { text: effortMeter(state.effort), color: theme.main },
-    { text: ` ${state.effort ?? "\u2014"}`, color: theme.dim }
-  ]);
-  const active = view.connected && !state.ended && state.status !== "idle";
-  const activity = mainActivity(view, inner - 10);
-  buf.fill(left + 1, r.y + 4, inner - 2, 1, theme.chip);
-  centerSegments(buf, left + 1, inner - 2, r.y + 4, [
-    { text: "[ ", color: theme.faint },
-    { text: activity, color: state.status === "tool" ? theme.metrics : theme.dim },
-    { text: active ? `  ${spinnerFrame(view.now)}` : "", color: theme.main },
-    { text: " ]", color: theme.faint }
-  ]);
-}
-function drawAdvisorState(buf, view, r) {
-  const { state } = view;
-  box(buf, r, { color: panelBorder(theme.advisor, view), dashed: true, fill: theme.panel, halo: 0.25 });
-  centerText(buf, r.x + 1, r.w - 2, r.y + 1, "ADVISOR", theme.advisor, true);
   const replaying = state.advisor.consults.some((c) => c.open);
-  const row = (y, label, value, color = theme.text) => {
-    buf.text(r.x + 1, y, label, theme.dim);
-    const shown = fit(value, r.w - 8);
-    rightText(buf, r.x + r.w - (cellLength(shown) > r.w - 9 ? 2 : 3), y, shown, color, true);
-  };
-  row(r.y + 2, "model", advisorName(view).toLowerCase());
-  row(r.y + 3, "mode", state.advisorEnabled || state.advisorModel ? "on call" : "off");
-  row(r.y + 4, "state", replaying ? "replaying" : "silent", replaying ? theme.advisor : theme.text);
+  const enabled = state.advisorEnabled || Boolean(advisorModelOf(view));
+  const status = replaying ? "replaying" : enabled ? "silent" : "off";
+  const statusColor = replaying ? theme.advisor : theme.dim;
+  const numbers = view.anim?.numbers;
+  const calls = String(Math.round(numbers?.calls ?? state.advisor.calls));
+  const tokens = formatTokens(Math.round(numbers?.tokensRead ?? state.advisor.tokensRead));
+  const shortStatus = replaying ? status : `${status} \xB7 ${calls}`;
+  centerText(buf, left, inner, r.y + 1, "ADVISOR", theme.advisor, true);
+  if (r.h >= 6) {
+    centerText(buf, left, inner, r.y + 2, advisorName(view).toLowerCase(), theme.text);
+    centerText(buf, left, inner, r.y + 3, status, statusColor, replaying);
+    centerText(buf, left, inner, r.y + 4, `${calls} \xB7 ${tokens}`, theme.dim);
+  } else if (r.h === 5) {
+    centerText(buf, left, inner, r.y + 2, advisorName(view).toLowerCase(), theme.text);
+    centerText(buf, left, inner, r.y + 3, shortStatus, statusColor, replaying);
+  } else {
+    centerText(buf, left, inner, r.y + 2, shortStatus, statusColor, replaying);
+  }
 }
-function drawMetrics(buf, view, r) {
+function memoryRows(view, count) {
   const { state } = view;
-  box(buf, r, { color: panelBorder(theme.metrics, view), fill: theme.panel, halo: 0.3 });
+  const slots = cardSlots(view, count);
+  const shown = (id) => view.anim?.numbers?.memory[id] ?? state.memory.touches.filter((t) => t.agentId === id).length;
+  const ids = slots.map((slot) => slot.sub?.id).filter((id) => id !== void 0);
+  const max = Math.max(1, ...ids.map(shown));
+  const rows = [];
+  for (let i = 0; i < count; i += 1) {
+    const sub = slots[i]?.sub;
+    const example = view.anim?.illustrative?.memory[i];
+    const name = sub ? sub.agentType || sub.description ? agentLabel(state, sub.id) : "starting\u2026" : "\u2014";
+    if (sub && example) {
+      const check2 = example.label === "check";
+      rows.push({ name, fraction: example.fraction, label: example.label, labelColor: check2 ? theme.main : theme.metrics, barColor: check2 ? theme.main : theme.barGood });
+      continue;
+    }
+    if (!sub) {
+      rows.push({ name: "\u2014", fraction: 0, label: "", labelColor: theme.faint, barColor: theme.barGood });
+      continue;
+    }
+    const own = state.memory.touches.filter((t) => t.agentId === sub.id);
+    const last = own[own.length - 1];
+    const label = last ? memoryLabel(state, last) : "no memory";
+    const check = label === "check";
+    rows.push({ name, fraction: shown(sub.id) / max, label, labelColor: last ? check ? theme.main : theme.metrics : theme.faint, barColor: check ? theme.main : theme.barGood });
+  }
+  return rows;
+}
+function drawAgentMemory(buf, view, r) {
+  const { state } = view;
+  box(buf, r, { color: panelBorder(theme.metrics, view), fill: theme.panel });
   const left = r.x + 2;
   const right = r.x + r.w - 3;
-  const toolRunning = view.connected && (state.status === "tool" || state.subagents.some((s) => s.currentTool));
-  writeSegments(buf, left, r.y + 1, [
-    { text: "TOOLS", color: theme.metrics, bold: true },
-    { text: " \xB7 real distribution", color: theme.metrics },
-    { text: toolRunning ? `  [ ${spinnerFrame(view.now, 140)} ]` : "", color: theme.metrics }
-  ]);
-  const numbers = view.anim?.numbers;
-  const totalCalls = String(Math.round(numbers?.toolCalls ?? state.toolCalls));
-  rightText(buf, right, r.y + 1, totalCalls, theme.metrics, true);
-  rightText(buf, right - cellLength(totalCalls) - 1, r.y + 1, "calls", theme.dim);
-  const sorted = Object.entries(state.tools).sort((a, b) => b[1].count - a[1].count || a[0].localeCompare(b[0]));
-  const top = sorted.slice(0, 3);
-  const countOf = (name, real) => numbers?.tools[name] ?? real;
-  const max = Math.max(1, ...top.map(([name, stat]) => countOf(name, stat.count)));
+  const rows = memoryRows(view, 3);
+  const withMemory = view.illustrativeDemo ? state.subagents.length : new Set(state.memory.touches.map((t) => t.agentId).filter(Boolean)).size;
+  const roles = [
+    { text: "roles  ", color: theme.dim },
+    { text: `${Math.min(withMemory, state.subagents.length)} / ${state.subagents.length}`, color: theme.metrics }
+  ];
+  const footerText = view.illustrativeDemo ? "memory \xB7 illustrative activity" : "memory \xB7 real tool calls";
+  let y = r.y + 1;
+  if (r.h >= 6) {
+    buf.text(left, y, "AGENT MEMORY", theme.metrics, BOLD);
+    writeSegments(buf, right - segmentsWidth(roles) + 1, y, roles);
+    y += 1;
+  } else {
+    buf.text(left, r.y, " AGENT MEMORY ", theme.metrics, BOLD);
+    writeSegments(buf, right - segmentsWidth(roles), r.y, [{ text: " ", color: theme.dim }, ...roles, { text: " ", color: theme.dim }]);
+  }
   const barX = left + 15;
-  const barWidth = 17;
-  top.forEach(([name, stat], i) => {
-    const y = r.y + 2 + i;
-    const failed = stat.errors > 0;
-    const shown = countOf(name, stat.count);
-    buf.text(left, y, fit(toCells(name), 14), failed ? theme.alert : theme.text);
-    thinBar(buf, barX, y, barWidth, shown / max, failed ? theme.barAlert : theme.barGood);
-    rightText(buf, barX + barWidth + 3, y, String(Math.round(shown)), theme.text);
-    if (failed) rightText(buf, right, y, `${stat.errors} err`, theme.alert);
+  const barWidth = Math.min(10, r.w - 28);
+  rows.forEach((row, i) => {
+    buf.text(left, y + i, fit(toCells(row.name), 14), row.name === "\u2014" ? theme.faint : theme.text);
+    bar(buf, barX, y + i, barWidth, row.fraction, row.barColor);
+    if (row.label) buf.text(barX + barWidth + 2, y + i, fit(row.label, right - barX - barWidth - 1), row.labelColor);
   });
-  if (top.length === 0) buf.text(left, r.y + 2, "no tool calls yet", theme.faint);
-  const rest = sorted.slice(3);
-  const footer = rest.length ? `+ ${rest.map(([name, stat]) => `${name} ${stat.count}`).join(" \xB7 ")}` : state.toolErrors > 0 ? `${state.toolErrors} failed \xB7 orange = had errors` : "green = no errors \xB7 orange = had errors";
-  buf.text(left, r.y + 5, fit(toCells(footer), r.w - 4), theme.dim);
+  if (r.h >= 7) buf.text(left, r.y + r.h - 2, footerText, theme.caption);
+  else buf.text(left, r.y + r.h - 1, ` ${footerText} `, theme.caption);
 }
 var toolsLabel = (count) => `${count} ${count === 1 ? "tool" : "tools"}`;
 var GROW_SHARE = 0.6;
 var FILL_SHARE = 0.4;
-var DONE_DIM = 0.38;
+var DONE_DIM = 0.2;
 function drawGrowingBox(buf, r, grow) {
   const k = easeOutCubic(segment(grow, 0, GROW_SHARE));
   const w = Math.max(3, Math.round(r.w * k));
   const h = Math.max(3, Math.round(r.h * k));
   const rect = { x: r.x + Math.floor((r.w - w) / 2), y: r.y + Math.floor((r.h - h) / 2), w, h };
-  box(buf, rect, { color: mix(theme.bgEdge, theme.subBright, k), fill: theme.panel, halo: 0.5 * k, bold: true });
+  box(buf, rect, { color: mix(theme.bg, theme.sub, k), fill: theme.panel, halo: 0.5 * k });
 }
 function fadeArea(buf, r, toward, amount) {
   if (amount <= 0) return;
@@ -1649,10 +1923,10 @@ function fadeArea(buf, r, toward, amount) {
     for (let x = r.x; x < r.x + r.w; x += 1) buf.tintFg(x, y, toward, amount);
   }
 }
-function drawCard(buf, r, sub, index, view, card) {
+function drawCard(buf, r, sub, slot, view, card) {
   if (!sub) {
-    box(buf, r, { color: mix(theme.sub, theme.bgEdge, 0.72), dashed: true, fill: mix(theme.panel, theme.bgEdge, 0.4) });
-    centerText(buf, r.x + 1, r.w - 2, r.y + 3, "no subagent", mix(theme.dim, theme.bgEdge, 0.45));
+    box(buf, r, { color: mix(theme.sub, theme.bg, 0.72), dashed: true, fill: theme.panel });
+    centerText(buf, r.x + 1, r.w - 2, r.y + Math.floor(r.h / 2), "no subagent", theme.faint);
     return;
   }
   const grow = card?.grow ?? 1;
@@ -1661,33 +1935,73 @@ function drawCard(buf, r, sub, index, view, card) {
     drawGrowingBox(buf, r, grow);
     return;
   }
+  const index = view.state.subagents.indexOf(sub);
   const failed = sub.status !== void 0 && sub.status !== "completed";
-  const color = failed ? theme.alert : sub.running ? theme.subBright : theme.sub;
-  box(buf, r, { color, fill: theme.panel, halo: sub.running ? 0.3 : 0.15, bold: true });
+  const pulse = view.anim?.memoryPulse?.card === slot ? view.anim.memoryPulse.amount : 0;
+  const base = failed ? theme.alert : sub.running ? theme.sub : mix(theme.sub, theme.bg, 0.15);
+  box(buf, r, { color: mix(base, theme.notes, pulse), fill: theme.panel, halo: pulse * 0.35, bold: pulse > 0.3 });
   const inner = r.w - 2;
   const left = r.x + 1;
-  const name = sub.description || sub.agentType ? plainText(subagentName(view.state, sub.id)) : "starting\u2026";
-  const label = fit(`${String(index + 1).padStart(2, "0")} ${(sub.agentType ?? "agent").toLowerCase()}`, inner - 2);
-  const chipEnd = left + cellLength(label) + 2;
-  for (let x = left; x < chipEnd; x += 1) buf.setBg(x, r.y, mix(theme.panel, theme.sub, sub.running ? 0.3 : 0.12));
-  buf.text(left, r.y, ` ${label} `, sub.running ? theme.subBright : theme.dim);
-  centerText(buf, left + 1, inner - 2, r.y + 1, name, theme.text, true);
-  const tags = sub.model ? [{ text: displayModel(sub.model), color: theme.main }] : [];
-  if (sub.running) tags.push({ text: `${sub.model ? " " : ""}[ ${spinnerFrame(view.now + index * 40)} ]`, color: theme.sub });
-  centerSegments(buf, left, inner, r.y + 2, tags);
-  const barX = left + 1;
-  const barWidth = inner - 2;
-  if (sub.running) indeterminateBar(buf, barX, r.y + 3, barWidth, view.now / 1800 + index * 0.27, theme.barSub);
-  else bar(buf, barX, r.y + 3, barWidth, easeOutCubic(segment(fade, 0, FILL_SHARE)), failed ? theme.barAlert : theme.barSub);
-  const detail = sub.running ? `tools: ${sub.toolCount}${sub.currentTool ? ` \xB7 ${sub.currentTool}` : ""}` : `${toolsLabel(sub.toolCount)}${sub.durationMs !== void 0 ? ` \xB7 ${formatDuration(sub.durationMs)}` : ""}`;
-  centerText(buf, left, inner, r.y + 4, detail, failed ? theme.alert : theme.sub);
-  const status = sub.running ? ["\u25D0", "\u25D3", "\u25D1", "\u25D2"][Math.floor(view.now / 160 + index) % 4] : failed ? "\u2715" : "\u25CF";
-  const tokens = !sub.running && sub.totalTokens !== void 0 ? ` ${formatTokens(sub.totalTokens)}` : "";
-  centerSegments(buf, left, inner, r.y + 5, [
-    { text: status, color: failed ? theme.alert : theme.sub },
-    { text: tokens, color: theme.sub },
-    { text: sub.readOnly ? " read-only" : "", color: theme.dim }
-  ]);
+  const name = sub.agentType || sub.description ? agentLabel(view.state, sub.id) : "starting\u2026";
+  const model = displayModel(sub.model);
+  const role = sub.description ? plainText(subagentName(view.state, sub.id)) : sub.agentType ?? "";
+  const percent = view.anim?.illustrative?.percents[slot];
+  const drawBar = (y) => {
+    const right = percent !== void 0 && sub.running ? `${Math.round(percent)}%` : toolsLabel(sub.toolCount);
+    const barX = left + 1;
+    const width = Math.max(4, inner - 3 - cellLength(right));
+    if (percent !== void 0 && sub.running) bar(buf, barX, y, width, percent / 100, theme.barSub);
+    else if (sub.running) indeterminateBar(buf, barX, y, width, view.now / 1800 + index * 0.27, theme.barSub);
+    else bar(buf, barX, y, width, easeOutCubic(segment(fade, 0, FILL_SHARE)), failed ? theme.barAlert : theme.barSub);
+    rightText(buf, r.x + r.w - 2, y, right, theme.dim);
+  };
+  const statusLine = (y) => {
+    const segments = sub.running ? [
+      { text: `${discFrame(view.now, index)} `, color: theme.sub },
+      { text: "running", color: theme.sub },
+      { text: sub.currentTool ? ` \xB7 ${sub.currentTool}` : "", color: theme.dim }
+    ] : failed ? [{ text: "\u2715 failed", color: theme.alert }] : [
+      { text: "\u2713 ", color: theme.metrics },
+      { text: "done", color: theme.metrics },
+      { text: sub.durationMs !== void 0 ? ` \xB7 ${formatDuration(sub.durationMs)}` : "", color: theme.dim }
+    ];
+    const width = segmentsWidth(segments);
+    if (width <= inner) centerSegments(buf, left, inner, y, segments);
+    else centerSegments(buf, left, inner, y, segments.slice(0, 2));
+  };
+  const nameLine = (y, withModel) => {
+    if (withModel) {
+      const fitsFull = cellLength(name) + cellLength(model) + 3 <= inner;
+      const shownModel = fitsFull ? model : modelAlias(sub.model);
+      centerSegments(buf, left, inner, y, [
+        { text: fit(toCells(name), Math.max(4, inner - cellLength(shownModel) - 3)), color: theme.text, bold: true },
+        { text: " \xB7 ", color: theme.dim },
+        { text: shownModel, color: theme.sub }
+      ]);
+    } else {
+      const tag = sub.readOnly && cellLength(name) + 10 <= inner ? " read-only" : "";
+      centerSegments(buf, left, inner, y, [
+        { text: fit(toCells(name), inner - cellLength(tag)), color: theme.text, bold: true },
+        { text: tag, color: theme.dim }
+      ]);
+    }
+  };
+  if (r.h >= 7) {
+    nameLine(r.y + 1, false);
+    centerText(buf, left, inner, r.y + 2, model, theme.sub);
+    drawBar(r.y + 3);
+    centerText(buf, left + 1, inner - 2, r.y + 4, role, theme.text);
+    statusLine(r.y + 5);
+  } else if (r.h === 6) {
+    nameLine(r.y + 1, true);
+    drawBar(r.y + 2);
+    centerText(buf, left + 1, inner - 2, r.y + 3, role, theme.text);
+    statusLine(r.y + 4);
+  } else {
+    nameLine(r.y + 1, true);
+    drawBar(r.y + 2);
+    statusLine(r.y + 3);
+  }
   const appear = segment(grow, GROW_SHARE, 1);
   if (appear < 1) fadeArea(buf, { x: r.x + 1, y: r.y, w: r.w - 2, h: r.h - 1 }, theme.panel, 1 - appear);
   fadeArea(buf, r, theme.panel, DONE_DIM * easeInOutCubic(segment(fade, FILL_SHARE, 1)));
@@ -1701,134 +2015,160 @@ function cardSlots(view, count) {
   const picked = [...running.slice(-count), ...done.slice(-Math.max(0, count - running.length))];
   return subagents.filter((s) => picked.includes(s)).map((sub) => ({ sub }));
 }
-function drawDelegate(buf, view, y, x, width) {
+function drawDelegate(buf, view, L) {
   const { subagents } = view.state;
   const active = subagents.filter((s) => s.running).length;
-  centerSegments(buf, x, width, y, [
-    { text: "delegate to subagents", color: subagents.length ? theme.text : theme.dim },
-    { text: " \xB7 ", color: theme.dim },
-    { text: mainName(view).toLowerCase(), color: theme.main, bold: true },
-    { text: `  [ ${active} / ${subagents.length} ]`, color: theme.dim },
-    { text: active > 0 ? ` ${spinnerFrame(view.now, 110)}` : "", color: theme.sub }
-  ]);
+  const text = "delegate to subagents";
+  const x = L.spine - (cellLength(text) >> 1);
+  buf.text(x, L.rows.delegate, text, subagents.length ? theme.text : theme.dim);
+  if (active > 0) buf.put(x + cellLength(text) + 1, L.rows.delegate, spinnerFrame(view.now, 110), theme.sub);
 }
 function drawLead(buf, view, r) {
-  const done = view.state.subagents.filter((s) => !s.running);
+  const { subagents } = view.state;
+  const done = subagents.filter((s) => !s.running);
   const glow = view.anim?.leadGlow ?? 0;
+  const pulse = view.anim?.memoryPulse?.slot === 2 && view.anim.memoryPulse.card === void 0 ? view.anim.memoryPulse.amount : 0;
   box(buf, r, {
-    color: done.length ? theme.subBright : mix(mix(theme.sub, theme.bgEdge, 0.5), theme.subBright, glow),
-    fill: mix(theme.panel, theme.sub, glow * 0.14),
-    halo: (done.length ? 0.5 : 0.1) + glow * 0.9,
-    bold: true
+    color: mix(mix(panelBorder(theme.main, view), theme.subBright, glow * 0.8), theme.notes, pulse),
+    fill: mix(theme.panel, theme.sub, glow * 0.1),
+    halo: glow * 0.35 + pulse * 0.35,
+    bold: glow > 0.3 || pulse > 0.3
   });
-  centerSegments(buf, r.x + 1, r.w - 2, r.y + 1, [
-    { text: "back to ", color: theme.text },
-    { text: mainName(view), color: theme.main, bold: true },
-    { text: " \xB7 lead", color: theme.text }
-  ]);
-  const latest = done[done.length - 1];
-  const summary = latest?.summary ? `${done.length} back \xB7 ${plainText(latest.summary)}` : "no summaries yet";
-  centerText(buf, r.x + 2, r.w - 4, r.y + 2, summary, latest ? theme.dim : theme.faint);
+  const title = [
+    { text: "back to ", color: theme.main },
+    { text: mainName(view), color: theme.main },
+    { text: " \xB7 lead", color: theme.main }
+  ];
+  const left = r.x + 1;
+  const inner = r.w - 2;
+  if (r.h >= 4) {
+    centerSegments(buf, left, inner, r.y + 1, title);
+    const latest = done[done.length - 1];
+    const summary = latest?.summary ? `${done.length} back \xB7 ${plainText(latest.summary)}` : "integrate + verify";
+    centerText(buf, left + 1, inner - 2, r.y + 2, summary, latest ? theme.text : theme.dim);
+  } else {
+    centerSegments(buf, left, inner, r.y + 1, [...title, { text: subagents.length ? ` \xB7 ${done.length}/${subagents.length}` : "", color: theme.dim }]);
+  }
 }
 var LOG_SLIDE_MS = 260;
 var LOG_SLIDE_CELLS = 8;
 var LOG_TYPE_MS = 600;
 var LOG_TYPE_MIN_RATE = 0.05;
 function drawLog(buf, view, r) {
-  box(buf, r, { color: mix(theme.main, theme.panel, 0.55), fill: mix(theme.panel, theme.bgEdge, 0.3) });
+  box(buf, r, { color: theme.line, fill: theme.panel });
+  buf.put(r.x + 3, r.y, "\u2524", theme.line);
+  const end = buf.text(r.x + 4, r.y, " session log ", theme.dim);
+  buf.put(end, r.y, "\u251C", theme.line);
   const live = view.replay ? view.replay.paused ? "paused" : view.replay.finished ? "replay end" : `replay x${view.replay.speed}` : view.connected ? "live" : "idle";
-  writeSegments(buf, r.x + 3, r.y, [
-    { text: " session log ", color: theme.text },
-    { text: `[ ${live} \xB7 ${spinnerFrame(view.now, 200)} ] `, color: theme.dim }
-  ]);
+  rightText(buf, r.x + r.w - 3, r.y, ` ${live} \xB7 ${spinnerFrame(view.now, 200)} `, theme.faint);
   const rows = r.h - 2;
   const entries = view.log.slice(-rows);
+  const textWidth = r.w - 24;
   entries.forEach((entry, i) => {
     const y = r.y + 1 + i;
-    const text = fit(toCells(entry.text), r.w - 27);
+    const text = fit(toCells(entry.text), textWidth);
     const age = entry.bornAt === void 0 ? Number.POSITIVE_INFINITY : Math.max(0, view.now - entry.bornAt);
     const slide = Math.round((1 - easeOutCubic(age / LOG_SLIDE_MS)) * LOG_SLIDE_CELLS);
     const headFade = 1 - easeOutCubic(age / LOG_SLIDE_MS);
     const length = cellLength(text);
     const typed = age === Number.POSITIVE_INFINITY ? length : Math.min(length, Math.floor(age * Math.max(LOG_TYPE_MIN_RATE, length / LOG_TYPE_MS)));
-    const fadeTo = mix(theme.panel, theme.bgEdge, 0.3);
-    buf.text(r.x + 2 + slide, y, formatClock(entry.t), mix(theme.faint, fadeTo, headFade));
-    buf.text(r.x + 11 + slide, y, fit(toCells(entry.who), 13), mix(KIND_COLOR2[entry.kind], fadeTo, headFade));
-    const end = buf.text(r.x + 25 + slide, y, [...text].slice(0, typed).join(""), entry.kind === "error" ? theme.alert : theme.text);
-    if (typed < length && end < r.x + r.w - 1) buf.put(end, y, "\u258C", KIND_COLOR2[entry.kind]);
+    const visible = Math.min(typed, Math.max(0, textWidth - slide));
+    buf.text(r.x + 2 + slide, y, formatElapsed(entry.t, view.state.startedAt), mix(theme.dim, theme.panel, headFade));
+    buf.text(r.x + 11 + slide, y, fit(toCells(entry.who), 10), mix(KIND_COLOR2[entry.kind], theme.panel, headFade));
+    const tail = buf.text(r.x + 22 + slide, y, [...text].slice(0, visible).join(""), entry.kind === "error" ? theme.alert : theme.text);
+    if (typed < length && tail < r.x + r.w - 1) buf.put(tail, y, "\u258C", KIND_COLOR2[entry.kind]);
   });
   if (entries.length === 0) buf.text(r.x + 2, r.y + 1, "nothing yet", theme.faint);
 }
-function drawPrompt(buf, view, y, x, width) {
+function drawPrompt(buf, view, y, x, width, note) {
   const { state } = view;
-  const main2 = modelAlias(state.mainModel);
-  const adv = modelAlias(state.advisorModel);
   const end = writeSegments(buf, x + 1, y, [
-    { text: `${fit(toCells(folderName(state.cwd)), 18)} $ `, color: theme.main, bold: true },
+    { text: `${fit(toCells(folderName(state.cwd)), 18)} $ `, color: theme.metrics, bold: true },
     { text: "claude", color: theme.text },
-    { text: " --model ", color: theme.dim },
-    { text: main2, color: theme.main },
-    { text: " --advisor ", color: theme.dim },
-    { text: adv, color: theme.advisor },
+    { text: " --model ", color: theme.text },
+    { text: modelAlias(mainModelOf(view)), color: theme.text },
+    { text: " --advisor ", color: theme.text },
+    { text: modelAlias(advisorModelOf(view)), color: theme.text },
     { text: " ", color: theme.text }
   ]);
-  if (Math.floor(view.now / 530) % 2 === 0) buf.put(end, y, "\u2588", theme.text);
-  rightText(buf, x + width - 2, y, "reconstructed, not literal", theme.faint);
+  if (Math.floor(view.now / 530) % 2 === 0) buf.put(end, y, "\u2588", theme.metrics);
+  const label = note ?? (view.illustrativeDemo ? "demo: % and memory are illustrative" : "reconstructed, not literal");
+  if (end + cellLength(label) + 3 < x + width) rightText(buf, x + width - 2, y, label, view.illustrativeDemo && !note ? theme.caption : theme.faint);
 }
 function drawStatus(buf, view, y, x, width) {
-  const chipWidth = Math.floor(width * 0.42);
-  buf.fill(x + 1, y, chipWidth, 1, theme.chip);
-  buf.text(x + 2, y, fit(`# ${toCells(view.queue.last ?? "no events yet")}`, chipWidth - 2), theme.dim);
-  const squares = view.queue.pending.slice(0, 16);
-  squares.forEach((kind, i) => buf.put(x + chipWidth + 3 + i, y, "\u25A0", KIND_COLOR2[kind]));
-  rightText(buf, x + width - 2, y, `${view.queue.pending.length} queued`, theme.dim);
+  const { state } = view;
+  const { subagents, memory } = state;
+  const active = subagents.filter((s) => s.running).length;
+  const bracket = (label, value, color) => [
+    { text: `${label} `, color: theme.dim },
+    { text: "[", color },
+    { text: value, color },
+    { text: "] ", color }
+  ];
+  const replaying = state.advisor.consults.some((c) => c.open);
+  const hasMemory = memory.touches.length > 0 || memory.loaded.length > 0 || view.illustrativeDemo;
+  const groups = [
+    bracket(mainName(view), state.ended ? "ended" : isMainActive(view) ? "lead" : "idle", theme.main),
+    bracket("subagents", `${subagents.length - active}/${subagents.length}`, theme.sub),
+    bracket("memories", hasMemory ? memoryScopeLabel(view) : "none", theme.metrics),
+    bracket(builderName(view), active ? "building" : "idle", theme.sub),
+    bracket(advisorName(view), replaying ? "replaying" : "silent", theme.advisor)
+  ];
+  const pending = view.queue.pending.length;
+  const queued = `${pending} queued`;
+  const room = width - cellLength(queued) - 4;
+  const segments = [];
+  for (const group of groups) {
+    if (segmentsWidth(segments) + segmentsWidth(group) > room) break;
+    segments.push(...group);
+  }
+  const end = writeSegments(buf, x + 1, y, segments);
+  view.queue.pending.slice(0, Math.max(0, x + width - cellLength(queued) - 4 - end)).forEach((kind, i) => buf.put(end + i, y, "\u25A0", KIND_COLOR2[kind]));
+  rightText(buf, x + width - 2, y, queued, theme.dim);
 }
 function flashPanel(buf, r, amount) {
   for (let y = r.y; y < r.y + r.h; y += 1) {
     for (let x = r.x; x < r.x + r.w; x += 1) {
-      buf.blendBg(x, y, theme.alert, amount * 0.26);
+      buf.blendBg(x, y, theme.alert, amount * 0.22);
       const onBorder = x === r.x || x === r.x + r.w - 1 || y === r.y || y === r.y + r.h - 1;
       if (onBorder) buf.tintFg(x, y, theme.alert, amount);
     }
   }
 }
-function renderFull(buf, view) {
-  buf.originX = Math.floor((buf.width - FULL_COLS) / 2);
-  buf.originY = Math.floor((buf.height - FULL_ROWS) / 2);
-  const target = buf;
-  const { rows } = FULL;
-  drawWindowBar(target, view, rows.windowBar, FULL_COLS, 0);
-  centerSegments(target, 0, FULL_COLS, rows.header, headerSegments(view));
-  for (let x = 2; x <= 93; x += 1) target.put(x, rows.separator, "\u2500", mix(theme.main, theme.bgEdge, 0.6));
-  drawLegend(target, view, 0, 0);
-  drawConnectors(target, view);
-  drawAdvisorPanel(target, view, FULL.advisor);
-  drawMainPanel(target, view, FULL.main);
-  drawAdvisorState(target, view, FULL.advisorState);
-  drawMetrics(target, view, FULL.metrics);
-  drawDelegate(target, view, rows.delegate, 28, 67);
-  const visible = cardSlots(view, FULL.cards.length);
-  FULL.cards.forEach((rect, i) => {
+function renderFlow(buf, view, L) {
+  buf.originX = L.originX;
+  buf.originY = L.originY;
+  if (L.windowBar) drawWindowBar(buf, view, -1, -L.originX);
+  centerSegments(buf, 0, L.width, L.rows.header, headerSegments(view));
+  if (L.rows.separator !== void 0) for (let x = L.log.x; x < L.log.x + L.log.w; x += 1) buf.put(x, L.rows.separator, "\u2501", theme.line);
+  drawLegend(buf, view, L);
+  drawConnectors(buf, view, L);
+  drawProject(buf, view, L);
+  drawMainPanel(buf, view, L.main);
+  drawAdvisorBox(buf, view, L.advisor);
+  drawAgentMemory(buf, view, L.memory);
+  drawDelegate(buf, view, L);
+  const visible = cardSlots(view, L.cards.length);
+  L.cards.forEach((rect, i) => {
     const slot = visible[i];
-    drawCard(target, rect, slot?.sub, slot?.sub ? view.state.subagents.indexOf(slot.sub) : -1, view, slot?.card);
+    drawCard(buf, rect, slot?.sub, i, view, slot?.card);
   });
-  drawLead(target, view, FULL.lead);
-  drawLog(target, view, FULL.log);
-  drawPrompt(target, view, rows.prompt, 0, FULL_COLS);
-  drawStatus(target, view, rows.status, 0, FULL_COLS);
-  for (const packet of view.anim?.packets ?? []) drawPacket(target, packet);
+  drawLead(buf, view, L.lead);
+  drawArrows(buf, L);
+  drawLog(buf, view, L.log);
+  drawPrompt(buf, view, L.rows.prompt, 0, L.width);
+  drawStatus(buf, view, L.rows.status, 0, L.width);
+  for (const packet of view.anim?.packets ?? []) drawPacket(buf, packet, L);
   const flash = view.anim?.errorFlash ?? 0;
   if (flash > 0) {
-    flashPanel(target, FULL.main, flash);
-    flashPanel(target, FULL.metrics, flash);
-    flashPanel(target, FULL.log, flash);
+    flashPanel(buf, L.main, flash);
+    flashPanel(buf, L.memory, flash);
+    flashPanel(buf, L.log, flash);
   }
   const bootMs = view.anim?.bootMs;
   if (bootMs !== void 0 && bootMs < BOOT_MS) {
     const width = segmentsWidth(headerSegments(view));
-    const { originX, originY } = buf;
-    const base = baseColor(buf, view.flatBackground ?? false);
-    applyBootFull(buf, bootMs, Math.floor((FULL_COLS - width) / 2), width, (x, y) => base(x + originX, y + originY));
+    applyBootFull(buf, bootMs, L, Math.floor((L.width - width) / 2), width, () => theme.bg);
   }
   buf.originX = 0;
   buf.originY = 0;
@@ -1838,7 +2178,7 @@ function renderReduced(buf, view) {
   centerSegments(buf, 0, width, 0, headerSegments(view));
   const advisorRect = { x: 0, y: 1, w: 24, h: height - 8 };
   const { advisor } = view.state;
-  box(buf, advisorRect, { color: theme.advisor, fill: theme.panel, halo: 0.25 });
+  box(buf, advisorRect, { color: theme.advisor, fill: theme.panel });
   const ax = advisorRect.x + 2;
   const aw = advisorRect.w - 4;
   centerText(buf, advisorRect.x + 1, advisorRect.w - 2, 2, `${advisorName(view).toUpperCase()} \xB7 on call`, theme.advisor, true);
@@ -1850,7 +2190,7 @@ function renderReduced(buf, view) {
   if (consults.length === 0) buf.text(ax, 3, "no consults yet", theme.faint);
   const statsY = advisorRect.y + advisorRect.h - 5;
   const last = advisor.consults.filter((c) => !c.open).pop();
-  buf.text(ax, statsY, fit(last ? `sealed \xB7 ${formatDuration(last.durationMs)}` : "inferred labels", aw), last ? theme.alert : theme.faint);
+  buf.text(ax, statsY, fit(last ? `sealed \xB7 ${formatDuration(last.durationMs)}` : "inferred labels", aw), last ? theme.main : theme.faint);
   const stat = (y, label, value) => {
     buf.text(ax, y, label, theme.dim);
     rightText(buf, ax + aw - 1, y, value, theme.text, true);
@@ -1861,7 +2201,7 @@ function renderReduced(buf, view) {
   const rightX = advisorRect.w + 1;
   const rightW = width - rightX;
   const mainRect = { x: rightX, y: 1, w: rightW, h: 5 };
-  box(buf, mainRect, { color: theme.main, fill: theme.panel, halo: 0.25 });
+  box(buf, mainRect, { color: theme.main, fill: theme.panel });
   centerSegments(buf, rightX + 1, rightW - 2, 2, [
     { text: mainName(view), color: theme.main, bold: true },
     { text: " \xB7 main \xB7 effort ", color: theme.dim },
@@ -1869,10 +2209,9 @@ function renderReduced(buf, view) {
   ]);
   const task = view.state.title ?? view.state.lastPrompt;
   centerText(buf, rightX + 2, rightW - 4, 3, task ? plainText(task) : "no task yet", task ? theme.text : theme.faint);
-  const active = view.connected && !view.state.ended && view.state.status !== "idle";
   centerSegments(buf, rightX + 1, rightW - 2, 4, [
-    { text: mainActivity(view, rightW - 12), color: view.state.status === "tool" ? theme.metrics : theme.dim },
-    { text: active ? `  ${spinnerFrame(view.now)}` : "", color: theme.main }
+    { text: mainActivity(view, rightW - 12), color: view.state.status === "tool" ? theme.sub : theme.dim },
+    { text: isMainActive(view) ? `  ${spinnerFrame(view.now)}` : "", color: theme.main }
   ]);
   const cardCount = 3;
   const gap = 1;
@@ -1882,11 +2221,11 @@ function renderReduced(buf, view) {
     const r = { x: rightX + i * (cardW + gap), y: 6, w: cardW, h: 5 };
     const sub = visible[i]?.sub;
     if (!sub) {
-      box(buf, r, { color: mix(theme.sub, theme.bgEdge, 0.72), dashed: true, fill: mix(theme.panel, theme.bgEdge, 0.4) });
+      box(buf, r, { color: mix(theme.sub, theme.bg, 0.72), dashed: true, fill: theme.panel });
       continue;
     }
     const failed = sub.status !== void 0 && sub.status !== "completed";
-    box(buf, r, { color: failed ? theme.alert : sub.running ? theme.subBright : theme.sub, fill: theme.panel, bold: true });
+    box(buf, r, { color: failed ? theme.alert : theme.sub, fill: theme.panel });
     const index = view.state.subagents.indexOf(sub);
     centerText(buf, r.x + 1, r.w - 2, r.y + 1, plainText(subagentName(view.state, sub.id)), theme.text, true);
     if (sub.running) indeterminateBar(buf, r.x + 2, r.y + 2, r.w - 4, view.now / 1800 + index * 0.27, theme.barSub);
@@ -1898,7 +2237,7 @@ function renderReduced(buf, view) {
   buf.text(rightX, toolsY, fit(toCells(`tools ${view.state.toolCalls}: ${sorted.map(([n, s]) => `${n} ${s.count}${s.errors ? `!${s.errors}` : ""}`).join(" \xB7 ")}`), rightW), view.state.toolErrors ? theme.alert : theme.metrics);
   const logRect = { x: 0, y: advisorRect.y + advisorRect.h, w: width, h: height - advisorRect.h - 3 };
   drawLog(buf, view, logRect);
-  drawPrompt(buf, view, height - 2, 0, width);
+  drawPrompt(buf, view, height - 2, 0, width, `${COMPACT_ROWS}+ rows: full view`);
   drawStatus(buf, view, height - 1, 0, width);
   const flash = view.anim?.errorFlash ?? 0;
   if (flash > 0) {
@@ -1912,15 +2251,15 @@ function renderTooSmall(buf) {
   lines.forEach((line, i) => centerText(buf, 0, buf.width, y + i, line, i === 0 ? theme.text : theme.dim, i === 0));
 }
 function renderScene(buf, view) {
-  const flat = view.flatBackground ?? false;
-  paintBackground(buf, flat);
-  buf.tintsEnabled = !flat;
-  const kind = layoutKind(buf.width, buf.height);
-  if (kind === "full") renderFull(buf, view);
-  else if (kind === "reduced") {
+  paintBackground(buf);
+  buf.tintsEnabled = !(view.flatBackground ?? false);
+  const layout = layoutFor(buf.width, buf.height);
+  if (layout) {
+    renderFlow(buf, view, layout);
+  } else if (layoutKind(buf.width, buf.height) === "reduced") {
     renderReduced(buf, view);
     const bootMs = view.anim?.bootMs;
-    if (bootMs !== void 0 && bootMs < BOOT_MS) applyBootFade(buf, bootMs, baseColor(buf, flat));
+    if (bootMs !== void 0 && bootMs < BOOT_MS) applyBootFade(buf, bootMs, () => theme.bg);
   } else renderTooSmall(buf);
 }
 
@@ -2024,7 +2363,7 @@ var TIMER_STEP_MS = 16;
 var PACE_TOLERANCE_MS = process.platform === "win32" ? 8 : 0.5;
 function runApp(options) {
   const now = options.now ?? (() => performance.now());
-  const director = new Director({ boot: true });
+  const director = new Director({ boot: true, illustrative: options.illustrative });
   const session = new TerminalSession(options.output, options.input);
   const { source, replay, output } = options;
   let front = null;
@@ -2100,7 +2439,7 @@ function runApp(options) {
     }
     frames += 1;
     if (options.crashAtFrame !== void 0 && frames >= options.crashAtFrame) throw new Error(`Fallo forzado en el frame ${frames}`);
-    if (options.exitWhenDone && replay?.finished && director.settled && !director.isBusy(time)) stop();
+    if (options.exitWhenDone && replay?.finished && director.settled && !director.isAnimating(time)) stop();
   }
   function schedule() {
     if (stopped || waitingDrain) return;
@@ -2267,6 +2606,25 @@ function summarizeToolInput(name, input) {
   const text = str(input.description) ?? str(input.pattern) ?? str(input.command) ?? str(input.query) ?? str(input.url);
   return text ? firstLineShort(text, 60) : void 0;
 }
+function memoryScopeOf(path) {
+  const normal = path.replace(/\\/g, "/").toLowerCase();
+  if (normal.includes("/.claude/agent-memory/") || normal.startsWith(".claude/agent-memory/")) return "agent";
+  if (/\/\.claude\/projects\/[^/]+\/memory\//.test(normal)) return "auto";
+  const name = baseName(normal);
+  if (name === "claude.md" || name === "claude.local.md") return "project";
+  if (name === "memory.md") return "auto";
+  return void 0;
+}
+var MEMORY_READ_TOOLS = /* @__PURE__ */ new Set(["Read", "Grep", "Glob"]);
+var MEMORY_WRITE_TOOLS = /* @__PURE__ */ new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
+function memoryTouchOf(name, input) {
+  if (!isObject(input)) return void 0;
+  const op = MEMORY_WRITE_TOOLS.has(name) ? "write" : MEMORY_READ_TOOLS.has(name) ? "read" : void 0;
+  const path = str(input.file_path) ?? str(input.path);
+  if (!op || !path) return void 0;
+  const scope = memoryScopeOf(path);
+  return scope ? { file: baseName(path), scope, op } : void 0;
+}
 function realPromptText(line, message) {
   if (line.isMeta || line.isCompactSummary) return void 0;
   const content = message.content;
@@ -2300,6 +2658,18 @@ function createParser() {
   const launches = [];
   const subagents = /* @__PURE__ */ new Map();
   const info = {};
+  const loadedMemory = /* @__PURE__ */ new Set();
+  function memoryLoads(attachment, t) {
+    const files = [];
+    for (const entry of blocksOf(attachment.files)) {
+      const path = str(entry.path);
+      const scope = path ? memoryScopeOf(path) : void 0;
+      if (!path || !scope || loadedMemory.has(path)) continue;
+      loadedMemory.add(path);
+      files.push({ file: baseName(path), scope });
+    }
+    return files.length ? [{ type: "memory_load", t, files }] : [];
+  }
   function sessionInfo(t, fields) {
     const changed = {};
     for (const [key, value] of Object.entries(fields)) {
@@ -2389,7 +2759,8 @@ function createParser() {
         const name = str(block.name) ?? "unknown";
         toolNames.set(id, name);
         if (!agentId && EDIT_TOOLS.has(name)) turn.edited = true;
-        events.push({ type: "tool_call", t, id, name, summary: summarizeToolInput(name, block.input), ...agentId ? { agentId } : {} });
+        const memory = memoryTouchOf(name, block.input);
+        events.push({ type: "tool_call", t, id, name, summary: summarizeToolInput(name, block.input), ...agentId ? { agentId } : {}, ...memory ? { memory } : {} });
         if (SUBAGENT_TOOLS.has(name) && isObject(block.input)) {
           launches.push({ toolUseId: id, prompt: str(block.input.prompt), description: str(block.input.description), agentType: str(block.input.subagent_type) });
           events.push(...linkSubagents(t));
@@ -2571,6 +2942,7 @@ function createParser() {
         if (!agentId && attachment?.type === "advisor_tool") {
           events.push(...sessionInfo(t, { advisorEnabled: attachment.available === true, advisorModel: str(attachment.model) }));
         }
+        if (!agentId && attachment?.type === "instructions") events.push(...memoryLoads(attachment, t));
         break;
       }
       case "system":
@@ -2927,6 +3299,8 @@ function createReplay(lines, options = {}) {
   let cursor = 0;
   let position = 0;
   let lastTick;
+  let finishedAt;
+  let stopped = false;
   return {
     get speed() {
       return speed;
@@ -2951,9 +3325,19 @@ function createReplay(lines, options = {}) {
         updates.push({ kind: "events", events: steps[cursor].events, historical: false });
         cursor += 1;
       }
+      if (options.loopDelayMs !== void 0 && !stopped && !paused && cursor >= steps.length) {
+        finishedAt ??= now;
+        if (now - finishedAt >= options.loopDelayMs) {
+          updates.push({ kind: "reset", sessionId: "replay" });
+          cursor = 0;
+          position = 0;
+          finishedAt = void 0;
+        }
+      }
       return updates;
     },
     async stop() {
+      stopped = true;
       cursor = steps.length;
     }
   };
@@ -2961,6 +3345,7 @@ function createReplay(lines, options = {}) {
 
 // src/cli.ts
 var assetPath = (relative) => fileURLToPath(new URL(relative, import.meta.url));
+var DEMO_LOOP_DELAY_MS = 9e3;
 function version() {
   const pkg = JSON.parse(readFileSync2(assetPath("../package.json"), "utf8"));
   return pkg.version;
@@ -2970,7 +3355,8 @@ function createSource(args) {
   if (command.kind === "follow") return createLiveSource({ sessionId: command.session, project: command.project });
   const file = command.kind === "demo" ? assetPath("../fixtures/sesion-haiku-advisor-opus.jsonl") : command.file;
   if (!existsSync(file)) throw new ArgsError(`No existe el archivo: ${file}`);
-  return createReplay(loadTranscript(file), { speed: args.speed });
+  const loop = command.kind === "demo" && !args.printEvents && process.env.SINAPSIS_EXIT_WHEN_DONE !== "1";
+  return createReplay(loadTranscript(file), { speed: args.speed, loopDelayMs: loop ? DEMO_LOOP_DELAY_MS : void 0 });
 }
 function forcedSize(env) {
   const match = /^(\d+)x(\d+)$/.exec(env.SINAPSIS_FORCE_TTY ?? "");
@@ -2998,6 +3384,7 @@ async function runInterface(args, source) {
       return () => stdout.off("resize", listener);
     },
     colorMode: forced ? env.SINAPSIS_COLOR === "256" ? "256" : "truecolor" : detectColorMode(stdout.getColorDepth()),
+    illustrative: args.command.kind === "demo",
     fps: args.fps,
     crashAtFrame: env.SINAPSIS_CRASH_AT_FRAME ? Number(env.SINAPSIS_CRASH_AT_FRAME) : void 0,
     exitWhenDone: env.SINAPSIS_EXIT_WHEN_DONE === "1"

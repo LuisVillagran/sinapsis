@@ -2,8 +2,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { SinapsisEvent } from '../src/core/events.js';
-import { createParser, inferConsultReason, newTurnFacts, summarizeToolInput } from '../src/core/parser.js';
-import { reduce } from '../src/core/state.js';
+import { createParser, inferConsultReason, memoryScopeOf, memoryTouchOf, newTurnFacts, summarizeToolInput } from '../src/core/parser.js';
+import { memoryLabel, memoryMilestone, reduce } from '../src/core/state.js';
 import { FIXTURES, HAIKU_MAIN, OPUS_MAIN, type TaggedLine, haikuLines, independentCount, mainFixtures, readLines } from './helpers.js';
 
 function feedAll(lines: TaggedLine[]): SinapsisEvent[] {
@@ -491,5 +491,89 @@ describe('resumen de herramientas', () => {
     expect(summarizeToolInput('Agent', { description: 'd', prompt: 'p' })).toBe('d');
     expect(summarizeToolInput('Otro', 'x')).toBeUndefined();
     expect(summarizeToolInput('Bash', { command: 'x'.repeat(100) })?.length).toBe(60);
+  });
+});
+
+describe('memoria', () => {
+  it('clasifica las rutas de memoria, en ambos separadores', () => {
+    expect(memoryScopeOf('C:\\Users\\x\\proyecto\\CLAUDE.md')).toBe('project');
+    expect(memoryScopeOf('/home/x/proyecto/CLAUDE.local.md')).toBe('project');
+    expect(memoryScopeOf('/home/x/proyecto/.claude/agent-memory/builder/MEMORY.md')).toBe('agent');
+    expect(memoryScopeOf('.claude/agent-memory/builder/notas.md')).toBe('agent');
+    expect(memoryScopeOf('C:\\Users\\x\\.claude\\projects\\p\\memory\\nota.md')).toBe('auto');
+    expect(memoryScopeOf('/home/x/.claude/projects/p/memory/MEMORY.md')).toBe('auto');
+    expect(memoryScopeOf('/home/x/proyecto/src/memory.ts')).toBeUndefined();
+    expect(memoryScopeOf('/home/x/proyecto/README.md')).toBeUndefined();
+    expect(memoryScopeOf('/home/x/memory/notas.md')).toBeUndefined();
+  });
+
+  it('distingue lectura de escritura y solo mira herramientas de archivos', () => {
+    const path = { file_path: '/p/CLAUDE.md' };
+    expect(memoryTouchOf('Read', path)).toEqual({ file: 'CLAUDE.md', scope: 'project', op: 'read' });
+    expect(memoryTouchOf('Edit', path)?.op).toBe('write');
+    expect(memoryTouchOf('Write', path)?.op).toBe('write');
+    expect(memoryTouchOf('Grep', { path: '/p/CLAUDE.md', pattern: 'x' })?.op).toBe('read');
+    expect(memoryTouchOf('Bash', { command: 'cat CLAUDE.md' })).toBeUndefined();
+    expect(memoryTouchOf('Read', { file_path: '/p/otro.md' })).toBeUndefined();
+    expect(memoryTouchOf('Read', 'no es un objeto')).toBeUndefined();
+  });
+
+  it('el evento de la herramienta lleva qué tocó, también dentro de un subagente', () => {
+    const line = assistant('m1', [{ type: 'tool_use', id: 't1', name: 'Read', input: { file_path: '/p/.claude/agent-memory/builder/MEMORY.md' } }]);
+    const parser = createParser();
+    const call = parser.feed(JSON.stringify(line), { agentId: 'a' }).find((e) => e.type === 'tool_call');
+    expect(call).toMatchObject({ agentId: 'a', memory: { file: 'MEMORY.md', scope: 'agent', op: 'read' } });
+    const plain = parseOne(assistant('m2', [{ type: 'tool_use', id: 't2', name: 'Read', input: { file_path: '/p/a.ts' } }])).find((e) => e.type === 'tool_call');
+    expect(plain && 'memory' in plain).toBe(false);
+  });
+
+  it('el adjunto de instrucciones avisa una vez por archivo y expone solo su nombre', () => {
+    const attachment = (paths: string[]): object => ({ type: 'attachment', timestamp: '2026-11-05T10:00:00.000Z', attachment: { type: 'instructions', files: paths.map((path) => ({ path, type: 'Project', content: 'secreto' })) } });
+    const events = parseOne(attachment(['/home/x/p/CLAUDE.md', '/home/x/p/src/otro.md']), attachment(['/home/x/p/CLAUDE.md']), attachment(['/home/x/.claude/projects/p/memory/MEMORY.md']));
+    const loads = events.filter((e) => e.type === 'memory_load');
+    expect(loads).toHaveLength(2);
+    expect(loads[0]).toMatchObject({ files: [{ file: 'CLAUDE.md', scope: 'project' }] });
+    expect(loads[1]).toMatchObject({ files: [{ file: 'MEMORY.md', scope: 'auto' }] });
+    expect(JSON.stringify(loads)).not.toContain('secreto');
+    expect(JSON.stringify(loads)).not.toContain('home');
+    const state = reduce(events);
+    expect(state.memory.loaded.map((l) => l.file)).toEqual(['CLAUDE.md', 'MEMORY.md']);
+  });
+
+  it('un adjunto sin archivos, como en los fixtures sanitizados, no falla', () => {
+    const loads = (attachment: object): SinapsisEvent[] => parseOne({ type: 'attachment', attachment }).filter((e) => e.type === 'memory_load');
+    expect(loads({ type: 'instructions' })).toEqual([]);
+    expect(loads({ type: 'instructions', files: 'x' })).toEqual([]);
+  });
+
+  it('el hito inferido sigue las reglas, en cualquier orden de llegada', () => {
+    const touch = (t: number): SinapsisEvent => ({ type: 'tool_call', t, id: `m${t}`, name: 'Read', memory: { file: 'CLAUDE.md', scope: 'project', op: 'read' } });
+    const events: SinapsisEvent[] = [
+      { type: 'user_prompt', t: 100, text: 'uno' },
+      touch(110),
+      { type: 'tool_call', t: 120, id: 'x', name: 'Bash' },
+      { type: 'tool_result', t: 130, id: 'x', isError: true },
+      touch(140),
+      { type: 'user_prompt', t: 200, text: 'dos' },
+      touch(210),
+      { type: 'subagent_start', t: 215, subagentId: 'a' },
+      { type: 'subagent_result', t: 220, subagentId: 'a', status: 'completed' },
+      touch(230),
+    ];
+    const expected = [0, 1, 0, 2];
+    const forward = reduce(events);
+    expect(forward.memory.touches.map((t) => memoryMilestone(forward, t))).toEqual(expected);
+    expect(forward.memory.touches.map((t) => memoryLabel(forward, t))).toEqual(['recall', 'check', 'recall', 'recall']);
+    const backward = reduce([...events].reverse());
+    expect(backward.memory.touches.map((t) => t.t)).toEqual(forward.memory.touches.map((t) => t.t));
+    expect(backward.memory.touches.map((t) => memoryMilestone(backward, t))).toEqual(expected);
+  });
+
+  it('el fixture real detecta su lectura de CLAUDE.md en el subagente que la hizo', () => {
+    const events = feedAll([...haikuLines().values()].flat());
+    const state = reduce(events);
+    expect(state.memory.touches.map((t) => t.file)).toEqual(['CLAUDE.md']);
+    expect(state.memory.touches[0]?.agentId).toBeDefined();
+    expect(state.memory.touches[0]?.op).toBe('read');
   });
 });

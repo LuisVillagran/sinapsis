@@ -17,8 +17,8 @@ export interface Segment {
   bold?: boolean;
 }
 
-const HEAVY = { h: '━', v: '┃', tl: '┏', tr: '┓', bl: '┗', br: '┛' };
-const DASHED = { h: '╍', v: '╏', tl: '┏', tr: '┓', bl: '┗', br: '┛' };
+const THIN = { h: '─', v: '│', tl: '┌', tr: '┐', bl: '└', br: '┘' };
+const DASHED = { h: '╌', v: '╎', tl: '┌', tr: '┐', bl: '└', br: '┘' };
 
 export interface BoxOptions {
   color: Rgb;
@@ -48,7 +48,7 @@ export function halo(buf: CellBuffer, r: Rect, color: Rgb, strength: number): vo
 }
 
 export function box(buf: CellBuffer, r: Rect, options: BoxOptions): void {
-  const glyphs = options.dashed ? DASHED : HEAVY;
+  const glyphs = options.dashed ? DASHED : THIN;
   const attrs = options.bold ? BOLD : 0;
   if (options.halo) halo(buf, r, options.color, options.halo);
   if (options.fill !== undefined) buf.fill(r.x + 1, r.y + 1, r.w - 2, r.h - 2, options.fill);
@@ -91,32 +91,27 @@ export function rightText(buf: CellBuffer, rightEdge: number, y: number, text: s
 
 const PARTIAL = ['', '▏', '▎', '▍', '▌', '▋', '▊', '▉'];
 
+/** Riel de una barra: trama tenue, como en la referencia. */
+function track(buf: CellBuffer, x: number, y: number, color: Rgb): void {
+  buf.clearCell(x, y, theme.bg);
+  buf.put(x, y, '░', color);
+}
+
 /** Barra con precisión de un octavo de celda. Pinta su propio fondo. */
-export function bar(buf: CellBuffer, x: number, y: number, width: number, fraction: number, color: Rgb, track: Rgb = theme.barTrack): void {
+export function bar(buf: CellBuffer, x: number, y: number, width: number, fraction: number, color: Rgb, rail: Rgb = theme.barTrack): void {
   const total = Math.max(0, Math.min(1, fraction)) * width;
   const full = Math.floor(total);
   const eighths = Math.floor((total - full) * 8);
   for (let i = 0; i < width; i += 1) {
-    buf.clearCell(x + i, y, track);
-    if (i < full) buf.put(x + i, y, '█', color);
-    else if (i === full && eighths > 0) buf.put(x + i, y, PARTIAL[eighths] as string, color);
-  }
-}
-
-/**
- * Barra de media altura, para filas consecutivas que deben verse separadas.
- * El tope de un carácter de media altura obliga a una precisión de media celda.
- */
-export function thinBar(buf: CellBuffer, x: number, y: number, width: number, fraction: number, color: Rgb, track: Rgb = theme.barTrack): void {
-  const halves = Math.round(Math.max(0, Math.min(1, fraction)) * width * 2);
-  for (let i = 0; i < width; i += 1) {
-    const filled = halves - i * 2;
-    if (filled >= 2) buf.put(x + i, y, '▄', color);
-    else if (filled === 1) {
-      // Media celda llena: el resto del ancho se pinta con el riel como fondo inferior no es posible,
-      // así que la parte vacía queda sin riel en esta celda.
-      buf.put(x + i, y, '▖', color);
-    } else buf.put(x + i, y, '▄', track);
+    if (i < full) {
+      buf.clearCell(x + i, y, theme.bg);
+      buf.put(x + i, y, '█', color);
+    } else if (i === full && eighths > 0) {
+      buf.clearCell(x + i, y, theme.bg);
+      buf.put(x + i, y, PARTIAL[eighths] as string, color);
+    } else {
+      track(buf, x + i, y, rail);
+    }
   }
 }
 
@@ -124,20 +119,21 @@ export function thinBar(buf: CellBuffer, x: number, y: number, width: number, fr
  * Barra indeterminada: una franja que recorre el ancho sin decir cuánto falta, porque ese dato no existe.
  * `phase` avanza de 0 a 1 en cada pasada.
  */
-export function indeterminateBar(buf: CellBuffer, x: number, y: number, width: number, phase: number, color: Rgb, track: Rgb = theme.barTrack): void {
+export function indeterminateBar(buf: CellBuffer, x: number, y: number, width: number, phase: number, color: Rgb, rail: Rgb = theme.barTrack): void {
   const band = Math.max(3, width * 0.32);
   const start = (phase - Math.floor(phase)) * (width + band) - band;
   const end = start + band;
   for (let i = 0; i < width; i += 1) {
-    buf.clearCell(x + i, y, track);
+    track(buf, x + i, y, rail);
     const covered = Math.min(i + 1, end) - Math.max(i, start);
     if (covered <= 0) continue;
+    buf.clearCell(x + i, y, theme.bg);
     if (covered >= 1) {
       buf.put(x + i, y, '█', color);
     } else if (start > i) {
-      // Borde izquierdo: se pinta la parte vacía con el color del riel sobre fondo de la franja.
+      // Borde izquierdo de la franja: la celda se pinta entera y el trozo vacío lleva el color del fondo.
       buf.setBg(x + i, y, color);
-      buf.put(x + i, y, PARTIAL[Math.max(1, Math.round((1 - covered) * 8))] ?? '▏', track);
+      buf.put(x + i, y, PARTIAL[Math.max(1, Math.round((1 - covered) * 8))] ?? '▏', theme.bg);
     } else {
       buf.put(x + i, y, PARTIAL[Math.max(1, Math.round(covered * 8))] ?? '▉', color);
     }
@@ -145,6 +141,10 @@ export function indeterminateBar(buf: CellBuffer, x: number, y: number, width: n
 }
 
 const SPINNER = ['|', '/', '-', '\\'];
+const DISC = ['◐', '◓', '◑', '◒'];
+
+/** Disco giratorio de las tarjetas activas, como en la referencia. */
+export const discFrame = (now: number, offset = 0, period = 160): string => DISC[Math.floor(now / period + offset) % DISC.length] as string;
 
 export const spinnerFrame = (now: number, period = 120): string => SPINNER[Math.floor(now / period) % SPINNER.length] as string;
 

@@ -37,6 +37,8 @@ export interface AppOptions {
   now?: () => number;
   /** Para probar la restauración: falla a propósito en este frame. */
   crashAtFrame?: number;
+  /** `sinapsis demo`: agrega actividad de ejemplo, rotulada como ilustrativa. */
+  illustrative?: boolean;
   /** Termina al acabar el replay y vaciar la cola. Para mediciones y pruebas. */
   exitWhenDone?: boolean;
   /** Recibe el tiempo de cálculo de cada frame dibujado y los bytes escritos. */
@@ -52,7 +54,7 @@ export interface App {
 
 export function runApp(options: AppOptions): App {
   const now = options.now ?? (() => performance.now());
-  const director = new Director({ boot: true });
+  const director = new Director({ boot: true, illustrative: options.illustrative });
   const session = new TerminalSession(options.output, options.input);
   const { source, replay, output } = options;
 
@@ -138,7 +140,7 @@ export function runApp(options: AppOptions): App {
 
     frames += 1;
     if (options.crashAtFrame !== undefined && frames >= options.crashAtFrame) throw new Error(`Fallo forzado en el frame ${frames}`);
-    if (options.exitWhenDone && replay?.finished && director.settled && !director.isBusy(time)) stop();
+    if (options.exitWhenDone && replay?.finished && director.settled && !director.isAnimating(time)) stop();
   }
 
   /**

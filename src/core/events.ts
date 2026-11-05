@@ -51,11 +51,29 @@ export interface MessageUsage extends EventBase {
   hasAdvisor: boolean;
 }
 
+/** De dónde es un archivo de memoria. Se deduce de su ruta. */
+export type MemoryScope = 'project' | 'agent' | 'auto';
+
+/** Una herramienta que tocó un archivo de memoria. Es un dato real: sale de su `file_path`. */
+export interface MemoryTouch {
+  file: string;
+  scope: MemoryScope;
+  op: 'read' | 'write';
+}
+
 export interface ToolCall extends EventBase {
   type: 'tool_call';
   id: string;
   name: string;
   summary?: string;
+  /** Presente si la herramienta leyó o escribió un archivo de memoria. */
+  memory?: MemoryTouch;
+}
+
+/** Archivos de memoria que Claude Code cargó por su cuenta, según el adjunto `instructions`. */
+export interface MemoryLoad extends EventBase {
+  type: 'memory_load';
+  files: Array<{ file: string; scope: MemoryScope }>;
 }
 
 export interface ToolResult extends EventBase {
@@ -155,6 +173,7 @@ export type SinapsisEvent =
   | RequestStart
   | MessageUsage
   | ToolCall
+  | MemoryLoad
   | ToolResult
   | AdvisorConsult
   | AdvisorReply

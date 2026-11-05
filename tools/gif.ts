@@ -24,8 +24,8 @@ function option(name: string, fallback: string): string {
 const output = process.argv[2] as string;
 const speed = Number(option('speed', '3'));
 const fps = Number(option('fps', '12'));
-const COLS = 96;
-const ROWS = 48;
+const COLS = 90;
+const ROWS = 47;
 const TAIL_MS = 1500;
 const MAX_MS = 60_000;
 

@@ -4,7 +4,7 @@
 // Las líneas de varios archivos llegan intercaladas y un archivo de subagente puede aparecer antes que
 // el `tool_use` que lo lanzó, así que todo se enlaza por identificador y nada depende del orden entre archivos.
 
-import type { ConsultReason, SinapsisEvent } from './events.js';
+import type { ConsultReason, MemoryScope, MemoryTouch, SinapsisEvent } from './events.js';
 
 export interface LineSource {
   /** Identificador del subagente, si la línea viene de su archivo. */
@@ -61,6 +61,33 @@ export function summarizeToolInput(name: string, input: unknown): string | undef
   if (SUBAGENT_TOOLS.has(name)) return str(input.description);
   const text = str(input.description) ?? str(input.pattern) ?? str(input.command) ?? str(input.query) ?? str(input.url);
   return text ? firstLineShort(text, 60) : undefined;
+}
+
+/**
+ * Clasifica una ruta como archivo de memoria. `CLAUDE.md` y la memoria automática se observaron en transcripts
+ * reales; `.claude/agent-memory/` todavía no (ver docs/eventos.md).
+ */
+export function memoryScopeOf(path: string): MemoryScope | undefined {
+  const normal = path.replace(/\\/g, '/').toLowerCase();
+  if (normal.includes('/.claude/agent-memory/') || normal.startsWith('.claude/agent-memory/')) return 'agent';
+  if (/\/\.claude\/projects\/[^/]+\/memory\//.test(normal)) return 'auto';
+  const name = baseName(normal);
+  if (name === 'claude.md' || name === 'claude.local.md') return 'project';
+  if (name === 'memory.md') return 'auto';
+  return undefined;
+}
+
+const MEMORY_READ_TOOLS = new Set(['Read', 'Grep', 'Glob']);
+const MEMORY_WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
+
+/** Lo que una herramienta hizo con un archivo de memoria, si es que tocó alguno. */
+export function memoryTouchOf(name: string, input: unknown): MemoryTouch | undefined {
+  if (!isObject(input)) return undefined;
+  const op = MEMORY_WRITE_TOOLS.has(name) ? 'write' : MEMORY_READ_TOOLS.has(name) ? 'read' : undefined;
+  const path = str(input.file_path) ?? str(input.path);
+  if (!op || !path) return undefined;
+  const scope = memoryScopeOf(path);
+  return scope ? { file: baseName(path), scope, op } : undefined;
 }
 
 /** Texto de un prompt real del usuario, o `undefined` si la línea es otra cosa. */
@@ -127,6 +154,20 @@ export function createParser(): Parser {
   const launches: Launch[] = [];
   const subagents = new Map<string, SubagentRecord>();
   const info: Record<string, string | boolean | undefined> = {};
+  const loadedMemory = new Set<string>();
+
+  /** El adjunto se repite durante la sesión: solo se avisa de los archivos nuevos. */
+  function memoryLoads(attachment: Json, t: number): SinapsisEvent[] {
+    const files: Array<{ file: string; scope: MemoryScope }> = [];
+    for (const entry of blocksOf(attachment.files)) {
+      const path = str(entry.path);
+      const scope = path ? memoryScopeOf(path) : undefined;
+      if (!path || !scope || loadedMemory.has(path)) continue;
+      loadedMemory.add(path);
+      files.push({ file: baseName(path), scope });
+    }
+    return files.length ? [{ type: 'memory_load', t, files }] : [];
+  }
 
   function sessionInfo(t: number, fields: Record<string, string | boolean | undefined>): SinapsisEvent[] {
     const changed: Record<string, string | boolean> = {};
@@ -230,7 +271,8 @@ export function createParser(): Parser {
         const name = str(block.name) ?? 'unknown';
         toolNames.set(id, name);
         if (!agentId && EDIT_TOOLS.has(name)) turn.edited = true;
-        events.push({ type: 'tool_call', t, id, name, summary: summarizeToolInput(name, block.input), ...(agentId ? { agentId } : {}) });
+        const memory = memoryTouchOf(name, block.input);
+        events.push({ type: 'tool_call', t, id, name, summary: summarizeToolInput(name, block.input), ...(agentId ? { agentId } : {}), ...(memory ? { memory } : {}) });
         if (SUBAGENT_TOOLS.has(name) && isObject(block.input)) {
           launches.push({ toolUseId: id, prompt: str(block.input.prompt), description: str(block.input.description), agentType: str(block.input.subagent_type) });
           events.push(...linkSubagents(t));
@@ -434,6 +476,7 @@ export function createParser(): Parser {
         if (!agentId && attachment?.type === 'advisor_tool') {
           events.push(...sessionInfo(t, { advisorEnabled: attachment.available === true, advisorModel: str(attachment.model) }));
         }
+        if (!agentId && attachment?.type === 'instructions') events.push(...memoryLoads(attachment, t));
         break;
       }
       case 'system':

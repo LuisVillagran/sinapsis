@@ -22,14 +22,14 @@ function option(name: string, fallback: string): string {
 
 const output = process.argv[2] as string;
 const times = option('times', '0').split(',').map(Number);
-const cols = Number(option('cols', '96'));
-const rows = Number(option('rows', '48'));
+const cols = Number(option('cols', '90'));
+const rows = Number(option('rows', '47'));
 const speed = Number(option('speed', '1'));
 const columns = Number(option('columns', String(times.length)));
 const [cx, cy, cw, ch] = option('crop', `0,0,${cols},${rows}`).split(',').map(Number) as [number, number, number, number];
 const fixture = option('source', 'haiku') === 'opus' ? 'sesion-opus-advisor-opus.jsonl' : 'sesion-haiku-advisor-opus.jsonl';
 
-const director = new Director({ boot: process.argv.includes('--boot') });
+const director = new Director({ boot: process.argv.includes('--boot'), illustrative: process.argv.includes('--illustrative') });
 const replay = createReplay(loadTranscript(join(import.meta.dirname, '..', 'fixtures', fixture)), { speed });
 const capture = await XtermCapture.open({ cols, rows, lineHeight: 1.15 });
 await capture.write('\x1b[?7l');

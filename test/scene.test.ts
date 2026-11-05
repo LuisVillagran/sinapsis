@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { describeEvent, displayModel, formatDuration, formatTokens, modelAlias, plainText } from '../src/core/describe.js';
 import { BOOT_MS } from '../src/scene/boot.js';
 import { renderScene } from '../src/scene/scene.js';
-import { FULL_COLS, FULL_ROWS, layoutKind } from '../src/scene/layout.js';
+import type { Rect } from '../src/scene/draw.js';
+import { FULL_COLS, FULL_ROWS, type SceneLayout, layoutFor } from '../src/scene/layout.js';
 import { theme } from '../src/scene/theme.js';
 import { encodeFrame } from '../src/tui/ansi.js';
 import { CellBuffer, charWidth, fit, toCells } from '../src/tui/buffer.js';
@@ -17,131 +18,161 @@ function render(cols = FULL_COLS, rows = FULL_ROWS, view = fixtureView(MID_SESSI
   return buf;
 }
 
-/** Busca en el buffer dibujado una caja de trazo grueso cuya esquina superior izquierda esté cerca de lo pedido. */
-function findBox(buf: CellBuffer, expected: { x0: number; x1: number; y0: number; y1: number }): { x0: number; x1: number; y0: number; y1: number } {
-  const TOLERANCE = 1;
-  for (let y = expected.y0 - TOLERANCE; y <= expected.y0 + TOLERANCE; y += 1) {
-    for (let x = expected.x0 - TOLERANCE; x <= expected.x0 + TOLERANCE; x += 1) {
-      if (x < 0 || y < 0 || buf.charAt(x, y) !== '┏') continue;
-      let right = x + 1;
-      while (right < buf.width && buf.charAt(right, y) !== '┓') right += 1;
-      let bottom = y + 1;
-      while (bottom < buf.height && buf.charAt(x, bottom) !== '┗') bottom += 1;
-      if (right < buf.width && bottom < buf.height && buf.charAt(right, bottom) === '┛') return { x0: x, x1: right, y0: y, y1: bottom };
-    }
-  }
-  throw new Error(`Sin caja cerca de columna ${expected.x0}, fila ${expected.y0}`);
-}
-
-const expectWithin = (actual: number, expected: number): void => {
-  expect(Math.abs(actual - expected), `${actual} frente a ${expected}`).toBeLessThanOrEqual(1);
-};
+const L = layoutFor(FULL_COLS, FULL_ROWS) as SceneLayout;
+const screenText = (buf: CellBuffer): string => Array.from({ length: buf.height }, (_, y) => buf.rowText(y)).join('\n');
+const rectText = (buf: CellBuffer, r: Rect): string => Array.from({ length: r.h }, (_, i) => buf.rowText(r.y + i, r.x, r.x + r.w)).join('\n');
 
 function textRow(buf: CellBuffer, text: string): number {
   for (let y = 0; y < buf.height; y += 1) if (buf.rowText(y).includes(text)) return y;
   return -1;
 }
 
-describe('geometría del layout completo, medida sobre el buffer', () => {
+/** El borde de una caja, dibujado de verdad en el buffer. */
+function expectBox(buf: CellBuffer, r: Rect, ox = 0, oy = 0): void {
+  const right = r.x + r.w - 1 + ox;
+  const bottom = r.y + r.h - 1 + oy;
+  const x = r.x + ox;
+  const y = r.y + oy;
+  expect(buf.charAt(x, y), 'esquina superior izquierda').toBe('┌');
+  expect(buf.charAt(right, y), 'esquina superior derecha').toBe('┐');
+  expect(buf.charAt(x, bottom), 'esquina inferior izquierda').toBe('└');
+  expect(buf.charAt(right, bottom), 'esquina inferior derecha').toBe('┘');
+}
+
+describe('geometría medida sobre el buffer', () => {
   const buf = render();
-  const boxes: Array<[string, { x0: number; x1: number; y0: number; y1: number }]> = [
-    ['advisor', { x0: 2, x1: 23, y0: 5, y1: 38 }],
-    ['sesión principal', { x0: 39, x1: 76, y0: 5, y1: 11 }],
-    ['estado del advisor', { x0: 78, x1: 94, y0: 5, y1: 11 }],
-    ['métricas', { x0: 38, x1: 83, y0: 13, y1: 19 }],
-    ['tarjeta 1', { x0: 28, x1: 48, y0: 24, y1: 30 }],
-    ['tarjeta 2', { x0: 50, x1: 71, y0: 24, y1: 30 }],
-    ['tarjeta 3', { x0: 73, x1: 94, y0: 24, y1: 30 }],
-    ['back to lead', { x0: 43, x1: 78, y0: 35, y1: 38 }],
-    ['session log', { x0: 2, x1: 94, y0: 39, y1: 44 }],
-  ];
 
-  for (const [name, expected] of boxes) {
-    it(name, () => {
-      const found = findBox(buf, expected);
-      expectWithin(found.x0, expected.x0);
-      expectWithin(found.x1, expected.x1);
-      expectWithin(found.y0, expected.y0);
-      expectWithin(found.y1, expected.y1);
-    });
-  }
-
-  it('filas de texto', () => {
-    expect(textRow(buf, '●')).toBe(0);
-    expectWithin(textRow(buf, 'CLAUDE CODE ADVISOR'), 2);
-    expectWithin(textRow(buf, '─────'), 3);
-    expectWithin(textRow(buf, '· subagents'), 4);
-    expectWithin(textRow(buf, 'delegate to subagents'), 21);
-    expect([45, 46]).toContain(textRow(buf, '--advisor opus █'));
-    const status = textRow(buf, 'queued');
-    expect([46, 47]).toContain(status);
+  it('todos los paneles están dibujados donde dice el layout', () => {
+    for (const r of [L.project, L.main, L.advisor, L.memory, ...L.cards, L.lead, L.log]) expectBox(buf, r);
   });
 
-  it('encabezado y texto de delegación centrados', () => {
-    const header = buf.rowText(2);
+  it('filas de texto', () => {
+    expect(textRow(buf, 'CLAUDE CODE ADVISOR')).toBe(L.rows.header);
+    expect(buf.rowText(L.rows.separator as number)).toContain('━━━━');
+    expect(textRow(buf, '· lead')).toBe(L.rows.legend);
+    expect(textRow(buf, 'delegate to subagents')).toBe(L.rows.delegate);
+    expect(textRow(buf, '--advisor opus')).toBe(L.rows.prompt);
+    expect(textRow(buf, 'queued')).toBe(L.rows.status);
+  });
+
+  it('encabezado centrado', () => {
+    const header = buf.rowText(L.rows.header);
     const start = header.indexOf('CLAUDE');
-    const end = header.lastIndexOf('THINKS') + 6;
-    expectWithin(start, FULL_COLS - end);
+    const end = header.lastIndexOf('BUILDS') + 6;
+    expect(Math.abs(start - (FULL_COLS - end))).toBeLessThanOrEqual(1);
+  });
+
+  it('conectores: del tronco al bus, del bus a cada tarjeta y de vuelta al lead', () => {
+    const { rows, spine, cardCenters, main, memory } = L;
+    expect(buf.charAt(spine, main.y + main.h)).toBe('│');
+    expect(buf.charAt(spine, memory.y + memory.h)).toBe('│');
+    expect(buf.charAt(cardCenters[0], rows.bus)).toBe('┌');
+    expect(buf.charAt(spine, rows.bus)).toBe('┼');
+    expect(buf.charAt(cardCenters[2], rows.bus)).toBe('┐');
+    for (const center of cardCenters) expect(buf.charAt(center, L.cardArrowRow as number)).toBe('▼');
+    expect(buf.charAt(cardCenters[0], rows.merge)).toBe('└');
+    expect(buf.charAt(cardCenters[2], rows.merge)).toBe('┘');
+    expect(buf.charAt(spine, L.leadArrowRow as number)).toBe('▼');
+  });
+
+  it('flechas punteadas desde la memoria de proyecto hasta sus tres destinos', () => {
+    const edge = L.project.x + L.project.w;
+    const targets = [L.main.x, L.cards[0].x, L.lead.x];
+    L.milestones.forEach((row, i) => {
+      expect(buf.charAt(edge, row)).toBe('┄');
+      expect(buf.charAt((targets[i] as number) - 1, row)).toBe('▸');
+    });
   });
 
   it('una terminal mayor centra el layout y sigue usando la misma geometría', () => {
     const big = render(120, 60);
-    const found = findBox(big, { x0: 2 + 12, x1: 23 + 12, y0: 5 + 6, y1: 38 + 6 });
-    expect(found).toEqual({ x0: 14, x1: 35, y0: 11, y1: 44 });
-    expect(big.rowText(8)).toContain('CLAUDE CODE ADVISOR');
+    const layout = layoutFor(120, 60) as SceneLayout;
+    expectBox(big, layout.project, layout.originX, layout.originY);
+    expectBox(big, layout.log, layout.originX, layout.originY);
+    expect(big.rowText(layout.rows.header + layout.originY)).toContain('CLAUDE CODE ADVISOR');
   });
 });
 
 describe('contenido', () => {
-  it('modelos reales en el encabezado, sin valores de ejemplo de la imagen', () => {
-    const all = Array.from({ length: FULL_ROWS }, (_, y) => render().rowText(y)).join('\n');
+  it('modelos reales en el encabezado, sin valores de ejemplo de las imágenes', () => {
+    const all = screenText(render(FULL_COLS, FULL_ROWS, fixtureView()));
+    expect(all).toContain('HAIKU 5.5 LEADS');
     expect(all).toContain('HAIKU 5.5 BUILDS');
-    expect(all).toContain('OPUS 5.5 THINKS');
-    for (const banned of ['skunzu', 'jev', 'forks', '2,625', 'files: 156', 'call sites', '%']) expect(all).not.toContain(banned);
+    for (const banned of ['skunzu', 'jev', 'forks', '2,625', 'files: 156', 'call sites', '%', 'SUBAGENT TIP', '~/app', 'builder', 'debugger', 'reviewer', 'Sonnet', 'illustrative']) expect(all).not.toContain(banned);
   });
 
-  it('los datos del advisor son los del reductor', () => {
-    const buf = render(FULL_COLS, FULL_ROWS, fixtureView());
-    const panel = Array.from({ length: 34 }, (_, i) => buf.rowText(5 + i, 2, 24)).join('\n');
-    expect(panel).toContain('sealed · 39 s');
-    expect(panel).toContain('77.5k read');
-    expect(panel).toContain('3.7k written');
-    expect(panel).toContain('97.9k');
-    expect(panel).toContain('after subagents');
-    expect(panel).toContain('before a plan');
+  it('están todos los apartados de la referencia', () => {
+    const all = screenText(render(FULL_COLS, FULL_ROWS, fixtureView()));
+    for (const part of ['PROJECT MEMORY', 'before work', 'repeat failure', 'before sign-off', 'agent memories:', 'main session', 'AGENT MEMORY', 'roles', 'delegate to subagents', 'back to', '· lead', 'session log', 'claude --model', 'ADVISOR']) expect(all).toContain(part);
+  });
+
+  it('los datos del advisor y de las tarjetas son los del reductor', () => {
+    const view = fixtureView();
+    const buf = render(FULL_COLS, FULL_ROWS, view);
+    const advisorBox = rectText(buf, L.advisor);
+    expect(advisorBox).toContain('opus 5.5');
+    expect(advisorBox).toContain('2 · 97.9k');
+    const cards = L.cards.map((r) => rectText(buf, r)).join('\n');
+    expect(cards).toContain('explore');
+    expect(cards).toContain('Haiku 5.5');
+    expect(cards).toContain('read-only');
+    expect(cards).toContain('3 tools');
+    expect(cards).toContain('done · 10 s');
+    expect(rectText(buf, L.lead)).toContain('3 back');
+  });
+
+  it('la lectura real de un archivo de memoria aparece en ambos paneles', () => {
+    const view = fixtureView();
+    expect(view.state.memory.touches.map((t) => t.file)).toContain('CLAUDE.md');
+    const buf = render(FULL_COLS, FULL_ROWS, view);
+    expect(rectText(buf, L.project)).toContain('CLAUDE.md');
+    expect(rectText(buf, L.memory)).toContain('recall');
+    expect(rectText(buf, L.memory)).toContain('no memory');
+    expect(rectText(buf, L.memory)).toContain('real tool calls');
+    expect(rectText(buf, L.memory)).toContain('1 / 3');
   });
 
   it('los patrones de herramientas se muestran literales', () => {
-    const buf = render(FULL_COLS, FULL_ROWS, fixtureView());
-    const log = Array.from({ length: 6 }, (_, i) => buf.rowText(39 + i)).join('\n');
-    expect(log).toContain('fixtures/*.jsonl');
+    expect(rectText(render(FULL_COLS, FULL_ROWS, fixtureView()), L.log)).toContain('fixtures/*.jsonl');
   });
 
   it('una tarjeta en curso no muestra porcentaje y sí su contador real', () => {
     const view = fixtureView(MID_SESSION_MS);
     expect(view.state.subagents.some((s) => s.running)).toBe(true);
-    const cards = Array.from({ length: 7 }, (_, i) => render(FULL_COLS, FULL_ROWS, view).rowText(24 + i, 28, 95)).join('\n');
-    expect(cards).toContain('tools:');
+    const buf = render(FULL_COLS, FULL_ROWS, view);
+    const cards = L.cards.map((r) => rectText(buf, r)).join('\n');
+    expect(cards).toMatch(/\d+ tools?/);
+    expect(cards).toContain('running');
     expect(cards).not.toContain('%');
   });
 
   it('ningún texto se sale de un panel: los bordes quedan intactos', () => {
-    for (const view of [fixtureView(MID_SESSION_MS), fixtureView(), idleView()]) {
-      const buf = render(FULL_COLS, FULL_ROWS, view);
-      const borders: Array<[number, number, number]> = [
-        [2, 6, 37], [23, 6, 37], [39, 6, 10], [76, 6, 10], [38, 14, 18], [83, 14, 18],
-        [28, 25, 29], [48, 25, 29], [50, 25, 29], [71, 25, 29], [73, 25, 29], [94, 25, 29],
-      ];
-      for (const [x, from, to] of borders) {
-        for (let y = from; y <= to; y += 1) expect('┃╏').toContain(buf.charAt(x, y));
+    for (const [cols, rows] of [[FULL_COLS, FULL_ROWS], [80, 30], [120, 30], [80, 38], [120, 45]] as const) {
+      const layout = layoutFor(cols, rows) as SceneLayout;
+      for (const view of [fixtureView(MID_SESSION_MS), fixtureView(), idleView()]) {
+        const buf = render(cols, rows, view);
+        for (const r of [layout.project, layout.main, layout.advisor, layout.memory, ...layout.cards, layout.lead, layout.log]) {
+          const left = r.x + layout.originX;
+          const right = left + r.w - 1;
+          for (let y = r.y + 1 + layout.originY; y < r.y + r.h - 1 + layout.originY; y += 1) {
+            expect('│╎', `${cols}x${rows} columna ${left}, fila ${y}`).toContain(buf.charAt(left, y));
+            expect('│╎', `${cols}x${rows} columna ${right}, fila ${y}`).toContain(buf.charAt(right, y));
+          }
+        }
       }
     }
   });
 
   it('panel en reposo sin sesión', () => {
     const buf = render(FULL_COLS, FULL_ROWS, idleView());
-    expect(buf.rowText(9)).toContain('waiting for a session');
-    expect(buf.rowText(2)).toContain('CLAUDE CODE ADVISOR');
+    expect(rectText(buf, L.main)).toContain('waiting for a session');
+    expect(buf.rowText(L.rows.header)).toContain('WAITING FOR A SESSION');
+    expect(rectText(buf, L.project)).toContain('none yet');
+  });
+
+  it('los modelos que la cola aún no deja ver evitan el encabezado en espera', () => {
+    const buf = render(FULL_COLS, FULL_ROWS, { ...idleView(), preview: { main: 'claude-haiku-5-5', advisor: 'claude-opus-5-5' } });
+    expect(buf.rowText(L.rows.header)).toContain('HAIKU 5.5 LEADS');
   });
 
   it('un texto ancho o con controles no desarma las filas', () => {
@@ -149,54 +180,82 @@ describe('contenido', () => {
     state.title = '日本語のタイトル 🚀\tcon\ncontrol';
     state.mainModel = 'claude-haiku-5-5';
     const buf = render(FULL_COLS, FULL_ROWS, { state, log: [], now: 0, queue: { pending: [] }, connected: true });
-    expect([...buf.rowText(7)].length).toBe(FULL_COLS);
-    for (let x = 0; x < FULL_COLS; x += 1) expect(charWidth(buf.charAt(x, 7).codePointAt(0) as number)).toBe(1);
+    const y = L.main.y + 2;
+    expect([...buf.rowText(y)].length).toBe(FULL_COLS);
+    for (let x = 0; x < FULL_COLS; x += 1) expect(charWidth(buf.charAt(x, y).codePointAt(0) as number)).toBe(1);
   });
 
-  it('color: los paneles usan los tokens del tema', () => {
+  it('color: los paneles usan los tokens del tema, sobre un fondo plano', () => {
     const buf = render();
-    expect(buf.fgAt(2, 5)).toBe(mix(theme.advisor, theme.panel, 0.2));
-    expect(buf.fgAt(39, 5)).toBe(mix(theme.main, theme.panel, 0.2));
-    expect(buf.fgAt(38, 13)).toBe(mix(theme.metrics, theme.panel, 0.2));
-    expect(buf.bgAt(10, 20)).toBe(theme.panel);
-    // Viñeta: el centro del fondo es más claro que una esquina.
-    const luma = (c: number): number => ((c >> 16) & 255) + ((c >> 8) & 255) + (c & 255);
-    expect(luma(buf.bgAt(32, 33))).toBeGreaterThan(luma(buf.bgAt(0, 47)));
+    expect(buf.fgAt(L.project.x, L.project.y)).toBe(mix(theme.notes, theme.panel, 0.12));
+    expect(buf.fgAt(L.main.x, L.main.y)).toBe(mix(theme.main, theme.panel, 0.12));
+    expect(buf.fgAt(L.memory.x, L.memory.y)).toBe(mix(theme.metrics, theme.panel, 0.12));
+    expect(buf.bgAt(0, 0)).toBe(theme.bg);
+    expect(buf.bgAt(45, 20)).toBe(theme.bg);
+    expect(buf.bgAt(FULL_COLS - 1, FULL_ROWS - 1)).toBe(theme.bg);
+  });
+});
+
+describe('layout compacto', () => {
+  const sizes = [[80, 30], [120, 30], [100, 35], [120, 40], [89, 46]] as const;
+
+  it('una ventana normal conserva todos los apartados y sus conexiones', () => {
+    for (const [cols, rows] of sizes) {
+      const layout = layoutFor(cols, rows) as SceneLayout;
+      expect(layout.kind).toBe('compact');
+      const buf = render(cols, rows, fixtureView());
+      const all = screenText(buf);
+      for (const part of ['PROJECT MEMORY', 'before work', 'repeat failure', 'before sign-off', 'main session', 'ADVISOR', 'AGENT MEMORY', 'delegate to subagents', 'explore', 'back to', 'session log', 'claude --model', 'queued']) {
+        expect(all, `${cols}x${rows}: ${part}`).toContain(part);
+      }
+      for (const r of [layout.project, layout.main, layout.memory, ...layout.cards, layout.lead, layout.log]) expect(buf.charAt(r.x + layout.originX, r.y + layout.originY)).toBe('┌');
+      expect(buf.charAt(layout.spine + layout.originX, layout.rows.bus + layout.originY)).toBe('┼');
+      expect(buf.charAt(layout.spine + layout.originX, layout.rows.merge + layout.originY)).toBe('┼');
+    }
+  });
+
+  it('el rótulo de la memoria se ve también sin fila propia', () => {
+    const all = screenText(render(80, 30, fixtureView()));
+    expect(all).toContain('memory · real tool calls');
+  });
+
+  it('el nombre del agente no se corta para mostrar el modelo', () => {
+    const all = screenText(render(80, 30, fixtureView()));
+    expect(all).toContain('explore · haiku');
+  });
+
+  it('la flecha va sobre el borde de la tarjeta cuando no tiene fila propia', () => {
+    const layout = layoutFor(80, 30) as SceneLayout;
+    const buf = render(80, 30, fixtureView());
+    expect(layout.cardArrowRow).toBeUndefined();
+    for (const center of layout.cardCenters) expect(buf.charAt(center, layout.cards[0].y)).toBe('▼');
+    expect(buf.charAt(layout.spine, layout.lead.y)).toBe('▼');
   });
 });
 
 describe('layouts según el tamaño', () => {
-  it('elige por tamaño', () => {
-    expect(layoutKind(96, 48)).toBe('full');
-    expect(layoutKind(200, 100)).toBe('full');
-    expect(layoutKind(95, 48)).toBe('reduced');
-    expect(layoutKind(96, 47)).toBe('reduced');
-    expect(layoutKind(80, 24)).toBe('reduced');
-    expect(layoutKind(79, 24)).toBe('too-small');
-    expect(layoutKind(80, 23)).toBe('too-small');
-  });
-
-  it('el reducido a 80x24 conserva advisor, principal, subagentes y log', () => {
+  it('el reducido a 80x24 conserva advisor, principal, subagentes y log, y avisa cómo ver todo', () => {
     const buf = render(80, 24, fixtureView());
-    const all = Array.from({ length: 24 }, (_, y) => buf.rowText(y)).join('\n');
+    const all = screenText(buf);
     expect(all).toContain('OPUS 5.5 · on call');
     expect(all).toContain('main');
     expect(all).toContain('Estructura');
     expect(all).toContain('session log');
     expect(all).toContain('after subagents');
     expect(all).toContain('calls');
+    expect(all).toContain('30+ rows: full view');
   });
 
   it('el mensaje de ventana pequeña dice el tamaño real', () => {
     const buf = render(60, 20);
-    const all = Array.from({ length: 20 }, (_, y) => buf.rowText(y)).join('\n');
+    const all = screenText(buf);
     expect(all).toContain('Agranda la ventana');
     expect(all).toContain('80x24');
     expect(all).toContain('60x20');
   });
 
   it('ningún tamaño intermedio falla', () => {
-    for (const [cols, rows] of [[80, 24], [81, 25], [95, 47], [96, 24], [80, 47], [120, 30], [79, 23], [1, 1], [10, 2]] as const) {
+    for (const [cols, rows] of [[80, 24], [81, 25], [89, 45], [90, 24], [80, 45], [120, 30], [80, 29], [79, 23], [1, 1], [10, 2]] as const) {
       for (const view of [fixtureView(MID_SESSION_MS), fixtureView(), idleView()]) {
         expect(() => render(cols, rows, view)).not.toThrow();
       }
@@ -225,9 +284,9 @@ describe('diff ANSI', () => {
     const term = new Terminal({ cols: FULL_COLS, rows: FULL_ROWS, allowProposedApi: true });
     await feed(term, `\x1b[?7l${encodeFrame(null, buf, 'truecolor')}`);
     expectMatch(term, buf);
-    const cell = term.buffer.active.getLine(5)?.getCell(2);
+    const cell = term.buffer.active.getLine(L.project.y)?.getCell(L.project.x);
     expect(cell?.isFgRGB()).toBe(true);
-    expect(cell?.getFgColor()).toBe(mix(theme.advisor, theme.panel, 0.2));
+    expect(cell?.getFgColor()).toBe(mix(theme.notes, theme.panel, 0.12));
     term.dispose();
   });
 
@@ -255,7 +314,7 @@ describe('diff ANSI', () => {
 
   it('un cambio de tamaño redibuja todo', () => {
     const a = render(80, 24);
-    const b = render(96, 48);
+    const b = render(90, 46);
     expect(encodeFrame(a, b, 'truecolor').length).toBeGreaterThan(encodeFrame(null, a, 'truecolor').length);
   });
 
@@ -289,40 +348,41 @@ describe('animación 1: arranque', () => {
 
   it('al empezar no hay paneles ni encabezado completo', () => {
     const buf = frame(0);
-    expect(buf.rowText(2)).not.toContain('CLAUDE');
-    expect(buf.charAt(2, 5)).toBe(' ');
-    expect(buf.charAt(39, 5)).toBe(' ');
-    expect(buf.rowText(0)).toContain('sinapsis');
+    expect(buf.rowText(L.rows.header)).not.toContain('CLAUDE');
+    expect(buf.charAt(L.project.x, L.project.y)).toBe(' ');
+    expect(buf.charAt(L.main.x, L.main.y)).toBe(' ');
   });
 
   it('el encabezado se escribe de izquierda a derecha', () => {
-    const lengths = [100, 300, 500, 700, 900].map((ms) => frame(ms).rowText(2).trim().length);
+    const lengths = [100, 300, 500, 700, 900].map((ms) => frame(ms).rowText(L.rows.header).trim().length);
     for (let i = 1; i < lengths.length; i += 1) expect(lengths[i]).toBeGreaterThanOrEqual(lengths[i - 1] as number);
     expect(lengths[0]).toBeLessThan(lengths[4] as number);
   });
 
   it('un borde se dibuja recorriendo el panel: arriba antes que abajo', () => {
+    const r = L.project;
     const early = frame(400);
-    expect(early.charAt(2, 5)).toBe('┏');
-    expect(early.charAt(2, 38)).toBe(' ');
+    expect(early.charAt(r.x, r.y)).toBe('┌');
+    expect(early.charAt(r.x, r.y + r.h - 1)).toBe(' ');
     const later = frame(800);
-    expect(later.charAt(23, 5)).toBe('┓');
-    expect(later.charAt(23, 30)).toBe('┃');
+    expect(later.charAt(r.x + r.w - 1, r.y)).toBe('┐');
   });
 
-  it('los paneles entran en cascada: el advisor antes que el log', () => {
+  it('los paneles entran en cascada: la memoria de proyecto antes que el log', () => {
     const buf = frame(700);
-    expect(buf.charAt(2, 5)).toBe('┏');
-    expect(buf.charAt(2, 39)).toBe(' ');
-    expect(frame(2000).charAt(2, 39)).toBe('┏');
+    expect(buf.charAt(L.project.x, L.project.y)).toBe('┌');
+    expect(buf.charAt(L.log.x, L.log.y)).toBe(' ');
+    expect(frame(2000).charAt(L.log.x, L.log.y)).toBe('┌');
   });
 
-  it('funciona en una terminal mayor y en el layout reducido', () => {
+  it('funciona en una terminal mayor, en el compacto y en el reducido', () => {
     const big = new CellBuffer(120, 60);
     renderScene(big, { ...fixtureView(), anim: { bootMs: 500 } });
     expect(big.originX).toBe(0);
-    const small = new CellBuffer(80, 24);
-    expect(() => renderScene(small, { ...fixtureView(), anim: { bootMs: 100 } })).not.toThrow();
+    for (const [cols, rows] of [[120, 30], [80, 30], [80, 24]] as const) {
+      const buf = new CellBuffer(cols, rows);
+      expect(() => renderScene(buf, { ...fixtureView(), anim: { bootMs: 100 } })).not.toThrow();
+    }
   });
 });
 
