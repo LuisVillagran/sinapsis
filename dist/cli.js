@@ -743,6 +743,7 @@ var PACKET_SHARE = 0.35;
 var PULSE_PERIOD_MS = 170;
 var TYPE_CHARS_PER_MS = 0.03;
 var QUEUE_AFTER_BOOT_MS = 1600;
+var LEAD_GLOW_MS = 900;
 var Director = class {
   truth = createState();
   shown = createState();
@@ -757,6 +758,10 @@ var Director = class {
   packets = [];
   consultAnim;
   consultSlotById = /* @__PURE__ */ new Map();
+  cards = [void 0, void 0, void 0];
+  /** Subagentes activos sin tarjeta libre. */
+  waitingCards = [];
+  leadGlowStart;
   constructor(options = {}) {
     this.animateBoot = options.boot ?? false;
   }
@@ -773,6 +778,9 @@ var Director = class {
       this.packets = [];
       this.consultAnim = void 0;
       this.consultSlotById.clear();
+      this.cards = [void 0, void 0, void 0];
+      this.waitingCards = [];
+      this.leadGlowStart = void 0;
       this.log = [];
       this.last = void 0;
       this.connected = true;
@@ -783,14 +791,30 @@ var Director = class {
     for (const event of update.events) applyEvent(this.truth, event);
     if (update.historical) {
       for (const event of update.events) {
+        const isNew = event.type === "subagent_start" && !this.shown.subagents.some((s) => s.id === event.subagentId);
         if (event.type === "subagent_start") this.queue.markKnown(event.subagentId);
         this.show(event, void 0);
+        if (isNew && event.type === "subagent_start") this.placeCard(event.subagentId, now, void 0);
       }
     } else {
       this.queue.push(update.events);
     }
     this.version += 1;
-    void now;
+  }
+  /** Pone un subagente en la primera posición libre, o en la de uno que ya terminó de desvanecerse. */
+  placeCard(id, now, enter) {
+    const finished = (card) => {
+      const sub = this.shown.subagents.find((s) => s.id === card.id);
+      return !sub?.running && (card.exit === void 0 || now >= card.exit.start + card.exit.duration);
+    };
+    let slot = this.cards.findIndex((card) => !card);
+    if (slot < 0) slot = this.cards.findIndex((card) => card !== void 0 && finished(card));
+    if (slot < 0) {
+      this.waitingCards.push(id);
+      return void 0;
+    }
+    this.cards[slot] = { id, enter };
+    return slot;
   }
   show(event, bornAt) {
     const repeated = event.type === "subagent_start" && this.shown.subagents.some((s) => s.id === event.subagentId);
@@ -824,7 +848,51 @@ var Director = class {
     } else if (item.kind === "advisor-reply" && first?.type === "advisor_reply") {
       const slot = this.consultSlotById.get(first.id) ?? 0;
       this.addPacket(`advisor-back-${slot}`, start, duration);
+    } else if (item.kind === "subagent-start" && first?.type === "subagent_start") {
+      const growStart = start + duration * 0.4;
+      const slot = this.placeCard(first.subagentId, now, { start: growStart, duration: duration * 0.6 });
+      if (slot !== void 0) this.addPacket(`delegate-${slot}`, start, duration * 0.5);
+    } else if (item.kind === "subagent-end" && first?.type === "subagent_end") {
+      const slot = this.cards.findIndex((card2) => card2?.id === first.subagentId);
+      const card = this.cards[slot];
+      if (card) {
+        card.exit = { start, duration };
+        this.addPacket(`back-${slot}`, start + duration * 0.25, duration * 0.75);
+        this.leadGlowStart = start + duration * 0.8;
+      } else {
+        this.waitingCards = this.waitingCards.filter((id) => id !== first.subagentId);
+      }
     }
+  }
+  /** Un subagente sin tarjeta entra cuando una queda libre. */
+  promoteWaitingCards(now) {
+    while (this.waitingCards.length) {
+      const id = this.waitingCards[0];
+      this.waitingCards.shift();
+      if (this.placeCard(id, now, { start: now, duration: 500 }) === void 0) {
+        this.waitingCards.pop();
+        this.waitingCards.unshift(id);
+        return;
+      }
+    }
+  }
+  cardViews(now) {
+    this.promoteWaitingCards(now);
+    return this.cards.map((card) => {
+      if (!card) return void 0;
+      const sub = this.shown.subagents.find((s) => s.id === card.id);
+      const grow = card.enter ? progress(now, card.enter.start, card.enter.duration) : 1;
+      const fade = card.exit ? progress(now, card.exit.start, card.exit.duration) : sub && !sub.running ? 1 : 0;
+      return { id: card.id, grow, fade };
+    });
+  }
+  leadGlow(now) {
+    if (this.leadGlowStart === void 0 || now < this.leadGlowStart) return void 0;
+    const t = progress(now, this.leadGlowStart, LEAD_GLOW_MS);
+    return t < 1 ? 1 - easeOutCubic(t) : void 0;
+  }
+  cardsMoving(now) {
+    return this.cards.some((card) => card && (card.enter && now < card.enter.start + card.enter.duration || card.exit && now < card.exit.start + card.exit.duration)) || this.leadGlowStart !== void 0 && now < this.leadGlowStart + LEAD_GLOW_MS;
   }
   onEnd(active, now) {
     for (const event of active.item.endEvents) this.show(event, now);
@@ -859,13 +927,15 @@ var Director = class {
   /** Hay algo moviéndose que exige la frecuencia alta. */
   isBusy(now) {
     const boot = this.bootElapsed(now);
-    return !this.queue.isEmpty || this.packets.length > 0 || boot !== void 0 && boot < BOOT_MS;
+    return !this.queue.isEmpty || this.packets.length > 0 || this.cardsMoving(now) || boot !== void 0 && boot < BOOT_MS;
   }
   animFrame(now) {
     const boot = this.bootElapsed(now);
     return {
       bootMs: boot !== void 0 && boot < BOOT_MS ? boot : void 0,
       packets: this.activePackets(now),
+      cards: this.cardViews(now),
+      leadGlow: this.leadGlow(now),
       ...this.advisorMotion(now)
     };
   }
@@ -1383,12 +1453,13 @@ function drawConnectors(buf, view) {
   buf.put(c2, back + 1, "\u251B", bright, BOLD);
   buf.put(c1, back + 1, "\u254B", bright, BOLD);
   for (let y = back + 2; y < lead.y; y += 1) buf.put(spine, y, "\u2503", bright, BOLD);
+  const glow = view.anim?.leadGlow ?? 0;
   if (anyDone) {
-    for (let x = c0; x <= c2; x += 1) buf.tintBg(x, back + 1, theme.sub, 0.08);
+    for (let x = c0; x <= c2; x += 1) buf.tintBg(x, back + 1, theme.sub, 0.08 + glow * 0.15);
     for (let y = back; y < lead.y; y += 1) {
-      buf.tintBg(spine, y, theme.sub, 0.1);
-      buf.tintBg(spine - 1, y, theme.sub, 0.06);
-      buf.tintBg(spine + 1, y, theme.sub, 0.06);
+      buf.tintBg(spine, y, theme.sub, 0.1 + glow * 0.25);
+      buf.tintBg(spine - 1, y, theme.sub, 0.06 + glow * 0.15);
+      buf.tintBg(spine + 1, y, theme.sub, 0.06 + glow * 0.15);
     }
   }
 }
@@ -1461,10 +1532,32 @@ function drawMetrics(buf, view, r) {
   const footer = rest.length ? `+ ${rest.map(([name, stat]) => `${name} ${stat.count}`).join(" \xB7 ")}` : state.toolErrors > 0 ? `${state.toolErrors} failed \xB7 orange = had errors` : "green = no errors \xB7 orange = had errors";
   buf.text(left, r.y + 5, fit(toCells(footer), r.w - 4), theme.dim);
 }
-function drawCard(buf, r, sub, index, view) {
+var GROW_SHARE = 0.6;
+var FILL_SHARE = 0.4;
+var DONE_DIM = 0.38;
+function drawGrowingBox(buf, r, grow) {
+  const k = easeOutCubic(segment(grow, 0, GROW_SHARE));
+  const w = Math.max(3, Math.round(r.w * k));
+  const h = Math.max(3, Math.round(r.h * k));
+  const rect = { x: r.x + Math.floor((r.w - w) / 2), y: r.y + Math.floor((r.h - h) / 2), w, h };
+  box(buf, rect, { color: mix(theme.bgEdge, theme.subBright, k), fill: theme.panel, halo: 0.5 * k, bold: true });
+}
+function fadeArea(buf, r, toward, amount) {
+  if (amount <= 0) return;
+  for (let y = r.y; y < r.y + r.h; y += 1) {
+    for (let x = r.x; x < r.x + r.w; x += 1) buf.tintFg(x, y, toward, amount);
+  }
+}
+function drawCard(buf, r, sub, index, view, card) {
   if (!sub) {
     box(buf, r, { color: mix(theme.sub, theme.bgEdge, 0.72), dashed: true, fill: mix(theme.panel, theme.bgEdge, 0.4) });
     centerText(buf, r.x + 1, r.w - 2, r.y + 3, "no subagent", mix(theme.dim, theme.bgEdge, 0.45));
+    return;
+  }
+  const grow = card?.grow ?? 1;
+  const fade = card?.fade ?? 0;
+  if (grow < GROW_SHARE) {
+    drawGrowingBox(buf, r, grow);
     return;
   }
   const failed = sub.status !== void 0 && sub.status !== "completed";
@@ -1472,35 +1565,40 @@ function drawCard(buf, r, sub, index, view) {
   box(buf, r, { color, fill: theme.panel, halo: sub.running ? 0.3 : 0.15, bold: true });
   const inner = r.w - 2;
   const left = r.x + 1;
-  const name = plainText(subagentName(view.state, sub.id));
+  const name = sub.description || sub.agentType ? plainText(subagentName(view.state, sub.id)) : "starting\u2026";
   const label = fit(`${String(index + 1).padStart(2, "0")} ${(sub.agentType ?? "agent").toLowerCase()}`, inner - 2);
   const chipEnd = left + cellLength(label) + 2;
   for (let x = left; x < chipEnd; x += 1) buf.setBg(x, r.y, mix(theme.panel, theme.sub, sub.running ? 0.3 : 0.12));
   buf.text(left, r.y, ` ${label} `, sub.running ? theme.subBright : theme.dim);
   centerText(buf, left + 1, inner - 2, r.y + 1, name, theme.text, true);
-  const tags = [{ text: displayModel(sub.model), color: theme.main }];
-  if (sub.running) tags.push({ text: ` [ ${spinnerFrame(view.now + index * 40)} ]`, color: theme.sub });
+  const tags = sub.model ? [{ text: displayModel(sub.model), color: theme.main }] : [];
+  if (sub.running) tags.push({ text: `${sub.model ? " " : ""}[ ${spinnerFrame(view.now + index * 40)} ]`, color: theme.sub });
   centerSegments(buf, left, inner, r.y + 2, tags);
   const barX = left + 1;
   const barWidth = inner - 2;
   if (sub.running) indeterminateBar(buf, barX, r.y + 3, barWidth, view.now / 1800 + index * 0.27, theme.barSub);
-  else bar(buf, barX, r.y + 3, barWidth, 1, failed ? theme.barAlert : theme.barSub);
-  const detail = sub.running ? `tools: ${sub.toolCount}${sub.currentTool ? ` \xB7 ${sub.currentTool}` : ""}` : `${sub.toolCount} tools \xB7 ${formatDuration(sub.durationMs)}`;
+  else bar(buf, barX, r.y + 3, barWidth, easeOutCubic(segment(fade, 0, FILL_SHARE)), failed ? theme.barAlert : theme.barSub);
+  const detail = sub.running ? `tools: ${sub.toolCount}${sub.currentTool ? ` \xB7 ${sub.currentTool}` : ""}` : `${sub.toolCount} tools${sub.durationMs !== void 0 ? ` \xB7 ${formatDuration(sub.durationMs)}` : ""}`;
   centerText(buf, left, inner, r.y + 4, detail, failed ? theme.alert : theme.sub);
   const status = sub.running ? ["\u25D0", "\u25D3", "\u25D1", "\u25D2"][Math.floor(view.now / 160 + index) % 4] : failed ? "\u2715" : "\u25CF";
   const tokens = !sub.running && sub.totalTokens !== void 0 ? ` ${formatTokens(sub.totalTokens)}` : "";
   centerSegments(buf, left, inner, r.y + 5, [
     { text: status, color: failed ? theme.alert : theme.sub },
     { text: tokens, color: theme.sub },
-    { text: sub.readOnly ? `${tokens ? " \xB7" : ""} read-only` : "", color: theme.dim }
+    { text: sub.readOnly ? " read-only" : "", color: theme.dim }
   ]);
+  const appear = segment(grow, GROW_SHARE, 1);
+  if (appear < 1) fadeArea(buf, { x: r.x + 1, y: r.y, w: r.w - 2, h: r.h - 1 }, theme.panel, 1 - appear);
+  fadeArea(buf, r, theme.panel, DONE_DIM * easeInOutCubic(segment(fade, FILL_SHARE, 1)));
 }
-function visibleSubagents(view, count) {
+function cardSlots(view, count) {
   const { subagents } = view.state;
+  const slots = view.anim?.cards;
+  if (slots) return slots.slice(0, count).map((card) => ({ sub: card && subagents.find((s) => s.id === card.id), card }));
   const running = subagents.filter((s) => s.running);
   const done = subagents.filter((s) => !s.running);
   const picked = [...running.slice(-count), ...done.slice(-Math.max(0, count - running.length))];
-  return subagents.filter((s) => picked.includes(s));
+  return subagents.filter((s) => picked.includes(s)).map((sub) => ({ sub }));
 }
 function drawDelegate(buf, view, y, x, width) {
   const { subagents } = view.state;
@@ -1514,7 +1612,13 @@ function drawDelegate(buf, view, y, x, width) {
 }
 function drawLead(buf, view, r) {
   const done = view.state.subagents.filter((s) => !s.running);
-  box(buf, r, { color: done.length ? theme.subBright : mix(theme.sub, theme.bgEdge, 0.5), fill: theme.panel, halo: done.length ? 0.5 : 0.1, bold: true });
+  const glow = view.anim?.leadGlow ?? 0;
+  box(buf, r, {
+    color: done.length ? theme.subBright : mix(mix(theme.sub, theme.bgEdge, 0.5), theme.subBright, glow),
+    fill: mix(theme.panel, theme.sub, glow * 0.14),
+    halo: (done.length ? 0.5 : 0.1) + glow * 0.9,
+    bold: true
+  });
   centerSegments(buf, r.x + 1, r.w - 2, r.y + 1, [
     { text: "back to ", color: theme.text },
     { text: mainName(view), color: theme.main, bold: true },
@@ -1580,8 +1684,11 @@ function renderFull(buf, view) {
   drawAdvisorState(target, view, FULL.advisorState);
   drawMetrics(target, view, FULL.metrics);
   drawDelegate(target, view, rows.delegate, 28, 67);
-  const visible = visibleSubagents(view, FULL.cards.length);
-  FULL.cards.forEach((rect, i) => drawCard(target, rect, visible[i], view.state.subagents.indexOf(visible[i]), view));
+  const visible = cardSlots(view, FULL.cards.length);
+  FULL.cards.forEach((rect, i) => {
+    const slot = visible[i];
+    drawCard(target, rect, slot?.sub, slot?.sub ? view.state.subagents.indexOf(slot.sub) : -1, view, slot?.card);
+  });
   drawLead(target, view, FULL.lead);
   drawLog(target, view, FULL.log);
   drawPrompt(target, view, rows.prompt, 0, FULL_COLS);
@@ -1641,10 +1748,10 @@ function renderReduced(buf, view) {
   const cardCount = 3;
   const gap = 1;
   const cardW = Math.floor((rightW - gap * (cardCount - 1)) / cardCount);
-  const visible = visibleSubagents(view, cardCount);
+  const visible = cardSlots(view, cardCount);
   for (let i = 0; i < cardCount; i += 1) {
     const r = { x: rightX + i * (cardW + gap), y: 6, w: cardW, h: 5 };
-    const sub = visible[i];
+    const sub = visible[i]?.sub;
     if (!sub) {
       box(buf, r, { color: mix(theme.sub, theme.bgEdge, 0.72), dashed: true, fill: mix(theme.panel, theme.bgEdge, 0.4) });
       continue;

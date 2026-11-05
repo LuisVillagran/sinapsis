@@ -2,6 +2,7 @@
 
 import { displayModel, formatDuration, formatTokens, modelAlias, plainText, subagentName } from '../core/describe.js';
 import type { ConsultState, SubagentState } from '../core/state.js';
+import { easeInOutCubic, easeOutCubic, segment } from '../engine/easing.js';
 import { BOOT_MS, applyBootFade, applyBootFull } from './boot.js';
 import { BOLD, type CellBuffer, cellLength, fit, toCells } from '../tui/buffer.js';
 import { type Rgb, mix } from '../tui/color.js';
@@ -9,7 +10,7 @@ import { type Rect, type Segment, bar, box, centerSegments, centerText, indeterm
 import { FULL, FULL_COLS, FULL_ROWS, MIN_COLS, MIN_ROWS, consultSlot, layoutKind } from './layout.js';
 import { drawPacket } from './packets.js';
 import { theme } from './theme.js';
-import type { SceneView } from './view.js';
+import type { CardView, SceneView } from './view.js';
 
 const backgroundCache = new Map<string, Int32Array>();
 
@@ -270,12 +271,13 @@ function drawConnectors(buf: CellBuffer, view: SceneView): void {
   buf.put(c2, back + 1, '┛', bright, BOLD);
   buf.put(c1, back + 1, '╋', bright, BOLD);
   for (let y = back + 2; y < lead.y; y += 1) buf.put(spine, y, '┃', bright, BOLD);
+  const glow = view.anim?.leadGlow ?? 0;
   if (anyDone) {
-    for (let x = c0; x <= c2; x += 1) buf.tintBg(x, back + 1, theme.sub, 0.08);
+    for (let x = c0; x <= c2; x += 1) buf.tintBg(x, back + 1, theme.sub, 0.08 + glow * 0.15);
     for (let y = back; y < lead.y; y += 1) {
-      buf.tintBg(spine, y, theme.sub, 0.1);
-      buf.tintBg(spine - 1, y, theme.sub, 0.06);
-      buf.tintBg(spine + 1, y, theme.sub, 0.06);
+      buf.tintBg(spine, y, theme.sub, 0.1 + glow * 0.25);
+      buf.tintBg(spine - 1, y, theme.sub, 0.06 + glow * 0.15);
+      buf.tintBg(spine + 1, y, theme.sub, 0.06 + glow * 0.15);
     }
   }
 }
@@ -367,10 +369,39 @@ function drawMetrics(buf: CellBuffer, view: SceneView, r: Rect): void {
 
 // --- Subagentes ---
 
-function drawCard(buf: CellBuffer, r: Rect, sub: SubagentState | undefined, index: number, view: SceneView): void {
+/** Parte de la entrada de una tarjeta en que crece la caja. Después se funde el contenido. */
+const GROW_SHARE = 0.6;
+/** Parte de la salida en que se llena la barra. Después se atenúa. */
+const FILL_SHARE = 0.4;
+/** Cuánto se atenúa una tarjeta terminada. Debe seguir siendo legible. */
+const DONE_DIM = 0.38;
+
+/** Caja de un tamaño intermedio, creciendo desde el centro. */
+function drawGrowingBox(buf: CellBuffer, r: Rect, grow: number): void {
+  const k = easeOutCubic(segment(grow, 0, GROW_SHARE));
+  const w = Math.max(3, Math.round(r.w * k));
+  const h = Math.max(3, Math.round(r.h * k));
+  const rect: Rect = { x: r.x + Math.floor((r.w - w) / 2), y: r.y + Math.floor((r.h - h) / 2), w, h };
+  box(buf, rect, { color: mix(theme.bgEdge, theme.subBright, k), fill: theme.panel, halo: 0.5 * k, bold: true });
+}
+
+function fadeArea(buf: CellBuffer, r: Rect, toward: Rgb, amount: number): void {
+  if (amount <= 0) return;
+  for (let y = r.y; y < r.y + r.h; y += 1) {
+    for (let x = r.x; x < r.x + r.w; x += 1) buf.tintFg(x, y, toward, amount);
+  }
+}
+
+function drawCard(buf: CellBuffer, r: Rect, sub: SubagentState | undefined, index: number, view: SceneView, card?: CardView): void {
   if (!sub) {
     box(buf, r, { color: mix(theme.sub, theme.bgEdge, 0.72), dashed: true, fill: mix(theme.panel, theme.bgEdge, 0.4) });
     centerText(buf, r.x + 1, r.w - 2, r.y + 3, 'no subagent', mix(theme.dim, theme.bgEdge, 0.45));
+    return;
+  }
+  const grow = card?.grow ?? 1;
+  const fade = card?.fade ?? 0;
+  if (grow < GROW_SHARE) {
+    drawGrowingBox(buf, r, grow);
     return;
   }
   const failed = sub.status !== undefined && sub.status !== 'completed';
@@ -378,7 +409,8 @@ function drawCard(buf: CellBuffer, r: Rect, sub: SubagentState | undefined, inde
   box(buf, r, { color, fill: theme.panel, halo: sub.running ? 0.3 : 0.15, bold: true });
   const inner = r.w - 2;
   const left = r.x + 1;
-  const name = plainText(subagentName(view.state, sub.id));
+  // El archivo del subagente aparece antes que el `tool_use` que trae su descripción.
+  const name = sub.description || sub.agentType ? plainText(subagentName(view.state, sub.id)) : 'starting…';
 
   // Etiqueta sobre el borde superior: número de orden y tipo real.
   const label = fit(`${String(index + 1).padStart(2, '0')} ${(sub.agentType ?? 'agent').toLowerCase()}`, inner - 2);
@@ -387,35 +419,50 @@ function drawCard(buf: CellBuffer, r: Rect, sub: SubagentState | undefined, inde
   buf.text(left, r.y, ` ${label} `, sub.running ? theme.subBright : theme.dim);
 
   centerText(buf, left + 1, inner - 2, r.y + 1, name, theme.text, true);
-  const tags: Segment[] = [{ text: displayModel(sub.model), color: theme.main }];
-  if (sub.running) tags.push({ text: ` [ ${spinnerFrame(view.now + index * 40)} ]`, color: theme.sub });
+  const tags: Segment[] = sub.model ? [{ text: displayModel(sub.model), color: theme.main }] : [];
+  if (sub.running) tags.push({ text: `${sub.model ? ' ' : ''}[ ${spinnerFrame(view.now + index * 40)} ]`, color: theme.sub });
   centerSegments(buf, left, inner, r.y + 2, tags);
 
   const barX = left + 1;
   const barWidth = inner - 2;
   if (sub.running) indeterminateBar(buf, barX, r.y + 3, barWidth, view.now / 1800 + index * 0.27, theme.barSub);
-  else bar(buf, barX, r.y + 3, barWidth, 1, failed ? theme.barAlert : theme.barSub);
+  else bar(buf, barX, r.y + 3, barWidth, easeOutCubic(segment(fade, 0, FILL_SHARE)), failed ? theme.barAlert : theme.barSub);
 
   const detail = sub.running
     ? `tools: ${sub.toolCount}${sub.currentTool ? ` · ${sub.currentTool}` : ''}`
-    : `${sub.toolCount} tools · ${formatDuration(sub.durationMs)}`;
+    : `${sub.toolCount} tools${sub.durationMs !== undefined ? ` · ${formatDuration(sub.durationMs)}` : ''}`;
   centerText(buf, left, inner, r.y + 4, detail, failed ? theme.alert : theme.sub);
   const status = sub.running ? ['◐', '◓', '◑', '◒'][Math.floor(view.now / 160 + index) % 4] : failed ? '✕' : '●';
   const tokens = !sub.running && sub.totalTokens !== undefined ? ` ${formatTokens(sub.totalTokens)}` : '';
   centerSegments(buf, left, inner, r.y + 5, [
     { text: status as string, color: failed ? theme.alert : theme.sub },
     { text: tokens, color: theme.sub },
-    { text: sub.readOnly ? `${tokens ? ' ·' : ''} read-only` : '', color: theme.dim },
+    { text: sub.readOnly ? ' read-only' : '', color: theme.dim },
   ]);
+
+  // Entrada: el contenido aparece desde el fondo del panel. Salida: se atenúa, sin perder los datos.
+  const appear = segment(grow, GROW_SHARE, 1);
+  if (appear < 1) fadeArea(buf, { x: r.x + 1, y: r.y, w: r.w - 2, h: r.h - 1 }, theme.panel, 1 - appear);
+  fadeArea(buf, r, theme.panel, DONE_DIM * easeInOutCubic(segment(fade, FILL_SHARE, 1)));
 }
 
-/** Las tres tarjetas muestran los subagentes activos primero y, si no, los últimos en terminar. */
-function visibleSubagents(view: SceneView, count: number): SubagentState[] {
+interface CardSlot {
+  sub: SubagentState | undefined;
+  card?: CardView;
+}
+
+/**
+ * Sin animación, muestra los subagentes activos primero y, si no, los últimos en terminar. Con animación, el
+ * director asigna posiciones fijas para que una tarjeta no salte al terminar otra.
+ */
+function cardSlots(view: SceneView, count: number): CardSlot[] {
   const { subagents } = view.state;
+  const slots = view.anim?.cards;
+  if (slots) return slots.slice(0, count).map((card) => ({ sub: card && subagents.find((s) => s.id === card.id), card }));
   const running = subagents.filter((s) => s.running);
   const done = subagents.filter((s) => !s.running);
   const picked = [...running.slice(-count), ...done.slice(-Math.max(0, count - running.length))];
-  return subagents.filter((s) => picked.includes(s));
+  return subagents.filter((s) => picked.includes(s)).map((sub) => ({ sub }));
 }
 
 function drawDelegate(buf: CellBuffer, view: SceneView, y: number, x: number, width: number): void {
@@ -431,7 +478,13 @@ function drawDelegate(buf: CellBuffer, view: SceneView, y: number, x: number, wi
 
 function drawLead(buf: CellBuffer, view: SceneView, r: Rect): void {
   const done = view.state.subagents.filter((s) => !s.running);
-  box(buf, r, { color: done.length ? theme.subBright : mix(theme.sub, theme.bgEdge, 0.5), fill: theme.panel, halo: done.length ? 0.5 : 0.1, bold: true });
+  const glow = view.anim?.leadGlow ?? 0;
+  box(buf, r, {
+    color: done.length ? theme.subBright : mix(mix(theme.sub, theme.bgEdge, 0.5), theme.subBright, glow),
+    fill: mix(theme.panel, theme.sub, glow * 0.14),
+    halo: (done.length ? 0.5 : 0.1) + glow * 0.9,
+    bold: true,
+  });
   centerSegments(buf, r.x + 1, r.w - 2, r.y + 1, [
     { text: 'back to ', color: theme.text },
     { text: mainName(view), color: theme.main, bold: true },
@@ -507,8 +560,11 @@ function renderFull(buf: CellBuffer, view: SceneView): void {
   drawAdvisorState(target, view, FULL.advisorState);
   drawMetrics(target, view, FULL.metrics);
   drawDelegate(target, view, rows.delegate, 28, 67);
-  const visible = visibleSubagents(view, FULL.cards.length);
-  FULL.cards.forEach((rect, i) => drawCard(target, rect, visible[i], view.state.subagents.indexOf(visible[i] as SubagentState), view));
+  const visible = cardSlots(view, FULL.cards.length);
+  FULL.cards.forEach((rect, i) => {
+    const slot = visible[i];
+    drawCard(target, rect, slot?.sub, slot?.sub ? view.state.subagents.indexOf(slot.sub) : -1, view, slot?.card);
+  });
   drawLead(target, view, FULL.lead);
   drawLog(target, view, FULL.log);
   drawPrompt(target, view, rows.prompt, 0, FULL_COLS);
@@ -572,10 +628,10 @@ function renderReduced(buf: CellBuffer, view: SceneView): void {
   const cardCount = 3;
   const gap = 1;
   const cardW = Math.floor((rightW - gap * (cardCount - 1)) / cardCount);
-  const visible = visibleSubagents(view, cardCount);
+  const visible = cardSlots(view, cardCount);
   for (let i = 0; i < cardCount; i += 1) {
     const r: Rect = { x: rightX + i * (cardW + gap), y: 6, w: cardW, h: 5 };
-    const sub = visible[i];
+    const sub = visible[i]?.sub;
     if (!sub) {
       box(buf, r, { color: mix(theme.sub, theme.bgEdge, 0.72), dashed: true, fill: mix(theme.panel, theme.bgEdge, 0.4) });
       continue;

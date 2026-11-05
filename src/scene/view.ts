@@ -32,6 +32,18 @@ export interface AnimFrame {
   advisorPulse?: number;
   /** Consulta cuyo motivo se está escribiendo, y cuántos caracteres van. */
   typingConsult?: { id: string; chars: number };
+  /** Tarjetas en posiciones fijas: una tarjeta no cambia de lugar mientras se anima. */
+  cards?: Array<CardView | undefined>;
+  /** Brillo de "back to lead" al recibir un resumen, de 0 a 1. */
+  leadGlow?: number;
+}
+
+export interface CardView {
+  id: string;
+  /** Entrada, de 0 a 1: primero crece la caja y luego aparece el contenido. */
+  grow: number;
+  /** Salida, de 0 a 1: primero se llena la barra y luego se atenúa. Los datos siguen visibles. */
+  fade: number;
 }
 
 export interface SceneView {

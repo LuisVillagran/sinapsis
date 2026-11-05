@@ -125,6 +125,108 @@ describe('animación 2: paquetes', () => {
   });
 });
 
+describe('animación 4: subagentes', () => {
+  const start = (id: string): SinapsisEvent => ({ type: 'subagent_start', t: 1, subagentId: id, model: 'claude-haiku-5-5' });
+  const info = (id: string): SinapsisEvent => ({ type: 'subagent_info', t: 1, subagentId: id, description: `tarea ${id}`, agentType: 'Explore' });
+  const end = (id: string): SinapsisEvent => ({ type: 'subagent_end', t: 2, subagentId: id, status: 'completed', summary: `resumen de ${id}` });
+
+  it('la caja crece desde su centro y luego aparece el contenido', () => {
+    const events = [models, start('a'), info('a')];
+    const at = (ms: number): CellBuffer => play(events, ms).buf;
+    const r = FULL.cards[0];
+    // Al principio ni el borde completo ni el contenido.
+    const early = at(400);
+    expect(early.charAt(r.x, r.y)).not.toBe('┏');
+    expect(early.rowText(r.y + 1, r.x, r.x + r.w)).not.toContain('tarea a');
+    // Después la caja ya tiene su tamaño real.
+    const full = at(800);
+    expect(full.charAt(r.x, r.y)).toBe('┏');
+    expect(full.charAt(r.x + r.w - 1, r.y + r.h - 1)).toBe('┛');
+    expect(full.rowText(r.y + 1, r.x, r.x + r.w)).toContain('tarea a');
+  });
+
+  it('crece de forma monótona', () => {
+    const director = new Director();
+    director.ingest({ kind: 'events', events: [models, start('a')], historical: false }, 0);
+    const grows: number[] = [];
+    for (let now = 0; now <= 900; now += 50) {
+      director.update(now);
+      grows.push(director.view(now).anim?.cards?.[0]?.grow ?? 0);
+    }
+    for (let i = 1; i < grows.length; i += 1) expect(grows[i]).toBeGreaterThanOrEqual(grows[i - 1] as number);
+    expect(grows[grows.length - 1]).toBe(1);
+  });
+
+  it('el paquete de delegación va a la tarjeta que le corresponde', () => {
+    const director = new Director();
+    director.ingest({ kind: 'events', events: [models, start('a'), start('b')], historical: false }, 0);
+    director.update(0);
+    expect(director.view(100).anim?.packets?.map((p) => p.route)).toEqual(['delegate-0']);
+    director.update(850);
+    expect(director.view(850).anim?.packets?.map((p) => p.route)).toEqual(['delegate-1']);
+  });
+
+  it('al terminar: la barra se llena, envía su resumen y se atenúa sin perder datos', () => {
+    const director = new Director();
+    const events = [models, start('a'), info('a')];
+    director.ingest({ kind: 'events', events, historical: true }, 0);
+    director.ingest({ kind: 'events', events: [end('a')], historical: false }, 0);
+    director.update(0);
+    expect(director.view(100).anim?.cards?.[0]?.fade).toBeLessThan(1);
+    expect(director.view(300).anim?.packets?.map((p) => p.route)).toEqual(['back-0']);
+    const mid = director.view(800);
+    expect(mid.anim?.leadGlow).toBeDefined();
+    director.update(1000);
+    const after = director.view(3000);
+    expect(after.anim?.cards?.[0]?.fade).toBe(1);
+    const buf = bufferOf(after);
+    const r = FULL.cards[0];
+    expect(buf.rowText(r.y + 1, r.x, r.x + r.w)).toContain('tarea a');
+    expect(buf.rowText(FULL.lead.y + 2, FULL.lead.x, FULL.lead.x + FULL.lead.w)).toContain('resumen de a');
+    expect(after.anim?.leadGlow).toBeUndefined();
+    expect(director.isBusy(3000)).toBe(false);
+  });
+
+  it('las tarjetas no cambian de lugar cuando otra termina', () => {
+    const events = [models, start('a'), start('b'), start('c')];
+    const director = new Director();
+    director.ingest({ kind: 'events', events, historical: true }, 0);
+    const before = director.view(0).anim?.cards?.map((c) => c?.id);
+    expect(before).toEqual(['a', 'b', 'c']);
+    director.ingest({ kind: 'events', events: [end('a')], historical: false }, 0);
+    for (let now = 0; now <= 2000; now += 50) {
+      director.update(now);
+      expect(director.view(now).anim?.cards?.map((c) => c?.id)).toEqual(before);
+    }
+  });
+
+  it('un cuarto subagente espera su tarjeta y entra cuando una queda libre', () => {
+    const director = new Director();
+    director.ingest({ kind: 'events', events: [models, start('a'), start('b'), start('c'), start('d')], historical: true }, 0);
+    expect(director.view(0).anim?.cards?.map((c) => c?.id)).toEqual(['a', 'b', 'c']);
+    director.ingest({ kind: 'events', events: [end('b')], historical: false }, 0);
+    director.update(0);
+    expect(director.view(500).anim?.cards?.[1]?.id).toBe('b');
+    director.update(1000);
+    expect(director.view(1000).anim?.cards?.map((c) => c?.id)).toEqual(['a', 'd', 'c']);
+  });
+
+  it('un subagente nuevo reemplaza a uno terminado, nunca a uno activo', () => {
+    const director = new Director();
+    director.ingest({ kind: 'events', events: [models, start('a'), start('b'), start('c'), end('a')], historical: true }, 0);
+    director.ingest({ kind: 'events', events: [start('e')], historical: false }, 0);
+    director.update(0);
+    expect(director.view(100).anim?.cards?.map((c) => c?.id)).toEqual(['e', 'b', 'c']);
+  });
+
+  it('el estado final coincide con el reductor', () => {
+    const events = [models, start('a'), info('a'), start('b'), end('a'), end('b')];
+    const { view } = play(events, 8000);
+    expect(view.state).toEqual(reduce(events));
+    expect(view.anim?.cards?.map((c) => c?.fade)).toEqual([1, 1, undefined]);
+  });
+});
+
 describe('animación 3: consulta al advisor', () => {
   const batch = [models, consult(), reply()];
   const total = (): number => {

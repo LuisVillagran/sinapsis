@@ -9,9 +9,9 @@ import { type SessionState, applyEvent, createState } from '../core/state.js';
 import { BOOT_MS } from '../scene/boot.js';
 import { type RouteName, consultSlot } from '../scene/layout.js';
 import type { PacketView } from '../scene/packets.js';
-import type { AnimFrame, ReplayStatus, SceneView, ShownLogEntry } from '../scene/view.js';
+import type { AnimFrame, CardView, ReplayStatus, SceneView, ShownLogEntry } from '../scene/view.js';
 import type { SourceUpdate } from '../sources/types.js';
-import { progress } from './easing.js';
+import { easeOutCubic, progress } from './easing.js';
 import { type ActiveItem, AnimationQueue } from './queue.js';
 
 const LOG_LIMIT = 200;
@@ -21,6 +21,19 @@ const PULSE_PERIOD_MS = 170;
 const TYPE_CHARS_PER_MS = 0.03;
 /** Los eventos esperan a que el arranque casi termine, para que no se mezclen con él. */
 const QUEUE_AFTER_BOOT_MS = 1600;
+
+const LEAD_GLOW_MS = 900;
+
+interface Span {
+  start: number;
+  duration: number;
+}
+
+interface CardAnim {
+  id: string;
+  enter?: Span;
+  exit?: Span;
+}
 
 export interface DirectorOptions {
   /** Anima el arranque. Las pruebas de datos lo omiten. */
@@ -41,6 +54,10 @@ export class Director {
   private packets: Array<{ route: RouteName; start: number; duration: number }> = [];
   private consultAnim: { id: string; start: number } | undefined;
   private readonly consultSlotById = new Map<string, 0 | 1 | 2>();
+  private cards: Array<CardAnim | undefined> = [undefined, undefined, undefined];
+  /** Subagentes activos sin tarjeta libre. */
+  private waitingCards: string[] = [];
+  private leadGlowStart: number | undefined;
 
   constructor(options: DirectorOptions = {}) {
     this.animateBoot = options.boot ?? false;
@@ -60,6 +77,9 @@ export class Director {
       this.packets = [];
       this.consultAnim = undefined;
       this.consultSlotById.clear();
+      this.cards = [undefined, undefined, undefined];
+      this.waitingCards = [];
+      this.leadGlowStart = undefined;
       this.log = [];
       this.last = undefined;
       this.connected = true;
@@ -71,14 +91,31 @@ export class Director {
     if (update.historical) {
       // Ya ocurrió: se muestra de inmediato, sin animación.
       for (const event of update.events) {
+        const isNew = event.type === 'subagent_start' && !this.shown.subagents.some((s) => s.id === event.subagentId);
         if (event.type === 'subagent_start') this.queue.markKnown(event.subagentId);
         this.show(event, undefined);
+        if (isNew && event.type === 'subagent_start') this.placeCard(event.subagentId, now, undefined);
       }
     } else {
       this.queue.push(update.events);
     }
     this.version += 1;
-    void now;
+  }
+
+  /** Pone un subagente en la primera posición libre, o en la de uno que ya terminó de desvanecerse. */
+  private placeCard(id: string, now: number, enter: { start: number; duration: number } | undefined): number | undefined {
+    const finished = (card: CardAnim): boolean => {
+      const sub = this.shown.subagents.find((s) => s.id === card.id);
+      return !sub?.running && (card.exit === undefined || now >= card.exit.start + card.exit.duration);
+    };
+    let slot = this.cards.findIndex((card) => !card);
+    if (slot < 0) slot = this.cards.findIndex((card) => card !== undefined && finished(card));
+    if (slot < 0) {
+      this.waitingCards.push(id);
+      return undefined;
+    }
+    this.cards[slot] = { id, enter };
+    return slot;
   }
 
   private show(event: SinapsisEvent, bornAt: number | undefined): void {
@@ -118,7 +155,61 @@ export class Director {
     } else if (item.kind === 'advisor-reply' && first?.type === 'advisor_reply') {
       const slot = this.consultSlotById.get(first.id) ?? 0;
       this.addPacket(`advisor-back-${slot}`, start, duration);
+    } else if (item.kind === 'subagent-start' && first?.type === 'subagent_start') {
+      // El paquete sale primero y la tarjeta crece cuando llega.
+      const growStart = start + duration * 0.4;
+      const slot = this.placeCard(first.subagentId, now, { start: growStart, duration: duration * 0.6 });
+      if (slot !== undefined) this.addPacket(`delegate-${slot as 0 | 1 | 2}`, start, duration * 0.5);
+    } else if (item.kind === 'subagent-end' && first?.type === 'subagent_end') {
+      const slot = this.cards.findIndex((card) => card?.id === first.subagentId);
+      const card = this.cards[slot];
+      if (card) {
+        card.exit = { start, duration };
+        this.addPacket(`back-${slot as 0 | 1 | 2}`, start + duration * 0.25, duration * 0.75);
+        this.leadGlowStart = start + duration * 0.8;
+      } else {
+        this.waitingCards = this.waitingCards.filter((id) => id !== first.subagentId);
+      }
     }
+  }
+
+  /** Un subagente sin tarjeta entra cuando una queda libre. */
+  private promoteWaitingCards(now: number): void {
+    while (this.waitingCards.length) {
+      const id = this.waitingCards[0] as string;
+      this.waitingCards.shift();
+      if (this.placeCard(id, now, { start: now, duration: 500 }) === undefined) {
+        // `placeCard` la volvió a poner al final; se devuelve a su lugar y se deja para después.
+        this.waitingCards.pop();
+        this.waitingCards.unshift(id);
+        return;
+      }
+    }
+  }
+
+  private cardViews(now: number): CardView[] | Array<CardView | undefined> {
+    this.promoteWaitingCards(now);
+    return this.cards.map((card) => {
+      if (!card) return undefined;
+      const sub = this.shown.subagents.find((s) => s.id === card.id);
+      const grow = card.enter ? progress(now, card.enter.start, card.enter.duration) : 1;
+      // Una tarjeta del historial ya terminada se muestra atenuada desde el principio.
+      const fade = card.exit ? progress(now, card.exit.start, card.exit.duration) : sub && !sub.running ? 1 : 0;
+      return { id: card.id, grow, fade };
+    });
+  }
+
+  private leadGlow(now: number): number | undefined {
+    if (this.leadGlowStart === undefined || now < this.leadGlowStart) return undefined;
+    const t = progress(now, this.leadGlowStart, LEAD_GLOW_MS);
+    return t < 1 ? 1 - easeOutCubic(t) : undefined;
+  }
+
+  private cardsMoving(now: number): boolean {
+    return (
+      this.cards.some((card) => card && ((card.enter && now < card.enter.start + card.enter.duration) || (card.exit && now < card.exit.start + card.exit.duration))) ||
+      (this.leadGlowStart !== undefined && now < this.leadGlowStart + LEAD_GLOW_MS)
+    );
   }
 
   private onEnd(active: ActiveItem, now: number): void {
@@ -159,7 +250,7 @@ export class Director {
   /** Hay algo moviéndose que exige la frecuencia alta. */
   isBusy(now: number): boolean {
     const boot = this.bootElapsed(now);
-    return !this.queue.isEmpty || this.packets.length > 0 || (boot !== undefined && boot < BOOT_MS);
+    return !this.queue.isEmpty || this.packets.length > 0 || this.cardsMoving(now) || (boot !== undefined && boot < BOOT_MS);
   }
 
   private animFrame(now: number): AnimFrame {
@@ -167,6 +258,8 @@ export class Director {
     return {
       bootMs: boot !== undefined && boot < BOOT_MS ? boot : undefined,
       packets: this.activePackets(now),
+      cards: this.cardViews(now),
+      leadGlow: this.leadGlow(now),
       ...this.advisorMotion(now),
     };
   }
