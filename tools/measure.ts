@@ -56,6 +56,24 @@ async function measureReplay(cols: number, rows: number): Promise<void> {
   );
 }
 
+/** Frecuencia real con animación activa: durante el arranque el bucle pide siempre la frecuencia alta. */
+async function measureActiveFps(): Promise<void> {
+  const stamps: number[] = [];
+  const app = runApp({
+    source: { tick: () => [], stop: async () => undefined },
+    output: sink(),
+    size: () => ({ cols: 96, rows: 48 }),
+    colorMode: 'truecolor',
+    onFrame: () => stamps.push(performance.now()),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  app.stop();
+  await app.done;
+  const gaps = stamps.slice(1).map((t, i) => t - (stamps[i] as number));
+  const seconds = ((stamps[stamps.length - 1] as number) - (stamps[0] as number)) / 1000;
+  process.stdout.write(`con animación activa: ${(stamps.length / seconds).toFixed(1)} fps, intervalo p50 ${percentile(gaps, 0.5).toFixed(1)} ms, p95 ${percentile(gaps, 0.95).toFixed(1)} ms\n`);
+}
+
 async function measureIdle(label: string, source: EventSource, seconds: number): Promise<void> {
   let bytes = 0;
   let frames = 0;
@@ -87,6 +105,7 @@ async function measureIdle(label: string, source: EventSource, seconds: number):
 }
 
 const idleSeconds = Number(option('idle-seconds', '20'));
+await measureActiveFps();
 await measureReplay(96, 48);
 await measureReplay(140, 50);
 await measureReplay(80, 24);

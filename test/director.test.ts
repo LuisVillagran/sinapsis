@@ -195,6 +195,15 @@ describe('restauración de la terminal', () => {
     await app.done;
   });
 
+  it('una frecuencia muy alta no agota la pila ni bloquea el proceso', async () => {
+    const { stream } = outputOf();
+    const app = runApp({ ...baseOptions(stream), fps: 100_000 });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    app.stop();
+    await app.done;
+    expect(app.session.isRestored).toBe(true);
+  });
+
   it('con contrapresión espera a drain y no se detiene', async () => {
     let drainListener: (() => void) | undefined;
     let writes = 0;

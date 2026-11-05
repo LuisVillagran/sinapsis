@@ -496,7 +496,8 @@ describe('animación 9: errores', () => {
   it('el log y las métricas quedan marcados en naranjo después del destello', () => {
     const { buf, view } = play(failing, 3000);
     expect(view.state.tools.Bash).toEqual({ count: 1, errors: 1 });
-    expect(buf.rowText(FULL.metrics.y + 2)).toContain('1 err');
+    // El conteo y los errores van separados: `1 1 err`, nunca `11 err`.
+    expect(buf.rowText(FULL.metrics.y + 2)).toMatch(/\s1\s+1 err/);
     expect(buf.fgAt(FULL.metrics.x + 2, FULL.metrics.y + 2)).toBe(theme.alert);
     const logRows = Array.from({ length: 4 }, (_, i) => buf.rowText(FULL.log.y + 1 + i)).join('\n');
     expect(logRows).toContain('tool returned an error');

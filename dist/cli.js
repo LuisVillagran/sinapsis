@@ -1623,7 +1623,7 @@ function drawMetrics(buf, view, r) {
     const shown = countOf(name, stat.count);
     buf.text(left, y, fit(toCells(name), 14), failed ? theme.alert : theme.text);
     thinBar(buf, barX, y, barWidth, shown / max, failed ? theme.barAlert : theme.barGood);
-    rightText(buf, barX + barWidth + 4, y, String(Math.round(shown)), theme.text);
+    rightText(buf, barX + barWidth + 3, y, String(Math.round(shown)), theme.text);
     if (failed) rightText(buf, right, y, `${stat.errors} err`, theme.alert);
   });
   if (top.length === 0) buf.text(left, r.y + 2, "no tool calls yet", theme.faint);
@@ -2018,6 +2018,8 @@ var MAX_FPS = 60;
 var MIN_FPS = 30;
 var IDLE_FPS = 20;
 var IDLE_FRAME_MS = 120;
+var TIMER_STEP_MS = 16;
+var PACE_TOLERANCE_MS = process.platform === "win32" ? 8 : 0.5;
 function runApp(options) {
   const now = options.now ?? (() => performance.now());
   const director = new Director({ boot: true });
@@ -2031,6 +2033,7 @@ function runApp(options) {
   let stopped = false;
   let frames = 0;
   let lastKey = "";
+  let lastTick = 0;
   let unsubscribeResize;
   let finish = () => void 0;
   let fail = () => void 0;
@@ -2100,10 +2103,19 @@ function runApp(options) {
   function schedule() {
     if (stopped || waitingDrain) return;
     const rate = options.fps ?? (director.isBusy(now()) ? fps : IDLE_FPS);
-    timer = setTimeout(tick, 1e3 / rate);
+    const due = lastTick + 1e3 / rate;
+    const waitFor = (remaining) => remaining > TIMER_STEP_MS ? remaining - TIMER_STEP_MS : 1;
+    const pace = () => {
+      if (stopped) return;
+      const remaining = due - now();
+      if (remaining <= PACE_TOLERANCE_MS) tick();
+      else timer = setTimeout(pace, waitFor(remaining));
+    };
+    timer = setTimeout(pace, waitFor(due - now()));
   }
   function tick() {
     if (stopped) return;
+    lastTick = now();
     try {
       frame();
     } catch (error) {

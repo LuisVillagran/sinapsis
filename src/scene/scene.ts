@@ -365,7 +365,7 @@ function drawMetrics(buf: CellBuffer, view: SceneView, r: Rect): void {
     const shown = countOf(name, stat.count);
     buf.text(left, y, fit(toCells(name), 14), failed ? theme.alert : theme.text);
     thinBar(buf, barX, y, barWidth, shown / max, failed ? theme.barAlert : theme.barGood);
-    rightText(buf, barX + barWidth + 4, y, String(Math.round(shown)), theme.text);
+    rightText(buf, barX + barWidth + 3, y, String(Math.round(shown)), theme.text);
     if (failed) rightText(buf, right, y, `${stat.errors} err`, theme.alert);
   });
   if (top.length === 0) buf.text(left, r.y + 2, 'no tool calls yet', theme.faint);
