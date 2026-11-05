@@ -44,13 +44,16 @@ const GENERIC_PATH_SEGMENTS = new Set([
 
 const escapeRegex = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-function gitConfig(key) {
+function commandOutput(command) {
   try {
-    return execSync(`git config --global ${key}`, { encoding: 'utf8' }).trim();
+    return execSync(command, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
   } catch {
     return '';
   }
 }
+
+// Sin --global: también ve la identidad configurada solo en este repositorio.
+const gitConfig = (key) => commandOutput(`git config ${key}`);
 
 function buildScrubber() {
   const user = userInfo().username;
@@ -78,12 +81,16 @@ function buildScrubber() {
   for (const segment of projectSegments) {
     rules.push([new RegExp(`\\b${escapeRegex(segment)}\\b`, 'gi'), '<proyecto>']);
   }
-  // Dominio del correo global: puede aparecer sin el resto de la dirección.
-  const emailDomain = gitConfig('user.email').split('@')[1];
+  // Dominio del correo: puede aparecer sin el resto de la dirección.
+  const email = gitConfig('user.email');
+  const emailDomain = email.split('@')[1];
   if (emailDomain) rules.push([new RegExp(escapeRegex(emailDomain), 'gi'), '<dominio>']);
-  const gitName = gitConfig('user.name');
-  if (gitName) rules.push([new RegExp(escapeRegex(gitName), 'gi'), '<usuario>']);
-  rules.push([new RegExp(`\\b${escapeRegex(user)}\\b`, 'gi'), '<usuario>']);
+  // Nombres de cuenta: se buscan también dentro de palabras más largas.
+  const accountNames = [gitConfig('user.name'), email.split('@')[0], commandOutput('gh api user --jq .login')];
+  for (const name of accountNames.filter(Boolean)) {
+    rules.push([new RegExp(escapeRegex(name), 'gi'), '<usuario>']);
+  }
+  rules.push([new RegExp(escapeRegex(user), 'gi'), '<usuario>']);
 
   return (text) => rules.reduce((acc, [pattern, replacement]) => acc.replace(pattern, replacement), text);
 }
