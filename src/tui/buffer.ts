@@ -51,6 +51,11 @@ export class CellBuffer {
   readonly fg: Int32Array;
   readonly bg: Int32Array;
   readonly attrs: Uint8Array;
+  /** En 256 colores un tinte pequeño salta a otro gris: los halos se apagan. */
+  tintsEnabled = true;
+  /** Desplazamiento de las coordenadas de dibujo: centra el layout en una terminal mayor. */
+  originX = 0;
+  originY = 0;
 
   constructor(
     readonly width: number,
@@ -63,14 +68,17 @@ export class CellBuffer {
     this.attrs = new Uint8Array(size);
   }
 
-  private inside(x: number, y: number): boolean {
-    return x >= 0 && y >= 0 && x < this.width && y < this.height;
+  /** Índice de una celda en coordenadas de dibujo, o -1 si está fuera. */
+  private index(x: number, y: number): number {
+    const col = x + this.originX;
+    const row = y + this.originY;
+    return col >= 0 && row >= 0 && col < this.width && row < this.height ? row * this.width + col : -1;
   }
 
   /** Escribe un carácter sin tocar el fondo. */
   put(x: number, y: number, char: string, fg: Rgb, attrs = 0): void {
-    if (!this.inside(x, y)) return;
-    const i = y * this.width + x;
+    const i = this.index(x, y);
+    if (i < 0) return;
     this.chars[i] = char.codePointAt(0) as number;
     this.fg[i] = fg;
     this.attrs[i] = attrs;
@@ -78,24 +86,43 @@ export class CellBuffer {
 
   /** Cambia solo el fondo de una celda. */
   setBg(x: number, y: number, color: Rgb): void {
-    if (this.inside(x, y)) this.bg[y * this.width + x] = color;
+    const i = this.index(x, y);
+    if (i >= 0) this.bg[i] = color;
   }
 
   /** Acerca el fondo de una celda a un color, para halos y destellos. */
   tintBg(x: number, y: number, color: Rgb, amount: number): void {
-    if (!this.inside(x, y)) return;
-    const i = y * this.width + x;
-    this.bg[i] = mix(this.bg[i] as number, color, amount);
+    if (!this.tintsEnabled) return;
+    const i = this.index(x, y);
+    if (i >= 0) this.bg[i] = mix(this.bg[i] as number, color, amount);
+  }
+
+  /** Como `tintBg`, pero también en 256 colores: es para animaciones breves, no para halos permanentes. */
+  blendBg(x: number, y: number, color: Rgb, amount: number): void {
+    const i = this.index(x, y);
+    if (i >= 0) this.bg[i] = mix(this.bg[i] as number, color, amount);
+  }
+
+  /** Acerca el texto de una celda a un color, para fundidos y paquetes. */
+  tintFg(x: number, y: number, color: Rgb, amount: number): void {
+    const i = this.index(x, y);
+    if (i >= 0) this.fg[i] = mix(this.fg[i] as number, color, amount);
   }
 
   /** Celda vacía con ese fondo. */
   clearCell(x: number, y: number, bg: Rgb): void {
-    if (!this.inside(x, y)) return;
-    const i = y * this.width + x;
+    const i = this.index(x, y);
+    if (i < 0) return;
     this.chars[i] = SPACE;
     this.fg[i] = bg;
     this.attrs[i] = 0;
     this.bg[i] = bg;
+  }
+
+  /** Carácter de una celda en coordenadas de dibujo, o un espacio si está fuera. */
+  charAtDraw(x: number, y: number): string {
+    const i = this.index(x, y);
+    return i < 0 ? ' ' : String.fromCodePoint(this.chars[i] as number);
   }
 
   fill(x: number, y: number, w: number, h: number, bg: Rgb): void {

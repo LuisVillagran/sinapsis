@@ -185,7 +185,8 @@ export function applyEvent(state: SessionState, event: SinapsisEvent): void {
   const internal = internals.get(state);
   if (!internal) throw new Error('El estado debe crearse con createState()');
 
-  if (event.t > 0) {
+  // Los metadatos llevan la hora de la primera línea que los trae, y esa cambia según el orden de llegada.
+  if (event.t > 0 && event.type !== 'session_info') {
     if (state.startedAt === undefined || event.t < state.startedAt) state.startedAt = event.t;
     if (state.lastEventAt === undefined || event.t > state.lastEventAt) state.lastEventAt = event.t;
   }

@@ -1,5 +1,6 @@
 // Geometría del layout completo, en celdas. Sale de la tabla de la sección 6 de CLAUDE.md.
 
+import type { ConsultReason } from '../core/events.js';
 import type { Rect } from './draw.js';
 
 export const FULL_COLS = 96;
@@ -23,6 +24,52 @@ export const FULL = {
   cardCenters: [38, 61, 84] as const,
   arrows: { main: 9, cards: 26, lead: 35 },
 };
+
+type Point = [number, number];
+
+/** Expande puntos de paso a la lista de celdas, sin repetir las esquinas. */
+function route(...points: Point[]): Point[] {
+  const cells: Point[] = [points[0] as Point];
+  for (let i = 1; i < points.length; i += 1) {
+    const [tx, ty] = points[i] as Point;
+    let [x, y] = cells[cells.length - 1] as Point;
+    while (x !== tx || y !== ty) {
+      x += Math.sign(tx - x);
+      y += Math.sign(ty - y);
+      cells.push([x, y]);
+    }
+  }
+  return cells;
+}
+
+const delegateRoute = (center: number): Point[] => route([FULL.spine, 20], [FULL.spine, 22], [center, 22], [center, 23]);
+const backRoute = (center: number): Point[] => route([center, 31], [center, 32], [FULL.spine, 32], [FULL.spine, 34]);
+const advisorRow = (from: number, y: number): Point[] => route([from, y], [24, y]);
+
+/** Caminos de los paquetes. Cada consulta viaja por la flecha de su hito. */
+export const ROUTES = {
+  tool: route([FULL.spine, 11], [FULL.spine, 13]),
+  'delegate-0': delegateRoute(FULL.cardCenters[0]),
+  'delegate-1': delegateRoute(FULL.cardCenters[1]),
+  'delegate-2': delegateRoute(FULL.cardCenters[2]),
+  'back-0': backRoute(FULL.cardCenters[0]),
+  'back-1': backRoute(FULL.cardCenters[1]),
+  'back-2': backRoute(FULL.cardCenters[2]),
+  'advisor-out-0': advisorRow(38, FULL.arrows.main),
+  'advisor-out-1': advisorRow(27, FULL.arrows.cards),
+  'advisor-out-2': advisorRow(42, FULL.arrows.lead + 1),
+  'advisor-back-0': advisorRow(38, FULL.arrows.main).reverse(),
+  'advisor-back-1': advisorRow(27, FULL.arrows.cards).reverse(),
+  'advisor-back-2': advisorRow(42, FULL.arrows.lead + 1).reverse(),
+};
+
+export type RouteName = keyof typeof ROUTES;
+
+/** Hito del panel del advisor al que pertenece una consulta. */
+export function consultSlot(reason: ConsultReason): 0 | 1 | 2 {
+  if (reason === 'after errors' || reason === 'after subagents') return 1;
+  return reason === 'before done' ? 2 : 0;
+}
 
 export type LayoutKind = 'full' | 'reduced' | 'too-small';
 

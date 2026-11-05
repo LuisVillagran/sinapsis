@@ -4,9 +4,29 @@ Bitácora para retomar el trabajo solo con este archivo. Ver `CLAUDE.md` para el
 
 ## Fase actual
 
-**Fase 4 — Animaciones.** Fases 0 a 3 cerradas.
+**Fase 5 — Integración en vivo.** Fases 0 a 4 cerradas.
 
 ## Hecho
+
+- **Fase 4:** las nueve animaciones, cola, director y bucle real. Tiras de frames con reloj falso en
+  `docs/capturas/anim-*.png`. El director mantiene `truth` y `shown`; un test comprueba que al vaciarse la cola
+  coinciden con el reductor.
+
+  Medición con `npx tsx tools/measure.ts`, en Windows 11 con Node 24, y salida hacia un `Writable` sin terminal real:
+
+  | Medida | Resultado | Presupuesto |
+  | --- | --- | --- |
+  | Frame a 96x48 (p95) | 1,40 ms | menos de 8 ms |
+  | Frame a 140x50 (p95) | 1,38 ms | menos de 8 ms |
+  | Frame a 80x24 (p95) | 0,70 ms | menos de 8 ms |
+  | Frecuencia con animación activa | 66,5 fps | 60 fps |
+  | CPU en reposo, siguiendo una sesión | 2,7 % de un núcleo | menos de 5 % |
+  | CPU en reposo, sin sesión y buscando en transcripts reales | 1,9 % de un núcleo | menos de 5 % |
+  | Bytes durante la demo | 237 KB/s | sin presupuesto |
+  | Bytes en reposo | 29 KB/s | sin presupuesto |
+
+  **No medido:** el costo de una terminal real al dibujar esos bytes. La frecuencia baja sola con la contrapresión,
+  pero solo se probó con una salida simulada.
 
 - **Fase 3:** motor de buffer de celdas, diff ANSI, escena completa y reducida, `tools/snapshot.ts`,
   `tools/sample-colors.ts`, `docs/colores.md` y capturas en `docs/capturas/`. Cuatro iteraciones de comparación.
@@ -61,6 +81,21 @@ Bitácora para retomar el trabajo solo con este archivo. Ver `CLAUDE.md` para el
 - **256 colores:** fondo plano, porque la viñeta se veía como anillos.
 - **Interfaz en inglés, mensajes de la línea de comandos en español:** la interfaz sigue los rótulos de la
   imagen de referencia y `CLAUDE.md`.
+- **`dist/` versionado y sin `prepare` (desviación de `CLAUDE.md`, a revisar):** con `prepare`, `npm install -g`
+  desde git falla: el npm interno que prepara la dependencia hereda el modo global y no instala `tsup`, y npm 11
+  además bloquea esos scripts en instalaciones globales (`allow-scripts`). `test/dist.test.ts` falla si `dist/`
+  queda atrás: hay que ejecutar `npm run build` antes de cada commit que toque `src/`.
+  **Riesgo abierto:** instalar desde un tarball funciona (`--version` y `demo` verificados), pero `git+file://`
+  deja la carpeta vacía en este equipo. La prueba definitiva con `github:` real es de la Fase 6.
+- **Animaciones 2 y 3 en un solo commit:** la consulta al advisor es el primer uso de los paquetes y comparten el
+  mismo código en el director. El resto va con un commit por animación.
+- **Ritmo del bucle en Windows:** el temporizador avanza a saltos de unos 15,6 ms, así que `setTimeout(16,7)` daba
+  32 fps. El bucle espera por tramos y, solo en Windows, acepta el frame en el salto más cercano.
+- **Modo de prueba:** `SINAPSIS_FORCE_TTY=COLxFIL` dibuja hacia una salida que no es terminal y lee teclas de stdin;
+  `SINAPSIS_COLOR=256`, `SINAPSIS_CRASH_AT_FRAME=N` y `SINAPSIS_EXIT_WHEN_DONE=1` sirven para las pruebas. No se
+  documentan como uso normal.
+- **Tarjetas terminadas:** se atenúan y conservan sus datos en lugar de desaparecer, para no borrar información.
+  Un subagente nuevo reemplaza a una tarjeta terminada, y si las tres están activas, espera su turno.
 - **Privacidad:** el fixture antiguo traía en una línea la salida de una revisión anterior, con fragmentos
   de nombres de otros proyectos. Se limpió también en el historial local con `git filter-branch`, antes del
   primer push. Por eso los hashes de la Fase 0 cambiaron.
@@ -73,6 +108,8 @@ Bitácora para retomar el trabajo solo con este archivo. Ver `CLAUDE.md` para el
 - Fase 3, primera captura: Chrome dejó caer la pestaña con `--use-gl=swiftshader`, y además generó un PNG válido
   del icono de error. Se cambió a `--use-angle=swiftshader` y la herramienta ahora termina con error si la pestaña
   se cae. Con `deviceScaleFactor: 2`, WebGL mostraba un solo cuadrante, así que se captura a escala 1.
+- Fase 4, prueba de instalación desde git: `"tsup" no se reconoce como un comando interno o externo`, durante
+  `git dep preparation failed`. Ver la decisión sobre `dist/` versionado.
 
 ## Bloqueos
 

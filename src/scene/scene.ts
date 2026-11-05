@@ -1,14 +1,16 @@
 // Dibuja un frame completo. Función pura de la vista y del tamaño del buffer.
 
 import { displayModel, formatDuration, formatTokens, modelAlias, plainText, subagentName } from '../core/describe.js';
-import type { ConsultReason } from '../core/events.js';
 import type { ConsultState, SubagentState } from '../core/state.js';
+import { easeInOutCubic, easeOutCubic, segment } from '../engine/easing.js';
+import { BOOT_MS, applyBootFade, applyBootFull } from './boot.js';
 import { BOLD, type CellBuffer, cellLength, fit, toCells } from '../tui/buffer.js';
 import { type Rgb, mix } from '../tui/color.js';
-import { type Rect, type Segment, bar, box, centerSegments, centerText, indeterminateBar, rightText, spinnerFrame, thinBar, wrap, writeSegments } from './draw.js';
-import { FULL, FULL_COLS, FULL_ROWS, MIN_COLS, MIN_ROWS, layoutKind } from './layout.js';
+import { type Rect, type Segment, bar, box, centerSegments, centerText, indeterminateBar, rightText, segmentsWidth, spinnerFrame, thinBar, wrap, writeSegments } from './draw.js';
+import { FULL, FULL_COLS, FULL_ROWS, MIN_COLS, MIN_ROWS, consultSlot, layoutKind } from './layout.js';
+import { drawPacket } from './packets.js';
 import { theme } from './theme.js';
-import type { SceneView } from './view.js';
+import type { CardView, SceneView } from './view.js';
 
 const backgroundCache = new Map<string, Int32Array>();
 
@@ -36,6 +38,13 @@ function paintBackground(buf: CellBuffer, flat: boolean): void {
   buf.chars.fill(0x20);
   buf.attrs.fill(0);
   buf.fg.set(cached);
+}
+
+/** Color del fondo sin paneles en una celda. */
+function baseColor(buf: CellBuffer, flat: boolean): (x: number, y: number) => number {
+  const cached = backgroundCache.get(`${buf.width}x${buf.height}`);
+  if (flat || !cached) return () => theme.bgEdge;
+  return (x, y) => cached[y * buf.width + x] ?? theme.bgEdge;
 }
 
 const folderName = (cwd: string | undefined): string => (cwd ? (cwd.split(/[\\/]/).filter(Boolean).pop() ?? cwd) : 'no session');
@@ -71,6 +80,8 @@ function mainActivity(view: SceneView, width: number): string {
   const { state } = view;
   if (!view.connected) return fit('waiting for a session', width);
   if (state.ended) return 'session ended';
+  // Solo se llega aquí al reproducir un lote: en vivo, la consulta no se ve mientras ocurre.
+  if (state.advisor.consults.some((c) => c.open)) return 'replaying consult';
   if (state.status === 'tool' && state.currentTool) {
     const { name, summary } = state.currentTool;
     return fit(toCells(summary ? `${name} · ${summary.replace(/\s+/g, ' ')}` : name), width);
@@ -88,6 +99,13 @@ function drawWindowBar(buf: CellBuffer, view: SceneView, y: number, width: numbe
 }
 
 function headerSegments(view: SceneView): Segment[] {
+  if (!view.state.mainModel) {
+    return [
+      { text: 'CLAUDE CODE ADVISOR', color: theme.text, bold: true },
+      { text: '  ·  ', color: theme.dim },
+      { text: 'WAITING FOR A SESSION', color: theme.dim },
+    ];
+  }
   const main = mainName(view).toUpperCase();
   const advisor = advisorName(view).toUpperCase();
   return [
@@ -116,19 +134,22 @@ function drawLegend(buf: CellBuffer, view: SceneView, ox: number, oy: number): v
   }
 }
 
-/** Los bordes son más tenues que el color puro del token, como en la referencia. */
-const panelBorder = (color: Rgb): Rgb => mix(color, theme.panel, 0.2);
+/** Cuánto se apagan los bordes al respirar. */
+const BREATH_DEPTH = 0.22;
+
+/** Los bordes son más tenues que el color puro del token, como en la referencia, y respiran en reposo. */
+const panelBorder = (color: Rgb, view: SceneView): Rgb => mix(color, theme.panel, 0.2 + BREATH_DEPTH * (view.anim?.breath ?? 0));
 
 // --- Panel del advisor ---
 
 /** Las consultas se agrupan en los tres hitos del panel. La etiqueta es inferida, y así se rotula. */
-const SLOTS: Array<{ row: number; reasons: ConsultReason[]; empty: string }> = [
-  { row: FULL.arrows.main, reasons: ['before a plan', 'check-in'], empty: 'before a plan' },
-  { row: FULL.arrows.cards, reasons: ['after errors', 'after subagents'], empty: 'after errors' },
-  { row: FULL.arrows.lead, reasons: ['before done'], empty: 'before done' },
+const SLOTS: Array<{ row: number; index: 0 | 1 | 2; empty: string }> = [
+  { row: FULL.arrows.main, index: 0, empty: 'before a plan' },
+  { row: FULL.arrows.cards, index: 1, empty: 'after errors' },
+  { row: FULL.arrows.lead, index: 2, empty: 'before done' },
 ];
 
-function drawSlot(buf: CellBuffer, x: number, row: number, consults: ConsultState[], empty: string, inner: number): void {
+function drawSlot(buf: CellBuffer, x: number, row: number, consults: ConsultState[], empty: string, inner: number, typing: { id: string; chars: number } | undefined): void {
   const last = consults[consults.length - 1];
   if (!last) {
     buf.put(x, row, '◇', theme.faint);
@@ -137,14 +158,27 @@ function drawSlot(buf: CellBuffer, x: number, row: number, consults: ConsultStat
   }
   buf.put(x, row, '◆', last.isError ? theme.alert : theme.advisor, BOLD);
   const times = consults.length > 1 ? ` x${consults.length}` : '';
-  buf.text(x + 2, row, fit(`${last.reason}${times}`, inner - 2), theme.text);
+  const label = fit(`${last.reason}${times}`, inner - 2);
+  if (typing?.id === last.id && typing.chars < cellLength(label)) {
+    // El motivo se escribe mientras llega la consulta.
+    const end = buf.text(x + 2, row, [...label].slice(0, typing.chars).join(''), theme.text);
+    buf.put(end, row, '▌', theme.advisor);
+    return;
+  }
+  buf.text(x + 2, row, label, theme.text);
   const detail = last.open ? 'replying…' : `${formatDuration(last.durationMs)} · ${formatTokens(last.tokensRead)}`;
   buf.text(x + 2, row + 1, fit(detail, inner - 2), theme.dim);
 }
 
 function drawAdvisorPanel(buf: CellBuffer, view: SceneView, r: Rect): void {
   const { advisor } = view.state;
-  box(buf, r, { color: panelBorder(theme.advisor), fill: theme.panel, halo: 0.35 });
+  const pulse = view.anim?.advisorPulse ?? 0;
+  box(buf, r, {
+    color: mix(panelBorder(theme.advisor, view), theme.subBright, pulse * 0.75),
+    fill: mix(theme.panel, theme.advisor, pulse * 0.08),
+    halo: 0.35 + pulse * 0.9,
+    bold: pulse > 0.5,
+  });
   const inner = r.w - 2;
   const left = r.x + 1;
   centerText(buf, left, inner, r.y + 1, advisorName(view).toUpperCase(), theme.advisor, true);
@@ -158,7 +192,7 @@ function drawAdvisorPanel(buf: CellBuffer, view: SceneView, r: Rect): void {
   const textWidth = inner - 2;
   for (let y = r.y + 4; y < r.y + r.h - 1; y += 1) buf.put(lineX, y, '╎', theme.faint);
   for (const slot of SLOTS) {
-    drawSlot(buf, lineX, slot.row, advisor.consults.filter((c) => slot.reasons.includes(c.reason)), slot.empty, textWidth + 1);
+    drawSlot(buf, lineX, slot.row, advisor.consults.filter((c) => consultSlot(c.reason) === slot.index), slot.empty, textWidth + 1, view.anim?.typingConsult);
   }
 
   const text = lineX + 2;
@@ -183,9 +217,10 @@ function drawAdvisorPanel(buf: CellBuffer, view: SceneView, r: Rect): void {
     buf.text(text, row, label, theme.dim);
     rightText(buf, r.x + r.w - 3, row, value, theme.text, true);
   };
-  stat(22, 'calls', String(advisor.calls));
-  stat(23, 'tokens read', formatTokens(advisor.tokensRead));
-  stat(24, 'routine turns', String(advisor.routineTurns));
+  const numbers = view.anim?.numbers;
+  stat(22, 'calls', String(Math.round(numbers?.calls ?? advisor.calls)));
+  stat(23, 'tokens read', formatTokens(Math.round(numbers?.tokensRead ?? advisor.tokensRead)));
+  stat(24, 'routine turns', String(Math.round(numbers?.routineTurns ?? advisor.routineTurns)));
 
   // Lo que siguió haciendo el principal: rotulado con su nombre porque el consejo está cifrado.
   const followUp = last?.followUp;
@@ -211,11 +246,11 @@ function drawConnectors(buf: CellBuffer, view: SceneView): void {
   const anyDone = subagents.some((s) => !s.running);
 
   const edge = FULL.advisor.x + FULL.advisor.w;
-  const reasonsLit = (reasons: ConsultReason[]): boolean => advisor.consults.some((c) => reasons.includes(c.reason));
-  const arrowColor = (lit: boolean): Rgb => (lit ? theme.advisor : mix(theme.advisor, theme.bgEdge, 0.6));
-  dashedArrow(buf, arrows.main, edge, main.x - 1, arrowColor(reasonsLit(['before a plan', 'check-in'])));
-  dashedArrow(buf, arrows.cards, edge, FULL.cards[0].x - 1, arrowColor(reasonsLit(['after errors', 'after subagents'])));
-  dashedArrow(buf, arrows.lead + 1, edge, lead.x - 1, arrowColor(reasonsLit(['before done'])));
+  const lit = (slot: 0 | 1 | 2): boolean => advisor.consults.some((c) => consultSlot(c.reason) === slot);
+  const arrowColor = (slot: 0 | 1 | 2): Rgb => (lit(slot) ? theme.advisor : mix(theme.advisor, theme.bgEdge, 0.6));
+  dashedArrow(buf, arrows.main, edge, main.x - 1, arrowColor(0));
+  dashedArrow(buf, arrows.cards, edge, FULL.cards[0].x - 1, arrowColor(1));
+  dashedArrow(buf, arrows.lead + 1, edge, lead.x - 1, arrowColor(2));
 
   // Principal hacia métricas y hacia los subagentes.
   buf.put(spine, main.y + main.h, '┃', theme.main);
@@ -240,12 +275,13 @@ function drawConnectors(buf: CellBuffer, view: SceneView): void {
   buf.put(c2, back + 1, '┛', bright, BOLD);
   buf.put(c1, back + 1, '╋', bright, BOLD);
   for (let y = back + 2; y < lead.y; y += 1) buf.put(spine, y, '┃', bright, BOLD);
+  const glow = view.anim?.leadGlow ?? 0;
   if (anyDone) {
-    for (let x = c0; x <= c2; x += 1) buf.tintBg(x, back + 1, theme.sub, 0.08);
+    for (let x = c0; x <= c2; x += 1) buf.tintBg(x, back + 1, theme.sub, 0.08 + glow * 0.15);
     for (let y = back; y < lead.y; y += 1) {
-      buf.tintBg(spine, y, theme.sub, 0.1);
-      buf.tintBg(spine - 1, y, theme.sub, 0.06);
-      buf.tintBg(spine + 1, y, theme.sub, 0.06);
+      buf.tintBg(spine, y, theme.sub, 0.1 + glow * 0.25);
+      buf.tintBg(spine - 1, y, theme.sub, 0.06 + glow * 0.15);
+      buf.tintBg(spine + 1, y, theme.sub, 0.06 + glow * 0.15);
     }
   }
 }
@@ -254,7 +290,7 @@ function drawConnectors(buf: CellBuffer, view: SceneView): void {
 
 function drawMainPanel(buf: CellBuffer, view: SceneView, r: Rect): void {
   const { state } = view;
-  box(buf, r, { color: panelBorder(theme.main), fill: theme.panel, halo: 0.4 });
+  box(buf, r, { color: panelBorder(theme.main, view), fill: theme.panel, halo: 0.4 });
   const inner = r.w - 2;
   const left = r.x + 1;
   centerSegments(buf, left, inner, r.y + 1, [
@@ -282,12 +318,14 @@ function drawMainPanel(buf: CellBuffer, view: SceneView, r: Rect): void {
 
 function drawAdvisorState(buf: CellBuffer, view: SceneView, r: Rect): void {
   const { state } = view;
-  box(buf, r, { color: theme.advisor, dashed: true, fill: theme.panel, halo: 0.25 });
+  box(buf, r, { color: panelBorder(theme.advisor, view), dashed: true, fill: theme.panel, halo: 0.25 });
   centerText(buf, r.x + 1, r.w - 2, r.y + 1, 'ADVISOR', theme.advisor, true);
   const replaying = state.advisor.consults.some((c) => c.open);
   const row = (y: number, label: string, value: string, color: Rgb = theme.text): void => {
     buf.text(r.x + 1, y, label, theme.dim);
-    rightText(buf, r.x + r.w - 3, y, fit(value, r.w - 9), color, true);
+    // `replaying` ocupa una celda más: usa el margen derecho en vez de recortarse.
+    const shown = fit(value, r.w - 8);
+    rightText(buf, r.x + r.w - (cellLength(shown) > r.w - 9 ? 2 : 3), y, shown, color, true);
   };
   row(r.y + 2, 'model', advisorName(view).toLowerCase());
   row(r.y + 3, 'mode', state.advisorEnabled || state.advisorModel ? 'on call' : 'off');
@@ -299,27 +337,35 @@ function drawAdvisorState(buf: CellBuffer, view: SceneView, r: Rect): void {
 
 function drawMetrics(buf: CellBuffer, view: SceneView, r: Rect): void {
   const { state } = view;
-  box(buf, r, { color: panelBorder(theme.metrics), fill: theme.panel, halo: 0.3 });
+  box(buf, r, { color: panelBorder(theme.metrics, view), fill: theme.panel, halo: 0.3 });
   const left = r.x + 2;
   const right = r.x + r.w - 3;
+  // Gira si alguna herramienta está corriendo, en el proceso principal o en un subagente.
+  const toolRunning = view.connected && (state.status === 'tool' || state.subagents.some((s) => s.currentTool));
   writeSegments(buf, left, r.y + 1, [
     { text: 'TOOLS', color: theme.metrics, bold: true },
     { text: ' · real distribution', color: theme.metrics },
+    { text: toolRunning ? `  [ ${spinnerFrame(view.now, 140)} ]` : '', color: theme.metrics },
   ]);
-  rightText(buf, right, r.y + 1, String(state.toolCalls), theme.metrics, true);
-  rightText(buf, right - cellLength(String(state.toolCalls)) - 1, r.y + 1, 'calls', theme.dim);
+  const numbers = view.anim?.numbers;
+  const totalCalls = String(Math.round(numbers?.toolCalls ?? state.toolCalls));
+  rightText(buf, right, r.y + 1, totalCalls, theme.metrics, true);
+  rightText(buf, right - cellLength(totalCalls) - 1, r.y + 1, 'calls', theme.dim);
 
   const sorted = Object.entries(state.tools).sort((a, b) => b[1].count - a[1].count || a[0].localeCompare(b[0]));
   const top = sorted.slice(0, 3);
-  const max = top[0]?.[1].count ?? 1;
+  const countOf = (name: string, real: number): number => numbers?.tools[name] ?? real;
+  // Las barras se miden contra la mayor de las que están creciendo, así que nunca se pasan del riel.
+  const max = Math.max(1, ...top.map(([name, stat]) => countOf(name, stat.count)));
   const barX = left + 15;
   const barWidth = 17;
   top.forEach(([name, stat], i) => {
     const y = r.y + 2 + i;
     const failed = stat.errors > 0;
+    const shown = countOf(name, stat.count);
     buf.text(left, y, fit(toCells(name), 14), failed ? theme.alert : theme.text);
-    thinBar(buf, barX, y, barWidth, stat.count / max, failed ? theme.barAlert : theme.barGood);
-    rightText(buf, barX + barWidth + 4, y, String(stat.count), theme.text);
+    thinBar(buf, barX, y, barWidth, shown / max, failed ? theme.barAlert : theme.barGood);
+    rightText(buf, barX + barWidth + 3, y, String(Math.round(shown)), theme.text);
     if (failed) rightText(buf, right, y, `${stat.errors} err`, theme.alert);
   });
   if (top.length === 0) buf.text(left, r.y + 2, 'no tool calls yet', theme.faint);
@@ -335,10 +381,39 @@ function drawMetrics(buf: CellBuffer, view: SceneView, r: Rect): void {
 
 // --- Subagentes ---
 
-function drawCard(buf: CellBuffer, r: Rect, sub: SubagentState | undefined, index: number, view: SceneView): void {
+/** Parte de la entrada de una tarjeta en que crece la caja. Después se funde el contenido. */
+const GROW_SHARE = 0.6;
+/** Parte de la salida en que se llena la barra. Después se atenúa. */
+const FILL_SHARE = 0.4;
+/** Cuánto se atenúa una tarjeta terminada. Debe seguir siendo legible. */
+const DONE_DIM = 0.38;
+
+/** Caja de un tamaño intermedio, creciendo desde el centro. */
+function drawGrowingBox(buf: CellBuffer, r: Rect, grow: number): void {
+  const k = easeOutCubic(segment(grow, 0, GROW_SHARE));
+  const w = Math.max(3, Math.round(r.w * k));
+  const h = Math.max(3, Math.round(r.h * k));
+  const rect: Rect = { x: r.x + Math.floor((r.w - w) / 2), y: r.y + Math.floor((r.h - h) / 2), w, h };
+  box(buf, rect, { color: mix(theme.bgEdge, theme.subBright, k), fill: theme.panel, halo: 0.5 * k, bold: true });
+}
+
+function fadeArea(buf: CellBuffer, r: Rect, toward: Rgb, amount: number): void {
+  if (amount <= 0) return;
+  for (let y = r.y; y < r.y + r.h; y += 1) {
+    for (let x = r.x; x < r.x + r.w; x += 1) buf.tintFg(x, y, toward, amount);
+  }
+}
+
+function drawCard(buf: CellBuffer, r: Rect, sub: SubagentState | undefined, index: number, view: SceneView, card?: CardView): void {
   if (!sub) {
     box(buf, r, { color: mix(theme.sub, theme.bgEdge, 0.72), dashed: true, fill: mix(theme.panel, theme.bgEdge, 0.4) });
     centerText(buf, r.x + 1, r.w - 2, r.y + 3, 'no subagent', mix(theme.dim, theme.bgEdge, 0.45));
+    return;
+  }
+  const grow = card?.grow ?? 1;
+  const fade = card?.fade ?? 0;
+  if (grow < GROW_SHARE) {
+    drawGrowingBox(buf, r, grow);
     return;
   }
   const failed = sub.status !== undefined && sub.status !== 'completed';
@@ -346,7 +421,8 @@ function drawCard(buf: CellBuffer, r: Rect, sub: SubagentState | undefined, inde
   box(buf, r, { color, fill: theme.panel, halo: sub.running ? 0.3 : 0.15, bold: true });
   const inner = r.w - 2;
   const left = r.x + 1;
-  const name = plainText(subagentName(view.state, sub.id));
+  // El archivo del subagente aparece antes que el `tool_use` que trae su descripción.
+  const name = sub.description || sub.agentType ? plainText(subagentName(view.state, sub.id)) : 'starting…';
 
   // Etiqueta sobre el borde superior: número de orden y tipo real.
   const label = fit(`${String(index + 1).padStart(2, '0')} ${(sub.agentType ?? 'agent').toLowerCase()}`, inner - 2);
@@ -355,35 +431,50 @@ function drawCard(buf: CellBuffer, r: Rect, sub: SubagentState | undefined, inde
   buf.text(left, r.y, ` ${label} `, sub.running ? theme.subBright : theme.dim);
 
   centerText(buf, left + 1, inner - 2, r.y + 1, name, theme.text, true);
-  const tags: Segment[] = [{ text: displayModel(sub.model), color: theme.main }];
-  if (sub.running) tags.push({ text: ` [ ${spinnerFrame(view.now + index * 40)} ]`, color: theme.sub });
+  const tags: Segment[] = sub.model ? [{ text: displayModel(sub.model), color: theme.main }] : [];
+  if (sub.running) tags.push({ text: `${sub.model ? ' ' : ''}[ ${spinnerFrame(view.now + index * 40)} ]`, color: theme.sub });
   centerSegments(buf, left, inner, r.y + 2, tags);
 
   const barX = left + 1;
   const barWidth = inner - 2;
   if (sub.running) indeterminateBar(buf, barX, r.y + 3, barWidth, view.now / 1800 + index * 0.27, theme.barSub);
-  else bar(buf, barX, r.y + 3, barWidth, 1, failed ? theme.barAlert : theme.barSub);
+  else bar(buf, barX, r.y + 3, barWidth, easeOutCubic(segment(fade, 0, FILL_SHARE)), failed ? theme.barAlert : theme.barSub);
 
   const detail = sub.running
     ? `tools: ${sub.toolCount}${sub.currentTool ? ` · ${sub.currentTool}` : ''}`
-    : `${sub.toolCount} tools · ${formatDuration(sub.durationMs)}`;
+    : `${sub.toolCount} tools${sub.durationMs !== undefined ? ` · ${formatDuration(sub.durationMs)}` : ''}`;
   centerText(buf, left, inner, r.y + 4, detail, failed ? theme.alert : theme.sub);
   const status = sub.running ? ['◐', '◓', '◑', '◒'][Math.floor(view.now / 160 + index) % 4] : failed ? '✕' : '●';
   const tokens = !sub.running && sub.totalTokens !== undefined ? ` ${formatTokens(sub.totalTokens)}` : '';
   centerSegments(buf, left, inner, r.y + 5, [
     { text: status as string, color: failed ? theme.alert : theme.sub },
     { text: tokens, color: theme.sub },
-    { text: sub.readOnly ? `${tokens ? ' ·' : ''} read-only` : '', color: theme.dim },
+    { text: sub.readOnly ? ' read-only' : '', color: theme.dim },
   ]);
+
+  // Entrada: el contenido aparece desde el fondo del panel. Salida: se atenúa, sin perder los datos.
+  const appear = segment(grow, GROW_SHARE, 1);
+  if (appear < 1) fadeArea(buf, { x: r.x + 1, y: r.y, w: r.w - 2, h: r.h - 1 }, theme.panel, 1 - appear);
+  fadeArea(buf, r, theme.panel, DONE_DIM * easeInOutCubic(segment(fade, FILL_SHARE, 1)));
 }
 
-/** Las tres tarjetas muestran los subagentes activos primero y, si no, los últimos en terminar. */
-function visibleSubagents(view: SceneView, count: number): SubagentState[] {
+interface CardSlot {
+  sub: SubagentState | undefined;
+  card?: CardView;
+}
+
+/**
+ * Sin animación, muestra los subagentes activos primero y, si no, los últimos en terminar. Con animación, el
+ * director asigna posiciones fijas para que una tarjeta no salte al terminar otra.
+ */
+function cardSlots(view: SceneView, count: number): CardSlot[] {
   const { subagents } = view.state;
+  const slots = view.anim?.cards;
+  if (slots) return slots.slice(0, count).map((card) => ({ sub: card && subagents.find((s) => s.id === card.id), card }));
   const running = subagents.filter((s) => s.running);
   const done = subagents.filter((s) => !s.running);
   const picked = [...running.slice(-count), ...done.slice(-Math.max(0, count - running.length))];
-  return subagents.filter((s) => picked.includes(s));
+  return subagents.filter((s) => picked.includes(s)).map((sub) => ({ sub }));
 }
 
 function drawDelegate(buf: CellBuffer, view: SceneView, y: number, x: number, width: number): void {
@@ -394,12 +485,19 @@ function drawDelegate(buf: CellBuffer, view: SceneView, y: number, x: number, wi
     { text: ' · ', color: theme.dim },
     { text: mainName(view).toLowerCase(), color: theme.main, bold: true },
     { text: `  [ ${active} / ${subagents.length} ]`, color: theme.dim },
+    { text: active > 0 ? ` ${spinnerFrame(view.now, 110)}` : '', color: theme.sub },
   ]);
 }
 
 function drawLead(buf: CellBuffer, view: SceneView, r: Rect): void {
   const done = view.state.subagents.filter((s) => !s.running);
-  box(buf, r, { color: done.length ? theme.subBright : mix(theme.sub, theme.bgEdge, 0.5), fill: theme.panel, halo: done.length ? 0.5 : 0.1, bold: true });
+  const glow = view.anim?.leadGlow ?? 0;
+  box(buf, r, {
+    color: done.length ? theme.subBright : mix(mix(theme.sub, theme.bgEdge, 0.5), theme.subBright, glow),
+    fill: mix(theme.panel, theme.sub, glow * 0.14),
+    halo: (done.length ? 0.5 : 0.1) + glow * 0.9,
+    bold: true,
+  });
   centerSegments(buf, r.x + 1, r.w - 2, r.y + 1, [
     { text: 'back to ', color: theme.text },
     { text: mainName(view), color: theme.main, bold: true },
@@ -412,6 +510,12 @@ function drawLead(buf: CellBuffer, view: SceneView, r: Rect): void {
 
 // --- Log, prompt y estado ---
 
+const LOG_SLIDE_MS = 260;
+const LOG_SLIDE_CELLS = 8;
+/** Una línea larga se escribe en este tiempo, y una corta a una velocidad mínima. */
+const LOG_TYPE_MS = 600;
+const LOG_TYPE_MIN_RATE = 0.05;
+
 function drawLog(buf: CellBuffer, view: SceneView, r: Rect): void {
   box(buf, r, { color: mix(theme.main, theme.panel, 0.55), fill: mix(theme.panel, theme.bgEdge, 0.3) });
   const live = view.replay ? (view.replay.paused ? 'paused' : view.replay.finished ? 'replay end' : `replay x${view.replay.speed}`) : view.connected ? 'live' : 'idle';
@@ -423,9 +527,18 @@ function drawLog(buf: CellBuffer, view: SceneView, r: Rect): void {
   const entries = view.log.slice(-rows);
   entries.forEach((entry, i) => {
     const y = r.y + 1 + i;
-    buf.text(r.x + 2, y, formatClock(entry.t), theme.faint);
-    buf.text(r.x + 11, y, fit(toCells(entry.who), 13), KIND_COLOR[entry.kind]);
-    buf.text(r.x + 25, y, fit(toCells(entry.text), r.w - 27), entry.kind === 'error' ? theme.alert : theme.text);
+    const text = fit(toCells(entry.text), r.w - 27);
+    // Entrada: la línea desliza desde la derecha mientras su texto se escribe. El tiempo decide en qué punto va.
+    const age = entry.bornAt === undefined ? Number.POSITIVE_INFINITY : Math.max(0, view.now - entry.bornAt);
+    const slide = Math.round((1 - easeOutCubic(age / LOG_SLIDE_MS)) * LOG_SLIDE_CELLS);
+    const headFade = 1 - easeOutCubic(age / LOG_SLIDE_MS);
+    const length = cellLength(text);
+    const typed = age === Number.POSITIVE_INFINITY ? length : Math.min(length, Math.floor(age * Math.max(LOG_TYPE_MIN_RATE, length / LOG_TYPE_MS)));
+    const fadeTo = mix(theme.panel, theme.bgEdge, 0.3);
+    buf.text(r.x + 2 + slide, y, formatClock(entry.t), mix(theme.faint, fadeTo, headFade));
+    buf.text(r.x + 11 + slide, y, fit(toCells(entry.who), 13), mix(KIND_COLOR[entry.kind], fadeTo, headFade));
+    const end = buf.text(r.x + 25 + slide, y, [...text].slice(0, typed).join(''), entry.kind === 'error' ? theme.alert : theme.text);
+    if (typed < length && end < r.x + r.w - 1) buf.put(end, y, '▌', KIND_COLOR[entry.kind]);
   });
   if (entries.length === 0) buf.text(r.x + 2, r.y + 1, 'nothing yet', theme.faint);
 }
@@ -457,13 +570,26 @@ function drawStatus(buf: CellBuffer, view: SceneView, y: number, x: number, widt
   rightText(buf, x + width - 2, y, `${view.queue.pending.length} queued`, theme.dim);
 }
 
+// --- Errores ---
+
+/** Destello: tiñe el panel y enciende su borde. Se aplica encima, así que no cambia los datos dibujados. */
+function flashPanel(buf: CellBuffer, r: Rect, amount: number): void {
+  for (let y = r.y; y < r.y + r.h; y += 1) {
+    for (let x = r.x; x < r.x + r.w; x += 1) {
+      buf.blendBg(x, y, theme.alert, amount * 0.26);
+      const onBorder = x === r.x || x === r.x + r.w - 1 || y === r.y || y === r.y + r.h - 1;
+      if (onBorder) buf.tintFg(x, y, theme.alert, amount);
+    }
+  }
+}
+
 // --- Layouts ---
 
 function renderFull(buf: CellBuffer, view: SceneView): void {
-  // Dibuja a 96x48 en un buffer mayor, centrado: los rectángulos son absolutos, así que se usa un subbuffer.
-  const ox = Math.floor((buf.width - FULL_COLS) / 2);
-  const oy = Math.floor((buf.height - FULL_ROWS) / 2);
-  const target = ox === 0 && oy === 0 ? buf : offsetBuffer(buf, ox, oy);
+  // Los rectángulos son absolutos para 96x48: en una terminal mayor se desplaza el origen para centrarlos.
+  buf.originX = Math.floor((buf.width - FULL_COLS) / 2);
+  buf.originY = Math.floor((buf.height - FULL_ROWS) / 2);
+  const target = buf;
   const { rows } = FULL;
   drawWindowBar(target, view, rows.windowBar, FULL_COLS, 0);
   centerSegments(target, 0, FULL_COLS, rows.header, headerSegments(view));
@@ -475,26 +601,31 @@ function renderFull(buf: CellBuffer, view: SceneView): void {
   drawAdvisorState(target, view, FULL.advisorState);
   drawMetrics(target, view, FULL.metrics);
   drawDelegate(target, view, rows.delegate, 28, 67);
-  const visible = visibleSubagents(view, FULL.cards.length);
-  FULL.cards.forEach((rect, i) => drawCard(target, rect, visible[i], view.state.subagents.indexOf(visible[i] as SubagentState), view));
+  const visible = cardSlots(view, FULL.cards.length);
+  FULL.cards.forEach((rect, i) => {
+    const slot = visible[i];
+    drawCard(target, rect, slot?.sub, slot?.sub ? view.state.subagents.indexOf(slot.sub) : -1, view, slot?.card);
+  });
   drawLead(target, view, FULL.lead);
   drawLog(target, view, FULL.log);
   drawPrompt(target, view, rows.prompt, 0, FULL_COLS);
   drawStatus(target, view, rows.status, 0, FULL_COLS);
-}
-
-/** Vista desplazada del buffer. Los paneles usan coordenadas absolutas de 96x48. */
-function offsetBuffer(buf: CellBuffer, ox: number, oy: number): CellBuffer {
-  return new Proxy(buf, {
-    get(target, prop, receiver) {
-      const value = Reflect.get(target, prop, receiver);
-      if (typeof value !== 'function') return value;
-      if (prop === 'put' || prop === 'setBg' || prop === 'tintBg' || prop === 'clearCell' || prop === 'text' || prop === 'fill') {
-        return (x: number, y: number, ...rest: unknown[]) => (value as (...a: unknown[]) => unknown).call(target, x + ox, y + oy, ...rest);
-      }
-      return value.bind(target);
-    },
-  });
+  for (const packet of view.anim?.packets ?? []) drawPacket(target, packet);
+  const flash = view.anim?.errorFlash ?? 0;
+  if (flash > 0) {
+    flashPanel(target, FULL.main, flash);
+    flashPanel(target, FULL.metrics, flash);
+    flashPanel(target, FULL.log, flash);
+  }
+  const bootMs = view.anim?.bootMs;
+  if (bootMs !== undefined && bootMs < BOOT_MS) {
+    const width = segmentsWidth(headerSegments(view));
+    const { originX, originY } = buf;
+    const base = baseColor(buf, view.flatBackground ?? false);
+    applyBootFull(buf, bootMs, Math.floor((FULL_COLS - width) / 2), width, (x, y) => base(x + originX, y + originY));
+  }
+  buf.originX = 0;
+  buf.originY = 0;
 }
 
 function renderReduced(buf: CellBuffer, view: SceneView): void {
@@ -544,10 +675,10 @@ function renderReduced(buf: CellBuffer, view: SceneView): void {
   const cardCount = 3;
   const gap = 1;
   const cardW = Math.floor((rightW - gap * (cardCount - 1)) / cardCount);
-  const visible = visibleSubagents(view, cardCount);
+  const visible = cardSlots(view, cardCount);
   for (let i = 0; i < cardCount; i += 1) {
     const r: Rect = { x: rightX + i * (cardW + gap), y: 6, w: cardW, h: 5 };
-    const sub = visible[i];
+    const sub = visible[i]?.sub;
     if (!sub) {
       box(buf, r, { color: mix(theme.sub, theme.bgEdge, 0.72), dashed: true, fill: mix(theme.panel, theme.bgEdge, 0.4) });
       continue;
@@ -570,6 +701,11 @@ function renderReduced(buf: CellBuffer, view: SceneView): void {
   drawLog(buf, view, logRect);
   drawPrompt(buf, view, height - 2, 0, width);
   drawStatus(buf, view, height - 1, 0, width);
+  const flash = view.anim?.errorFlash ?? 0;
+  if (flash > 0) {
+    flashPanel(buf, mainRect, flash);
+    flashPanel(buf, logRect, flash);
+  }
 }
 
 function renderTooSmall(buf: CellBuffer): void {
@@ -579,9 +715,14 @@ function renderTooSmall(buf: CellBuffer): void {
 }
 
 export function renderScene(buf: CellBuffer, view: SceneView): void {
-  paintBackground(buf, view.flatBackground ?? false);
+  const flat = view.flatBackground ?? false;
+  paintBackground(buf, flat);
+  buf.tintsEnabled = !flat;
   const kind = layoutKind(buf.width, buf.height);
   if (kind === 'full') renderFull(buf, view);
-  else if (kind === 'reduced') renderReduced(buf, view);
-  else renderTooSmall(buf);
+  else if (kind === 'reduced') {
+    renderReduced(buf, view);
+    const bootMs = view.anim?.bootMs;
+    if (bootMs !== undefined && bootMs < BOOT_MS) applyBootFade(buf, bootMs, baseColor(buf, flat));
+  } else renderTooSmall(buf);
 }
