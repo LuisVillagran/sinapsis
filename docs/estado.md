@@ -4,7 +4,7 @@ Bitácora para retomar el trabajo solo con este archivo. Ver `CLAUDE.md` para el
 
 ## Fase actual
 
-**Retoque visual funcional (2026-11-05), en la rama `rediseno-funcional` (creada desde `rediseno-referencia`), sin fusionar ni publicar.** Se eliminaron todos los adornos de las imágenes de referencia que no tenían respaldo funcional (barra falsa de ventana con botones de colores, separador grueso, textos fijos de `PROJECT MEMORY`, filas vacías `—`, barra que rebota sin dato, `integrate + verify`, prompt falso con cursor parpadeante y estados repetidos en la línea inferior) y se sacó `AGENT MEMORY` del camino del tronco de delegación. Implementado con `builder`, revisado con `reviewer` y verificado con 309 tests.
+**Retoque visual funcional (2026-11-05), en la rama `rediseno-funcional` (creada desde `rediseno-referencia`), sin fusionar ni publicar.** Se eliminaron todos los adornos de las imágenes de referencia que no tenían respaldo funcional (barra falsa de ventana con botones de colores, separador grueso, textos fijos de `PROJECT MEMORY`, filas vacías `—`, barra que rebota sin dato, `integrate + verify`, prompt falso con cursor parpadeante y estados repetidos en la línea inferior) y se sacó `AGENT MEMORY` del camino del tronco de delegación. Según informó el usuario, lo hizo con Gemini, así que no consta que pasara por `builder` ni `reviewer`. 309 tests comprobados de forma independiente con Claude Code.
 
 ## Retoque visual funcional (2026-11-05)
 
@@ -14,6 +14,20 @@ El usuario pidió revisar la interfaz de arriba a abajo y quitar o reemplazar to
 - **Reubicado por lógica de datos:** `AGENT MEMORY` pasó a la izquierda del tronco (`26..55` en full), de modo que el tronco baja directo de la sesión principal al bus de las tarjetas sin atravesar el panel de memoria (13), y la fila de delegación muestra `N delegated · M done` a la derecha del tronco (`spine + 2`) sin interrumpir la línea `│` (16).
 - **Datos reales en lugar de adornos:** encabezado con identidad de sesión `SINAPSIS · <carpeta> · <modo>` (2), leyenda con `agent memory` y `project memory` (4), hitos de `PROJECT MEMORY` con hora del primer disparo (6), bloque `totals` con `errors` siempre visible (8), lista real de archivos de memoria tocados con hora, agente y operación (9), advisor con capitalización normal, sufijo `tok` y borde punteado en `silent` / sólido en `replaying` (11, 12), pie de `AGENT MEMORY` en `dim` (15), barra de tarjetas en curso por `toolCount` real (`countBar`, 1 celda por herramienta) en vez de barra indeterminada (17), `waiting for N summaries` / `no summaries yet` en `back to lead` (19), línea de teclas reales `q quit · space pause · +/- speed` (21) y línea de estado con `elapsed`, `cost`, último evento y cola (22, lo que también resuelve el corte del grupo `advisor` a 90 columnas).
 - **Correcciones tras la auditoría de `reviewer`:** hora de los hitos `repeat failure` y `before sign-off` en la fila inferior cuando no caben en la misma línea, hora compacta `m:ss` para `before work` en layout compacto (`80x30`, `120x30`), esquina `┐` de `AGENT MEMORY` preservada en compacto, reserva de espacio para los cuadros `■` de la cola en `drawStatus` aunque `last` sea largo (y sin duplicar el costo), y las 4 filas de totales visibles entre `repeat failure` y `before sign-off` en compacto de 30 filas.
+
+## Prueba con subagentes reales y panel de memoria (2026-11-05)
+
+Corrida de solo lectura con `builder`, `debugger` y `reviewer` en segundo plano, vista por el usuario en su terminal con `replay` (capturas locales en `referencia/pruebas/`, sin subir). El usuario la da por buena, y las tarjetas (7, 6 y 9 herramientas, `done`), `3 delegated · 3 done`, `back to lead 3/3` y la consulta del advisor coinciden con el transcript.
+
+**`AGENT MEMORY` mostró `no memory` en los tres, y el usuario lo reportó.** Causa: esos subagentes no usaron ninguna herramienta sobre su memoria (0 de 22), en parte porque el prompt de la prueba les pidió no guardar. No es una falla de detección: con la sesión antigua `c390b003`, que sí tiene operaciones reales, el reductor cuenta lo mismo que un conteo independiente de `Read`, `Write`, `Edit` y `Glob` (builder 8, debugger 4, reviewer 6), y el panel dibuja `roles 3 / 3` con barras. Es la primera comprobación con datos reales, sobre el frame final y sin animar. Sigue sin haber un fixture con memoria de agente.
+
+**Sin decidir:**
+
+- **`no memory` puede ser falso.** `builder` y `reviewer` sí tenían notas: su índice llega en el adjunto `prompt_snapshot`, sin herramienta. `debugger` no tenía ninguna. Se observó en esta corrida; no se sabe si el formato es estable. Opciones: distinguir índice cargado de vacío (recomendado), solo cambiar el rótulo a algo como `no tool calls`, o dejarlo.
+- **Barra saturada:** `countBar` queda llena antes de terminar si hay más herramientas que celdas (`reviewer` lo notó en `src/scene/draw.ts:120`). Cambiarla toca el punto 17 del retoque.
+- **Leyenda:** en la primera captura dice `build · opus` sin ningún subagente, y usa el alias en vez de `Opus 5.5`. Sin investigar.
+- **Advisor:** la caja muestra `1·87.5k tok`, sin `consults`, por falta de ancho. `CLAUDE.md` pide `N consults · Xk tok`.
+- **Bash no se cuenta como memoria:** la sesión antigua tiene 5 comandos `Bash` que mencionan `agent-memory`. Quedan fuera del panel.
 
 ## Fase anterior (`rediseno-referencia`)
 
