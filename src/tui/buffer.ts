@@ -51,6 +51,8 @@ export class CellBuffer {
   readonly fg: Int32Array;
   readonly bg: Int32Array;
   readonly attrs: Uint8Array;
+  /** En 256 colores un tinte pequeño salta a otro gris: los halos se apagan. */
+  tintsEnabled = true;
 
   constructor(
     readonly width: number,
@@ -83,7 +85,7 @@ export class CellBuffer {
 
   /** Acerca el fondo de una celda a un color, para halos y destellos. */
   tintBg(x: number, y: number, color: Rgb, amount: number): void {
-    if (!this.inside(x, y)) return;
+    if (!this.tintsEnabled || !this.inside(x, y)) return;
     const i = y * this.width + x;
     this.bg[i] = mix(this.bg[i] as number, color, amount);
   }

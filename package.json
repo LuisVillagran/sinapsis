@@ -17,7 +17,7 @@
   ],
   "scripts": {
     "build": "tsup",
-    "prepare": "tsup",
+    "prepare": "node scripts/prepare.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

@@ -88,6 +88,13 @@ function drawWindowBar(buf: CellBuffer, view: SceneView, y: number, width: numbe
 }
 
 function headerSegments(view: SceneView): Segment[] {
+  if (!view.state.mainModel) {
+    return [
+      { text: 'CLAUDE CODE ADVISOR', color: theme.text, bold: true },
+      { text: '  ·  ', color: theme.dim },
+      { text: 'WAITING FOR A SESSION', color: theme.dim },
+    ];
+  }
   const main = mainName(view).toUpperCase();
   const advisor = advisorName(view).toUpperCase();
   return [
@@ -579,7 +586,9 @@ function renderTooSmall(buf: CellBuffer): void {
 }
 
 export function renderScene(buf: CellBuffer, view: SceneView): void {
-  paintBackground(buf, view.flatBackground ?? false);
+  const flat = view.flatBackground ?? false;
+  paintBackground(buf, flat);
+  buf.tintsEnabled = !flat;
   const kind = layoutKind(buf.width, buf.height);
   if (kind === 'full') renderFull(buf, view);
   else if (kind === 'reduced') renderReduced(buf, view);

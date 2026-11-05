@@ -61,6 +61,10 @@ Bitácora para retomar el trabajo solo con este archivo. Ver `CLAUDE.md` para el
 - **256 colores:** fondo plano, porque la viñeta se veía como anillos.
 - **Interfaz en inglés, mensajes de la línea de comandos en español:** la interfaz sigue los rótulos de la
   imagen de referencia y `CLAUDE.md`.
+- **`dist/` versionado (desviación de `CLAUDE.md`, a revisar):** `npm install -g` desde git fallaba porque el npm
+  interno que prepara la dependencia hereda el modo global y no instala `tsup`. `prepare` ahora compila si `tsup`
+  existe y, si no, usa `dist/`. `test/dist.test.ts` falla si `dist/` queda atrás: hay que ejecutar `npm run build`
+  antes de cada commit que toque `src/`.
 - **Privacidad:** el fixture antiguo traía en una línea la salida de una revisión anterior, con fragmentos
   de nombres de otros proyectos. Se limpió también en el historial local con `git filter-branch`, antes del
   primer push. Por eso los hashes de la Fase 0 cambiaron.
@@ -73,6 +77,8 @@ Bitácora para retomar el trabajo solo con este archivo. Ver `CLAUDE.md` para el
 - Fase 3, primera captura: Chrome dejó caer la pestaña con `--use-gl=swiftshader`, y además generó un PNG válido
   del icono de error. Se cambió a `--use-angle=swiftshader` y la herramienta ahora termina con error si la pestaña
   se cae. Con `deviceScaleFactor: 2`, WebGL mostraba un solo cuadrante, así que se captura a escala 1.
+- Fase 4, prueba de instalación desde git: `"tsup" no se reconoce como un comando interno o externo`, durante
+  `git dep preparation failed`. Ver la decisión sobre `dist/` versionado.
 
 ## Bloqueos
 
