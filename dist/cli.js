@@ -1372,7 +1372,8 @@ function bar(buf, x, y, width, fraction, color, rail = theme.barTrack) {
   }
 }
 function countBar(buf, x, y, width, count, color, latestColor = theme.subBright, rail = theme.barTrack) {
-  const filled = Math.max(0, Math.min(width, Math.floor(count)));
+  const whole = Math.max(0, Math.floor(count));
+  const filled = whole === 0 ? 0 : (whole - 1) % Math.max(1, width - 1) + 1;
   for (let i = 0; i < width; i += 1) {
     if (i < filled) {
       buf.clearCell(x + i, y, theme.bg);

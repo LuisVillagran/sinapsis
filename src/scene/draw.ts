@@ -115,9 +115,13 @@ export function bar(buf: CellBuffer, x: number, y: number, width: number, fracti
   }
 }
 
-/** Barra por conteo de herramientas: una celda llena por cada herramienta usada (`count`), sobre el riel `░`. */
+/**
+ * Barra por conteo de herramientas: una celda por cada una, sobre el riel `░`. Una barra llena significa `done`, así
+ * que al llegar a la penúltima celda vuelve a empezar. El total lo da el contador de texto.
+ */
 export function countBar(buf: CellBuffer, x: number, y: number, width: number, count: number, color: Rgb, latestColor: Rgb = theme.subBright, rail: Rgb = theme.barTrack): void {
-  const filled = Math.max(0, Math.min(width, Math.floor(count)));
+  const whole = Math.max(0, Math.floor(count));
+  const filled = whole === 0 ? 0 : ((whole - 1) % Math.max(1, width - 1)) + 1;
   for (let i = 0; i < width; i += 1) {
     if (i < filled) {
       buf.clearCell(x + i, y, theme.bg);

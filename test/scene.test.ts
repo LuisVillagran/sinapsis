@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { describeEvent, displayModel, formatDuration, formatTokens, modelAlias, plainText } from '../src/core/describe.js';
 import { BOOT_MS } from '../src/scene/boot.js';
 import { renderScene } from '../src/scene/scene.js';
-import type { Rect } from '../src/scene/draw.js';
+import { type Rect, countBar } from '../src/scene/draw.js';
 import { FULL_COLS, FULL_ROWS, type SceneLayout, layoutFor } from '../src/scene/layout.js';
 import { theme } from '../src/scene/theme.js';
 import { encodeFrame } from '../src/tui/ansi.js';
@@ -670,6 +670,32 @@ describe('AGENT MEMORY por rol y rótulos de rol', () => {
     expect(barRow.startsWith('███░')).toBe(true);
     // La celda más reciente brilla más que las anteriores.
     expect(buf.fgAt(card.x + 4, card.y + 3)).not.toBe(buf.fgAt(card.x + 2, card.y + 3));
+  });
+
+  it('barra de tarjeta en curso: nunca se ve llena, y sigue avanzando con más herramientas que celdas', () => {
+    const buf = new CellBuffer(12, 1);
+    const cells = (count: number): string => {
+      countBar(buf, 0, 0, 7, count, theme.barSub);
+      return buf.rowText(0, 0, 7);
+    };
+    expect(cells(0)).toBe('░░░░░░░');
+    expect(cells(1)).toBe('█░░░░░░');
+    expect(cells(6)).toBe('██████░');
+    expect(cells(7)).toBe('█░░░░░░');
+    expect(cells(12)).toBe('██████░');
+    expect(cells(13)).toBe('█░░░░░░');
+    for (let count = 0; count < 100; count += 1) expect(cells(count)).toContain('░');
+  });
+
+  it('barra de tarjeta: llena solo al terminar, también con muchas herramientas', () => {
+    const running = roleView([['builder', false, true]]);
+    running.state.subagents[0]!.toolCount = 12;
+    const done = roleView([['builder', false, false]]);
+    done.state.subagents[0]!.toolCount = 12;
+    const card = L.cards[0];
+    const barOf = (view: SceneView): string => render(FULL_COLS, FULL_ROWS, view).rowText(card.y + 3, card.x + 2, card.x + 9);
+    expect(barOf(running)).toContain('░');
+    expect(barOf(done)).toBe('███████');
   });
 
   it('hitos de memoria de proyecto muestran la hora del primer disparo (incluso en compact y en repeat failure / before sign-off) o — si no ocurrió', () => {
