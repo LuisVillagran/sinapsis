@@ -101,7 +101,7 @@ export interface SessionState {
   subagents: SubagentState[];
   memory: {
     /** Archivos que Claude Code cargó por su cuenta, sin herramienta. */
-    loaded: Array<{ file: string; scope: MemoryScope }>;
+    loaded: Array<{ t: number; file: string; scope: MemoryScope }>;
     /** Ordenadas por hora, para que el resultado no dependa del orden de llegada. */
     touches: MemoryTouchState[];
   };
@@ -344,7 +344,9 @@ export function applyEvent(state: SessionState, event: SinapsisEvent): void {
 
     case 'memory_load':
       for (const file of event.files) {
-        if (!state.memory.loaded.some((known) => known.file === file.file && known.scope === file.scope)) state.memory.loaded.push(file);
+        const known = state.memory.loaded.find((item) => item.file === file.file && item.scope === file.scope);
+        if (!known) state.memory.loaded.push({ t: event.t, ...file });
+        else if (event.t > 0 && (known.t <= 0 || event.t < known.t)) known.t = event.t;
       }
       break;
 

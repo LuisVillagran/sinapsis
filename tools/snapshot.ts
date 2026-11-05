@@ -22,7 +22,7 @@ if (!output || output.startsWith('--')) {
 }
 
 const cols = Number(option('cols', '90'));
-const rows = Number(option('rows', '47'));
+const rows = Number(option('rows', '46'));
 const mode = option('mode', 'truecolor') as ColorMode;
 const scene = option('scene', 'mid');
 const lineHeight = Number(option('line-height', '1.15'));

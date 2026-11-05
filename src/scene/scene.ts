@@ -6,7 +6,7 @@ import { easeInOutCubic, easeOutCubic, segment } from '../engine/easing.js';
 import { BOOT_MS, applyBootFade, applyBootFull } from './boot.js';
 import { BOLD, type CellBuffer, cellLength, fit, toCells } from '../tui/buffer.js';
 import { type Rgb, mix } from '../tui/color.js';
-import { type Rect, type Segment, bar, box, centerSegments, centerText, discFrame, indeterminateBar, rightText, segmentsWidth, spinnerFrame, writeSegments } from './draw.js';
+import { type Rect, type Segment, bar, box, centerSegments, centerText, countBar, discFrame, rightText, segmentsWidth, spinnerFrame, writeSegments } from './draw.js';
 import { COMPACT_ROWS, MIN_COLS, MIN_ROWS, type SceneLayout, layoutFor, layoutKind } from './layout.js';
 import { drawPacket } from './packets.js';
 import { theme } from './theme.js';
@@ -56,6 +56,12 @@ function formatElapsed(t: number, start: number | undefined): string {
   return `${pad(Math.floor(total / 3600))}:${pad(Math.floor(total / 60) % 60)}:${pad(total % 60)}`;
 }
 
+/** Hora abreviada (`mm:ss` si la sesión lleva menos de 1 h, `hh:mm:ss` si no), para espacios estrechos. */
+function formatShortElapsed(t: number, start: number | undefined): string {
+  const full = formatElapsed(t, start);
+  return full.startsWith('00:') ? full.slice(3) : full;
+}
+
 const KIND_COLOR = {
   main: theme.main,
   sub: theme.sub,
@@ -82,38 +88,52 @@ function mainActivity(view: SceneView, width: number): string {
 
 const isMainActive = (view: SceneView): boolean => view.connected && !view.state.ended && view.state.status !== 'idle';
 
-function drawWindowBar(buf: CellBuffer, view: SceneView, y: number, ox: number): void {
-  buf.fill(ox, y, buf.width, 1, theme.windowBar);
-  buf.put(ox + 1, y, '●', theme.dotRed);
-  buf.put(ox + 3, y, '●', theme.dotYellow);
-  buf.put(ox + 5, y, '●', theme.dotGreen);
-  centerText(buf, ox, buf.width, y, `${folderName(view.state.cwd)} · sinapsis · ${buf.width}x${buf.height}`, theme.dim);
-}
-
 function headerSegments(view: SceneView): Segment[] {
-  const title: Segment = { text: 'CLAUDE CODE ADVISOR', color: theme.text, bold: true };
-  const gap: Segment = { text: '  ·  ', color: theme.dim };
-  if (!mainModelOf(view)) return [title, gap, { text: 'WAITING FOR A SESSION', color: theme.dim }];
-  return [
-    title,
-    gap,
-    { text: mainName(view).toUpperCase(), color: theme.main, bold: true },
-    { text: ' LEADS', color: theme.text, bold: true },
-    { text: ' · ', color: theme.text },
-    { text: builderName(view).toUpperCase(), color: theme.sub, bold: true },
-    { text: ' BUILDS', color: theme.text, bold: true },
-  ];
+  const title: Segment = { text: 'SINAPSIS', color: theme.text, bold: true };
+  const gap: Segment = { text: ' · ', color: theme.dim };
+  const cwd = view.state.cwd;
+  const hasSession = view.connected || Boolean(cwd) || Boolean(mainModelOf(view));
+  if (!hasSession && !view.illustrativeDemo && !view.replay) {
+    return [title, gap, { text: 'WAITING FOR A SESSION', color: theme.dim }];
+  }
+  const mode = view.illustrativeDemo
+    ? { text: 'DEMO', color: theme.dim }
+    : view.replay
+      ? {
+          text: view.replay.paused ? 'PAUSED' : view.replay.finished ? 'REPLAY END' : `REPLAY x${view.replay.speed}`,
+          color: theme.dim,
+        }
+      : { text: 'LIVE', color: view.state.ended || !view.connected ? theme.dim : theme.main };
+  if (!cwd) return [title, gap, mode];
+  return [title, gap, { text: toCells(folderName(cwd)), color: theme.text }, gap, mode];
 }
 
 function drawLegend(buf: CellBuffer, view: SceneView, L: SceneLayout): void {
-  const items: Array<[Rgb, string]> = [
+  const fullItems: Array<[Rgb, string]> = [
     [theme.main, `lead · ${mainName(view)}`],
     [theme.sub, `build · ${builderName(view)}`],
-    [theme.metrics, 'memories'],
-    [theme.notes, 'notes'],
+    [theme.metrics, 'agent memory'],
+    [theme.notes, 'project memory'],
     [theme.advisor, `advisor · ${advisorName(view)}`],
   ];
-  const used = items.reduce((sum, [, label]) => sum + cellLength(label) + 2, 0);
+  const aliasItems: Array<[Rgb, string]> = [
+    [theme.main, `lead · ${mainName(view)}`],
+    [theme.sub, `build · ${modelAlias(view.state.subagents.slice().reverse().find((s) => s.model)?.model ?? mainModelOf(view))}`],
+    [theme.metrics, 'agent memory'],
+    [theme.notes, 'project memory'],
+    [theme.advisor, `advisor · ${modelAlias(advisorModelOf(view))}`],
+  ];
+  const shortItems: Array<[Rgb, string]> = [
+    [theme.main, `lead · ${mainName(view)}`],
+    [theme.sub, 'build'],
+    [theme.metrics, 'agent memory'],
+    [theme.notes, 'project memory'],
+    [theme.advisor, 'advisor'],
+  ];
+  const widthOf = (list: Array<[Rgb, string]>): number => list.reduce((sum, [, label]) => sum + cellLength(label) + 2, 0);
+  const fits = (list: Array<[Rgb, string]>): boolean => widthOf(list) + list.length - 1 <= L.width;
+  const items = fits(fullItems) ? fullItems : fits(aliasItems) ? aliasItems : shortItems;
+  const used = widthOf(items);
   const gap = Math.max(1, Math.floor((L.width - used) / (items.length + 1)));
   let x = gap;
   for (const [color, label] of items) {
@@ -138,6 +158,32 @@ const fireCounts = (view: SceneView): [number, number, number] => {
   return counts;
 };
 
+/** Hora en que se disparó por primera vez cada hito, o `undefined` si aún no ocurrió. */
+function milestoneTimes(view: SceneView): [number | undefined, number | undefined, number | undefined] {
+  const { state } = view;
+  const loadedTimes = state.memory.loaded.map((l) => l.t).filter((t) => t > 0);
+  const firstLoaded = loadedTimes.length ? Math.min(...loadedTimes) : state.memory.loaded.length ? state.startedAt : undefined;
+  const times: [number | undefined, number | undefined, number | undefined] = [firstLoaded, undefined, undefined];
+  for (const touch of state.memory.touches) {
+    const slot = memoryMilestone(state, touch);
+    const prev = times[slot];
+    if (prev === undefined || (touch.t > 0 && (prev <= 0 || touch.t < prev))) times[slot] = touch.t;
+  }
+  return times;
+}
+
+/** Etiqueta de hora compacta para hitos con poco espacio horizontal (ej. `0:26`, `12:03` o `1h02m`). */
+function formatCompactMilestoneTime(t: number, start: number | undefined): string {
+  if (t <= 0 || start === undefined) return '—';
+  const total = Math.max(0, Math.floor((t - start) / 1000));
+  const hours = Math.floor(total / 3600);
+  const mins = Math.floor(total / 60) % 60;
+  const secs = total % 60;
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  if (hours > 0) return `${hours}h${pad(mins)}`;
+  return `${mins}:${pad(secs)}`;
+}
+
 function memoryScopeLabel(view: SceneView): string {
   const { touches, loaded } = view.state.memory;
   return touches[touches.length - 1]?.scope ?? loaded[0]?.scope ?? (view.illustrativeDemo ? 'project' : '—');
@@ -147,35 +193,51 @@ interface PanelLine {
   text: string;
   color: Rgb;
   value?: string;
+  valueColor?: Rgb;
   bold?: boolean;
 }
 
 const blank: PanelLine = { text: '', color: theme.dim };
 const caption = (text: string): PanelLine => ({ text, color: theme.dim });
 
-function projectStats(view: SceneView): { memory: PanelLine[]; stats: PanelLine[] } {
+function memoryFileLines(view: SceneView, maxRows: number): PanelLine[] {
+  if (maxRows <= 0) return [];
   const { state } = view;
   const { touches, loaded } = state.memory;
-  const last = touches[touches.length - 1];
-  const actor = last ? (last.agentId ? agentLabel(state, last.agentId) : modelAlias(state.mainModel)) : loaded.length ? 'session' : 'none yet';
-  const file = last?.file ?? loaded[0]?.file ?? 'no files seen';
+  const items: Array<{ t: number; file: string; detail: string }> = [
+    ...loaded.map((l) => ({ t: l.t || state.startedAt || 0, file: l.file, detail: 'session · loaded' })),
+    ...touches.map((t) => ({
+      t: t.t,
+      file: t.file,
+      detail: `${t.agentId ? agentLabel(state, t.agentId) : modelAlias(state.mainModel)} · ${memoryLabel(state, t)}`,
+    })),
+  ];
+  if (items.length === 0) return [{ text: 'no memory files yet', color: theme.faint }];
+  const withDetail = maxRows >= 4;
+  const step = withDetail ? 2 : 1;
+  const recent = items.slice(-Math.max(1, Math.floor(maxRows / step)));
+  const lines: PanelLine[] = [];
+  for (const item of recent) {
+    const time = item.t > 0 ? formatShortElapsed(item.t, state.startedAt) : '--:--';
+    lines.push({ text: `${time} ${toCells(item.file)}`, color: theme.notes });
+    if (withDetail && lines.length < maxRows) lines.push({ text: toCells(item.detail), color: theme.dim });
+  }
+  return lines;
+}
+
+function projectTotals(view: SceneView): PanelLine[] {
+  const { state } = view;
+  const { touches, loaded } = state.memory;
   const files = new Set([...touches.map((t) => t.file), ...loaded.map((l) => l.file)]);
-  const wrote = touches.some((t) => t.op === 'write');
   const toolsShown = Math.round(view.anim?.numbers?.toolCalls ?? state.toolCalls);
-  return {
-    memory: [
-      caption('agent memories:'),
-      { text: `» ${toCells(actor)}`, color: theme.notes },
-      { text: `  ${toCells(file)}`, color: theme.notes },
-    ],
-    stats: [
-      { text: 'agents', color: theme.dim, value: String(state.subagents.length) },
-      { text: 'memories', color: theme.dim, value: String(files.size) },
-      { text: 'tools', color: theme.dim, value: String(toolsShown) },
-      ...(state.toolErrors ? [{ text: 'errors', color: theme.alert, value: String(state.toolErrors) }] : []),
-      wrote || files.size ? { text: wrote ? 'persistent' : 'read so far', color: theme.notes, bold: true } : { text: 'none seen', color: theme.faint },
-    ],
-  };
+  const errors = state.toolErrors;
+  return [
+    caption('totals'),
+    { text: 'agents', color: theme.dim, value: String(state.subagents.length) },
+    { text: 'memories', color: theme.dim, value: String(files.size) },
+    { text: 'tools', color: theme.dim, value: String(toolsShown) },
+    { text: 'errors', color: errors > 0 ? theme.alert : theme.dim, value: String(errors), valueColor: errors > 0 ? theme.alert : theme.dim },
+  ];
 }
 
 function drawPanelLines(buf: CellBuffer, r: Rect, x: number, from: number, to: number, lines: PanelLine[]): void {
@@ -183,7 +245,7 @@ function drawPanelLines(buf: CellBuffer, r: Rect, x: number, from: number, to: n
   lines.slice(0, Math.max(0, to - from)).forEach((line, i) => {
     const y = from + i;
     buf.text(x, y, fit(line.text, line.value ? width - cellLength(line.value) - 1 : width), line.color, line.bold ? BOLD : 0);
-    if (line.value) rightText(buf, r.x + r.w - 2, y, line.value, theme.text);
+    if (line.value) rightText(buf, r.x + r.w - 2, y, line.value, line.valueColor ?? theme.text);
   });
 }
 
@@ -210,26 +272,49 @@ function drawProject(buf: CellBuffer, view: SceneView, L: SceneLayout): void {
   for (let y = m0 + 1; y < m2; y += 1) buf.put(lineX, y, '╎', theme.faint);
 
   const text = lineX + 2;
-  const { memory, stats } = projectStats(view);
+  const totals = projectTotals(view);
   const firstSpace = m1 - m0 - 1;
-  const notesA = [caption('saved findings'), caption('loaded next time'), caption('check old notes'), caption('against the code')];
-  const notesB = [caption('per-agent notes'), caption('across sessions')];
-  const a: PanelLine[] = firstSpace >= 18
-    ? [blank, ...notesA, blank, blank, ...memory, blank, ...stats, blank, ...notesB]
-    : [...memory, blank, ...stats, ...(firstSpace >= stats.length + 7 ? [blank, ...notesB] : [])];
-  drawPanelLines(buf, r, text, m0 + 1, m1, a);
-
-  const workflow = [caption('build then debug'), caption('review the diff'), caption('save what held'), caption(r.w >= 21 ? 'recheck old notes' : 'recheck notes')];
   const secondSpace = m2 - m1 - 1;
-  drawPanelLines(buf, r, text, m1 + 1, m2, secondSpace >= 6 ? [blank, ...workflow] : workflow);
+
+  // Prioridad: hitos > totales > lista de archivos. En compacto de 30 filas, secondSpace es 4 y caben las 4 filas de valores.
+  const totalsRows = secondSpace === totals.length - 1 ? totals.slice(1) : totals;
+  if (secondSpace >= totalsRows.length) {
+    const fileBudget = firstSpace >= 3 ? firstSpace - 2 : firstSpace;
+    const files = memoryFileLines(view, fileBudget);
+    drawPanelLines(buf, r, text, m0 + 1, m1, firstSpace >= files.length + 1 ? [blank, ...files] : files);
+    drawPanelLines(buf, r, text, m1 + 1, m2, secondSpace >= totalsRows.length + 1 ? [blank, ...totalsRows] : totalsRows);
+  } else {
+    const fileBudget = Math.max(0, firstSpace - totals.length - 1);
+    const files = fileBudget > 0 ? [...memoryFileLines(view, fileBudget), blank] : [];
+    drawPanelLines(buf, r, text, m0 + 1, m1, [...files, ...totals]);
+  }
 
   const counts = fireCounts(view);
+  const times = milestoneTimes(view);
+  const rowWidth = r.x + r.w - 1 - text;
   L.milestones.forEach((row, slot) => {
     const pulse = memoryPulse?.slot === slot ? memoryPulse.amount : 0;
     const fired = (counts[slot] ?? 0) > 0;
     if (pulse > 0) for (let x = left; x < r.x + r.w - 1; x += 1) buf.setBg(x, row, mix(theme.panel, theme.notes, 0.12 + pulse * 0.16));
     buf.put(lineX, row, fired || pulse > 0 ? '◆' : '◇', mix(theme.notes, theme.subBright, pulse * 0.6), fired || pulse > 0 ? BOLD : 0);
-    buf.text(text, row, fit(MILESTONES[slot] as string, r.w - 4), fired || pulse > 0 ? theme.text : mix(theme.notes, theme.bg, 0.15));
+    const name = MILESTONES[slot] as string;
+    const firedAt = times[slot];
+    const hasFiredTime = fired && firedAt !== undefined && firedAt > 0;
+    const candidates = hasFiredTime
+      ? [
+          formatElapsed(firedAt, view.state.startedAt),
+          formatShortElapsed(firedAt, view.state.startedAt),
+          formatCompactMilestoneTime(firedAt, view.state.startedAt),
+        ]
+      : ['—'];
+    const fitsOnRow = (t: string): boolean => cellLength(name) + 1 + cellLength(t) <= rowWidth;
+    const inlineTime = candidates.find(fitsOnRow);
+    buf.text(text, row, fit(name, rowWidth), fired || pulse > 0 ? theme.text : mix(theme.notes, theme.bg, 0.15));
+    if (inlineTime) {
+      rightText(buf, r.x + r.w - 2, row, inlineTime, hasFiredTime ? theme.dim : theme.faint);
+    } else if (hasFiredTime && row + 1 < r.y + r.h - 1 && !L.milestones.includes(row + 1)) {
+      rightText(buf, r.x + r.w - 2, row + 1, formatShortElapsed(firedAt, view.state.startedAt), theme.dim);
+    }
   });
 }
 
@@ -244,7 +329,7 @@ function dashedArrow(buf: CellBuffer, y: number, from: number, to: number, color
 const lineColor = (active: boolean, color: Rgb): Rgb => (active ? mix(color, theme.bg, 0.3) : theme.line);
 
 function drawConnectors(buf: CellBuffer, view: SceneView, L: SceneLayout): void {
-  const { spine, cardCenters, main, memory, lead, cards, rows } = L;
+  const { spine, cardCenters, main, lead, cards, rows } = L;
   const { subagents } = view.state;
   const hasSubagents = subagents.length > 0;
   const anyDone = subagents.some((s) => !s.running);
@@ -263,11 +348,10 @@ function drawConnectors(buf: CellBuffer, view: SceneView, L: SceneLayout): void 
   const consulted = view.state.advisor.calls > 0;
   dashedArrow(buf, L.advisorLink, main.x + main.w, L.advisor.x - 1, consulted ? mix(theme.advisor, theme.bg, 0.3) : mix(theme.advisor, theme.bg, 0.65));
 
-  // Tronco: sesión principal, memoria de agentes y distribución.
-  const trunk = lineColor(view.connected, theme.main);
-  for (let y = main.y + main.h; y < memory.y; y += 1) buf.put(spine, y, '│', trunk);
+  // Tronco continuo desde la sesión principal hasta el bus de tarjetas.
   const busColor = lineColor(hasSubagents, theme.sub);
-  for (let y = memory.y + memory.h; y < rows.bus; y += 1) if (y !== rows.delegate) buf.put(spine, y, '│', busColor);
+  const trunk = hasSubagents ? busColor : lineColor(view.connected, theme.main);
+  for (let y = main.y + main.h; y < rows.bus; y += 1) buf.put(spine, y, '│', trunk);
 
   // Distribución hacia las tarjetas.
   const [c0, c1, c2] = cardCenters;
@@ -330,33 +414,40 @@ function drawMainPanel(buf: CellBuffer, view: SceneView, r: Rect): void {
 function drawAdvisorBox(buf: CellBuffer, view: SceneView, r: Rect): void {
   const { state } = view;
   const pulse = view.anim?.advisorPulse ?? 0;
+  // `replaying` solo se enciende al reproducir un lote: en vivo la consulta no se ve mientras ocurre.
+  const replaying = state.advisor.consults.some((c) => c.open);
   box(buf, r, {
     color: mix(panelBorder(theme.advisor, view), theme.subBright, pulse * 0.6),
-    dashed: true,
+    dashed: !replaying,
     fill: mix(theme.panel, theme.advisor, pulse * 0.06),
     halo: pulse * 0.12,
-    bold: pulse > 0.5,
+    bold: replaying || pulse > 0.5,
   });
   const inner = r.w - 2;
   const left = r.x + 1;
-  // `replaying` solo se enciende al reproducir un lote: en vivo la consulta no se ve mientras ocurre.
-  const replaying = state.advisor.consults.some((c) => c.open);
   const enabled = state.advisorEnabled || Boolean(advisorModelOf(view));
   const status = replaying ? 'replaying' : enabled ? 'silent' : 'off';
   const statusColor = replaying ? theme.advisor : theme.dim;
   const numbers = view.anim?.numbers;
-  const calls = String(Math.round(numbers?.calls ?? state.advisor.calls));
+  const callsCount = Math.round(numbers?.calls ?? state.advisor.calls);
+  const calls = String(callsCount);
+  const consultWord = callsCount === 1 ? 'consult' : 'consults';
   const tokens = formatTokens(Math.round(numbers?.tokensRead ?? state.advisor.tokensRead));
+  const longStats = `${calls} ${consultWord} · ${tokens} tok`;
+  const midStats = `${calls} · ${tokens} tok`;
+  const compactStats = `${calls}·${tokens} tok`;
+  const statsLine = cellLength(longStats) <= inner ? longStats : cellLength(midStats) <= inner ? midStats : cellLength(compactStats) <= inner ? compactStats : `${calls} · ${tokens}`;
   // `replaying` no deja lugar para el contador en una fila.
-  const shortStatus = replaying ? status : `${status} · ${calls}`;
+  const fullShort = `${status} · ${calls} ${consultWord}`;
+  const shortStatus = replaying ? status : cellLength(fullShort) <= inner ? fullShort : `${status} · ${calls}`;
 
   centerText(buf, left, inner, r.y + 1, 'ADVISOR', theme.advisor, true);
   if (r.h >= 6) {
-    centerText(buf, left, inner, r.y + 2, advisorName(view).toLowerCase(), theme.text);
+    centerText(buf, left, inner, r.y + 2, advisorName(view), theme.text);
     centerText(buf, left, inner, r.y + 3, status, statusColor, replaying);
-    centerText(buf, left, inner, r.y + 4, `${calls} · ${tokens}`, theme.dim);
+    centerText(buf, left, inner, r.y + 4, statsLine, theme.dim);
   } else if (r.h === 5) {
-    centerText(buf, left, inner, r.y + 2, advisorName(view).toLowerCase(), theme.text);
+    centerText(buf, left, inner, r.y + 2, advisorName(view), theme.text);
     centerText(buf, left, inner, r.y + 3, shortStatus, statusColor, replaying);
   } else {
     centerText(buf, left, inner, r.y + 2, shortStatus, statusColor, replaying);
@@ -383,15 +474,12 @@ function slotMemoryRows(view: SceneView, count: number): MemoryRow[] {
   const rows: MemoryRow[] = [];
   for (let i = 0; i < count; i += 1) {
     const sub = slots[i]?.sub;
+    if (!sub) continue;
     const example = view.anim?.illustrative?.memory[i];
-    const name = sub ? (sub.agentType || sub.description ? agentLabel(state, sub.id) : 'starting…') : '—';
-    if (sub && example) {
+    const name = sub.agentType || sub.description ? agentLabel(state, sub.id) : 'starting…';
+    if (example) {
       const check = example.label === 'check';
       rows.push({ name, fraction: example.fraction, label: example.label, labelColor: check ? theme.main : theme.metrics, barColor: check ? theme.main : theme.barGood });
-      continue;
-    }
-    if (!sub) {
-      rows.push({ name: '—', fraction: 0, label: '', labelColor: theme.faint, barColor: theme.barGood });
       continue;
     }
     const own = state.memory.touches.filter((t) => t.agentId === sub.id);
@@ -454,10 +542,7 @@ function memoryRows(view: SceneView, count: number): MemoryRow[] {
   const rows: MemoryRow[] = [];
   for (let i = 0; i < count; i += 1) {
     const group = groups[i];
-    if (!group) {
-      rows.push({ name: '—', fraction: 0, label: '', labelColor: theme.faint, barColor: theme.barGood });
-      continue;
-    }
+    if (!group) continue;
     const last = group.lastTouch;
     const label = last ? memoryLabel(state, last) : 'no memory';
     const check = label === 'check';
@@ -470,38 +555,58 @@ function drawAgentMemory(buf: CellBuffer, view: SceneView, r: Rect): void {
   const { state } = view;
   box(buf, r, { color: panelBorder(theme.metrics, view), fill: theme.panel });
   const left = r.x + 2;
-  const right = r.x + r.w - 3;
+  const right = r.x + r.w - 2;
   const rows = memoryRows(view, 3);
   const allRoles = view.illustrativeDemo ? undefined : roleGroups(view);
   const rolesTotal = allRoles ? allRoles.length : state.subagents.length;
   const rolesWithMemory = allRoles ? allRoles.filter((g) => g.lastTouch).length : state.subagents.length;
-  const roles: Segment[] = [
+  const rolesFull: Segment[] = [
     { text: 'roles  ', color: theme.dim },
     { text: `${rolesWithMemory} / ${rolesTotal}`, color: theme.metrics },
   ];
-  const footerText = view.illustrativeDemo ? 'memory · illustrative activity' : 'memory · real tool calls';
+  const rolesShort: Segment[] = [
+    { text: 'roles ', color: theme.dim },
+    { text: `${rolesWithMemory}/${rolesTotal}`, color: theme.metrics },
+  ];
+  const footerFull = view.illustrativeDemo ? 'memory · illustrative activity' : 'memory · real tool calls';
+  const footerMaxWidth = r.h >= 7 ? r.w - 4 : r.w - 2;
+  const footerText = view.illustrativeDemo && cellLength(footerFull) > footerMaxWidth ? 'illustrative activity' : footerFull;
 
   let y = r.y + 1;
   if (r.h >= 6) {
     buf.text(left, y, 'AGENT MEMORY', theme.metrics, BOLD);
+    const roles = left + 13 + segmentsWidth(rolesFull) <= right + 1 ? rolesFull : rolesShort;
     writeSegments(buf, right - segmentsWidth(roles) + 1, y, roles);
     y += 1;
   } else {
-    buf.text(left, r.y, ' AGENT MEMORY ', theme.metrics, BOLD);
-    writeSegments(buf, right - segmentsWidth(roles), r.y, [{ text: ' ', color: theme.dim }, ...roles, { text: ' ', color: theme.dim }]);
+    buf.text(left - 1, r.y, ' AGENT MEMORY ', theme.metrics, BOLD);
+    const roles = left + 14 + segmentsWidth(rolesFull) + 2 <= right ? rolesFull : rolesShort;
+    writeSegments(buf, right - segmentsWidth(roles) - 1, r.y, [{ text: ' ', color: theme.dim }, ...roles, { text: ' ', color: theme.dim }]);
   }
 
-  const barX = left + 15;
-  const barWidth = Math.min(10, r.w - 28);
-  rows.forEach((row, i) => {
-    buf.text(left, y + i, fit(toCells(row.name), 14), row.name === '—' ? theme.faint : theme.text);
-    bar(buf, barX, y + i, barWidth, row.fraction, row.barColor);
-    if (row.label) buf.text(barX + barWidth + 2, y + i, fit(row.label, right - barX - barWidth - 1), row.labelColor);
-  });
+  if (rows.length === 0) {
+    buf.text(left, y, 'no subagents yet', theme.faint);
+  } else {
+    const inner = right - left + 1;
+    const labelWidth = Math.min(9, Math.max(6, inner - 16));
+    const barWidth = Math.min(10, Math.max(4, inner - labelWidth - 11));
+    const nameWidth = Math.max(6, inner - barWidth - labelWidth - 2);
+    const barX = left + nameWidth + 1;
+    rows.forEach((row, i) => {
+      buf.text(left, y + i, fit(toCells(row.name), nameWidth), theme.text);
+      bar(buf, barX, y + i, barWidth, row.fraction, row.barColor);
+      if (row.label) buf.text(barX + barWidth + 1, y + i, fit(row.label, right - barX - barWidth), row.labelColor);
+    });
+  }
 
   // Con espacio va en su fila. Si no, sobre el borde inferior, porque un rótulo ilustrativo debe verse siempre.
-  if (r.h >= 7) buf.text(left, r.y + r.h - 2, footerText, theme.caption);
-  else buf.text(left, r.y + r.h - 1, ` ${footerText} `, theme.caption);
+  if (r.h >= 7) {
+    buf.text(left, r.y + r.h - 2, fit(footerText, r.w - 4), theme.dim);
+  } else if (cellLength(footerText) + 2 <= r.w - 2) {
+    buf.text(r.x + 1, r.y + r.h - 1, ` ${footerText} `, theme.dim);
+  } else {
+    buf.text(r.x + 1, r.y + r.h - 1, fit(footerText, r.w - 2), theme.dim);
+  }
 }
 
 // --- Subagentes ---
@@ -561,7 +666,7 @@ function drawCard(buf: CellBuffer, r: Rect, sub: SubagentState | undefined, slot
     const barX = left + 1;
     const width = Math.max(4, inner - 3 - cellLength(right));
     if (percent !== undefined && sub.running) bar(buf, barX, y, width, percent / 100, theme.barSub);
-    else if (sub.running) indeterminateBar(buf, barX, y, width, view.now / 1800 + index * 0.27, theme.barSub);
+    else if (sub.running) countBar(buf, barX, y, width, sub.toolCount, theme.barSub);
     else bar(buf, barX, y, width, easeOutCubic(segment(fade, 0, FILL_SHARE)), failed ? theme.barAlert : theme.barSub);
     rightText(buf, r.x + r.w - 2, y, right, theme.dim);
   };
@@ -649,15 +754,21 @@ function cardSlots(view: SceneView, count: number): CardSlot[] {
 function drawDelegate(buf: CellBuffer, view: SceneView, L: SceneLayout): void {
   const { subagents } = view.state;
   const active = subagents.filter((s) => s.running).length;
-  const text = 'delegate to subagents';
-  const x = L.spine - (cellLength(text) >> 1);
-  buf.text(x, L.rows.delegate, text, subagents.length ? theme.text : theme.dim);
-  if (active > 0) buf.put(x + cellLength(text) + 1, L.rows.delegate, spinnerFrame(view.now, 110), theme.sub);
+  const done = subagents.length - active;
+  const x = L.spine + 2;
+  if (subagents.length === 0) {
+    buf.text(x, L.rows.delegate, 'no subagents yet', theme.faint);
+    return;
+  }
+  const text = `${subagents.length} delegated · ${done} done`;
+  const end = buf.text(x, L.rows.delegate, text, theme.text);
+  if (active > 0) buf.put(end + 1, L.rows.delegate, spinnerFrame(view.now, 110), theme.sub);
 }
 
 function drawLead(buf: CellBuffer, view: SceneView, r: Rect): void {
   const { subagents } = view.state;
   const done = subagents.filter((s) => !s.running);
+  const running = subagents.length - done.length;
   const glow = view.anim?.leadGlow ?? 0;
   const pulse = view.anim?.memoryPulse?.slot === 2 && view.anim.memoryPulse.card === undefined ? view.anim.memoryPulse.amount : 0;
   box(buf, r, {
@@ -676,8 +787,8 @@ function drawLead(buf: CellBuffer, view: SceneView, r: Rect): void {
   if (r.h >= 4) {
     centerSegments(buf, left, inner, r.y + 1, title);
     const latest = done[done.length - 1];
-    // Sin ningún subagente cerrado es un texto de relleno (atenuado); con uno cerrado solo se muestra lo real.
-    const summary = !latest ? 'integrate + verify' : latest.summary ? `${done.length} back · ${plainText(latest.summary)}` : `${done.length} back`;
+    const waiting = running > 0 ? `waiting for ${running} ${running === 1 ? 'summary' : 'summaries'}` : 'no summaries yet';
+    const summary = !latest ? waiting : latest.summary ? `${done.length} back · ${plainText(latest.summary)}` : `${done.length} back`;
     centerText(buf, left + 1, inner - 2, r.y + 2, summary, latest ? theme.text : theme.dim);
   } else {
     centerSegments(buf, left, inner, r.y + 1, [...title, { text: subagents.length ? ` · ${done.length}/${subagents.length}` : '', color: theme.dim }]);
@@ -720,53 +831,59 @@ function drawLog(buf: CellBuffer, view: SceneView, r: Rect): void {
   if (entries.length === 0) buf.text(r.x + 2, r.y + 1, 'nothing yet', theme.faint);
 }
 
-function drawPrompt(buf: CellBuffer, view: SceneView, y: number, x: number, width: number, note?: string): void {
-  const { state } = view;
-  const end = writeSegments(buf, x + 1, y, [
-    { text: `${fit(toCells(folderName(state.cwd)), 18)} $ `, color: theme.metrics, bold: true },
-    { text: 'claude', color: theme.text },
-    { text: ' --model ', color: theme.text },
-    { text: modelAlias(mainModelOf(view)), color: theme.text },
-    { text: ' --advisor ', color: theme.text },
-    { text: modelAlias(advisorModelOf(view)), color: theme.text },
-    { text: ' ', color: theme.text },
-  ]);
-  // Cursor parpadeante.
-  if (Math.floor(view.now / 530) % 2 === 0) buf.put(end, y, '█', theme.metrics);
-  const label = note ?? (view.illustrativeDemo ? 'demo: illustrative activity' : 'reconstructed, not literal');
-  if (end + cellLength(label) + 3 < x + width) rightText(buf, x + width - 2, y, label, view.illustrativeDemo && !note ? theme.caption : theme.faint);
+function drawKeys(buf: CellBuffer, view: SceneView, y: number, x: number, width: number, note?: string): void {
+  const key = (k: string, action: string): Segment[] => [
+    { text: k, color: theme.text },
+    { text: ` ${action}`, color: theme.dim },
+  ];
+  const sep: Segment = { text: ' · ', color: theme.dim };
+  const segments: Segment[] = [...key('q', 'quit')];
+  if (view.replay || view.illustrativeDemo) {
+    segments.push(sep, ...key('space', 'pause'), sep, ...key('+/-', 'speed'));
+  }
+  const end = writeSegments(buf, x + 1, y, segments);
+  const label = note ?? (view.illustrativeDemo ? 'demo: illustrative activity' : undefined);
+  if (label && end + cellLength(label) + 3 < x + width) {
+    rightText(buf, x + width - 2, y, label, view.illustrativeDemo && !note ? theme.caption : theme.faint);
+  }
 }
 
 function drawStatus(buf: CellBuffer, view: SceneView, y: number, x: number, width: number): void {
   const { state } = view;
-  const { subagents, memory } = state;
-  const active = subagents.filter((s) => s.running).length;
-  const bracket = (label: string, value: string, color: Rgb): Segment[] => [
-    { text: `${label} `, color: theme.dim },
-    { text: '[', color: color },
-    { text: value, color },
-    { text: '] ', color },
-  ];
-  const replaying = state.advisor.consults.some((c) => c.open);
-  const hasMemory = memory.touches.length > 0 || memory.loaded.length > 0 || view.illustrativeDemo;
+  const elapsed = formatElapsed(state.lastEventAt ?? 0, state.startedAt);
+  const sep: Segment = { text: ' · ', color: theme.dim };
+  const costStr = state.costUSD !== undefined ? `$${state.costUSD.toFixed(2)}` : undefined;
   const groups: Segment[][] = [
-    bracket('lead', state.ended ? 'ended' : isMainActive(view) ? 'working' : 'idle', theme.main),
-    bracket('subagents', `${subagents.length - active}/${subagents.length}`, theme.sub),
-    bracket('memories', hasMemory ? memoryScopeLabel(view) : 'none', theme.metrics),
-    bracket('build', active ? 'building' : 'idle', theme.sub),
-    bracket('advisor', replaying ? 'replaying' : 'silent', theme.advisor),
+    [
+      { text: 'elapsed ', color: theme.dim },
+      { text: elapsed, color: theme.text },
+    ],
   ];
+  if (costStr !== undefined) {
+    groups.push([
+      sep,
+      { text: 'cost ', color: theme.dim },
+      { text: costStr, color: theme.text },
+    ]);
+  }
   const pending = view.queue.pending.length;
   const queued = `${pending} queued`;
-  const room = width - cellLength(queued) - 4;
+  const reservedForBlocks = Math.min(pending, 10) + (pending > 0 ? 1 : 0);
+  const room = width - cellLength(queued) - 4 - reservedForBlocks;
   const segments: Segment[] = [];
   for (const group of groups) {
     if (segmentsWidth(segments) + segmentsWidth(group) > room) break;
     segments.push(...group);
   }
+  const rawLast = view.queue.last ? toCells(view.queue.last) : undefined;
+  const last = rawLast && costStr && rawLast.endsWith(` · ${costStr}`) ? rawLast.slice(0, -(costStr.length + 3)) : rawLast;
+  const remaining = room - segmentsWidth(segments) - 3;
+  if (last && remaining >= 10) {
+    segments.push(sep, { text: fit(last, remaining), color: theme.dim });
+  }
   const end = writeSegments(buf, x + 1, y, segments);
   // Cuadros de color: uno por evento en cola, si queda lugar.
-  view.queue.pending.slice(0, Math.max(0, x + width - cellLength(queued) - 4 - end)).forEach((kind, i) => buf.put(end + i, y, '■', KIND_COLOR[kind]));
+  view.queue.pending.slice(0, Math.max(0, x + width - cellLength(queued) - 4 - end)).forEach((kind, i) => buf.put(end + 1 + i, y, '■', KIND_COLOR[kind]));
   rightText(buf, x + width - 2, y, queued, theme.dim);
 }
 
@@ -788,9 +905,7 @@ function flashPanel(buf: CellBuffer, r: Rect, amount: number): void {
 function renderFlow(buf: CellBuffer, view: SceneView, L: SceneLayout): void {
   buf.originX = L.originX;
   buf.originY = L.originY;
-  if (L.windowBar) drawWindowBar(buf, view, -1, -L.originX);
   centerSegments(buf, 0, L.width, L.rows.header, headerSegments(view));
-  if (L.rows.separator !== undefined) for (let x = L.log.x; x < L.log.x + L.log.w; x += 1) buf.put(x, L.rows.separator, '━', theme.line);
   drawLegend(buf, view, L);
   drawConnectors(buf, view, L);
   drawProject(buf, view, L);
@@ -806,7 +921,7 @@ function renderFlow(buf: CellBuffer, view: SceneView, L: SceneLayout): void {
   drawLead(buf, view, L.lead);
   drawArrows(buf, L);
   drawLog(buf, view, L.log);
-  drawPrompt(buf, view, L.rows.prompt, 0, L.width);
+  drawKeys(buf, view, L.rows.prompt, 0, L.width);
   drawStatus(buf, view, L.rows.status, 0, L.width);
   for (const packet of view.anim?.packets ?? []) drawPacket(buf, packet, L);
   const flash = view.anim?.errorFlash ?? 0;
@@ -881,9 +996,10 @@ function renderReduced(buf: CellBuffer, view: SceneView): void {
     }
     const failed = sub.status !== undefined && sub.status !== 'completed';
     box(buf, r, { color: failed ? theme.alert : theme.sub, fill: theme.panel });
-    const index = view.state.subagents.indexOf(sub);
+    const percent = view.anim?.illustrative?.percents[i];
     centerText(buf, r.x + 1, r.w - 2, r.y + 1, plainText(subagentName(view.state, sub.id)), theme.text, true);
-    if (sub.running) indeterminateBar(buf, r.x + 2, r.y + 2, r.w - 4, view.now / 1800 + index * 0.27, theme.barSub);
+    if (percent !== undefined && sub.running) bar(buf, r.x + 2, r.y + 2, r.w - 4, percent / 100, theme.barSub);
+    else if (sub.running) countBar(buf, r.x + 2, r.y + 2, r.w - 4, sub.toolCount, theme.barSub);
     else bar(buf, r.x + 2, r.y + 2, r.w - 4, 1, failed ? theme.barAlert : theme.barSub);
     centerText(buf, r.x + 1, r.w - 2, r.y + 3, sub.running ? `tools: ${sub.toolCount}` : `${toolsLabel(sub.toolCount)}${sub.durationMs !== undefined ? ` · ${formatDuration(sub.durationMs)}` : ''}`, failed ? theme.alert : theme.sub);
   }
@@ -894,7 +1010,7 @@ function renderReduced(buf: CellBuffer, view: SceneView): void {
 
   const logRect: Rect = { x: 0, y: advisorRect.y + advisorRect.h, w: width, h: height - advisorRect.h - 3 };
   drawLog(buf, view, logRect);
-  drawPrompt(buf, view, height - 2, 0, width, `${COMPACT_ROWS}+ rows: full view`);
+  drawKeys(buf, view, height - 2, 0, width, `${COMPACT_ROWS}+ rows: full view`);
   drawStatus(buf, view, height - 1, 0, width);
   const flash = view.anim?.errorFlash ?? 0;
   if (flash > 0) {

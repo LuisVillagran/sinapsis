@@ -90,10 +90,10 @@ describe('animación 2: paquetes', () => {
   });
 
 it('no escribe sobre texto', () => {
-    const base = play([models], 10).view;
+    const base = play([models, { type: 'subagent_start', t: 1, subagentId: 'a' }], 10).view;
     for (let t = 0; t <= 1; t += 0.05) {
       const buf = bufferOf({ ...base, anim: { packets: [{ route: 'delegate-0', t }] } });
-      expect(buf.rowText(FULL.rows.delegate)).toContain('delegate to subagents');
+      expect(buf.rowText(FULL.rows.delegate)).toContain('1 delegated · 0 done');
     }
   });
 
@@ -267,7 +267,7 @@ it('lo que ya había ocurrido no se vuelve a contar', () => {
     expect(view.anim?.numbers?.toolCalls).toBe(5);
     const panel = Array.from({ length: FULL.project.h }, (_, i) => buf.rowText(FULL.project.y + i, FULL.project.x, FULL.project.x + FULL.project.w)).join('\n');
     expect(panel).toMatch(/tools\s+5/);
-    expect(buf.rowText(FULL.advisor.y + 4, FULL.advisor.x, FULL.advisor.x + FULL.advisor.w)).toContain('1 · 64.7k');
+    expect(buf.rowText(FULL.advisor.y + 4, FULL.advisor.x, FULL.advisor.x + FULL.advisor.w)).toContain('64.7k tok');
   });
 
 it('el estado final coincide con el reductor', () => {
@@ -369,14 +369,7 @@ describe('animación 7: spinners y cursor', () => {
     const buf = bufferOf(historicalView(finished, 300));
     expect(buf.rowText(FULL.main.y + 4, FULL.main.x, FULL.main.x + FULL.main.w)).toContain('--model haiku');
     expect(buf.rowText(FULL.cards[0].y + 5, FULL.cards[0].x, FULL.cards[0].x + FULL.cards[0].w)).not.toMatch(/[◐◓◑◒]/);
-    expect(buf.rowText(FULL.rows.delegate, 0, FULL_COLS).trimEnd()).toMatch(/subagents$/);
-  });
-
-it('el cursor parpadea', () => {
-    const cursorIn = (now: number): boolean => bufferOf(historicalView(running, now)).rowText(FULL.rows.prompt).includes('█');
-    expect(cursorIn(0)).toBe(true);
-    expect(cursorIn(600)).toBe(false);
-    expect(cursorIn(1100)).toBe(true);
+    expect(buf.rowText(FULL.rows.delegate, 0, FULL_COLS).trimEnd()).toMatch(/1 delegated · 1 done$/);
   });
 
   it('los discos de las tarjetas no giran sincronizados', () => {
@@ -422,7 +415,7 @@ describe('animación 8: respiración en reposo', () => {
 
   it('no es una animación que oculte nada: sin sesión, el panel sigue completo', () => {
     const buf = bufferOf(idle(2000));
-    expect(buf.rowText(FULL.rows.header)).toContain('CLAUDE CODE ADVISOR');
+    expect(buf.rowText(FULL.rows.header)).toContain('SINAPSIS');
     expect(buf.charAt(FULL.main.x, FULL.main.y)).toBe('┌');
   });
 
@@ -672,7 +665,7 @@ describe('demo ilustrada', () => {
     const text = allText(buf);
     expect(text).toMatch(/\d+%/);
     expect(text).toContain('recall');
-    expect(text).toContain('memory · illustrative activity');
+    expect(text).toContain('illustrative activity');
     expect(text).toContain('demo: illustrative activity');
   });
 
@@ -680,7 +673,7 @@ describe('demo ilustrada', () => {
     const { view } = demo(6000);
     const buf = new CellBuffer(80, 30);
     renderScene(buf, view);
-    expect(Array.from({ length: 30 }, (_, y) => buf.rowText(y)).join('\n')).toContain('memory · illustrative activity');
+    expect(Array.from({ length: 30 }, (_, y) => buf.rowText(y)).join('\n')).toContain('illustrative activity');
   });
 
   it('sin la demo no hay porcentajes ni actividad de ejemplo', () => {

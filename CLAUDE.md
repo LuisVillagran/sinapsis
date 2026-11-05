@@ -223,43 +223,40 @@ Valores en `docs/colores.md`, muestreados con `tools/sample-colors.ts`.
 
 ### Geometría del layout completo (columna, fila; desde 0)
 
-Medida sobre las imágenes, a 8 px por columna y 18,36 px por fila, contando desde el encabezado. La verifica
-`test/layout.test.ts`.
+Medida sobre 90x46 (sin barra falsa de ventana ni separador decorativo, y con `AGENT MEMORY` fuera del camino de delegación). La verifica `test/layout.test.ts`.
 
 | Elemento | Columnas | Filas |
 | --- | --- | --- |
-| Barra falsa de ventana, si cabe | todas | -1 |
 | Encabezado | centrado | 0 |
-| Separador | 3–87 | 1 |
-| Leyenda | repartida | 2 |
-| Project memory | 3–23 | 3–36 |
-| Sesión principal | 44–70 | 3–8 |
-| Advisor (punteado) | 74–87 | 3–8 |
-| Agent memory | 36–78 | 11–17 |
-| Texto "delegate to subagents" | centrado en 57 | 19 |
-| Bus hacia las tarjetas, y flechas | 36–78 | 21 y 22 |
-| Tarjetas de subagente | 26–45, 47–66, 68–87 | 23–29 |
-| Bus de regreso, y flecha | 36–78 | 31 y 32 |
-| Back to lead | 41–73 | 33–36 |
-| Session log | 3–87 | 38–43 |
-| Línea de prompt | 0–89 | 44 |
+| Leyenda | repartida | 1 |
+| Project memory | 3–23 | 2–35 |
+| Sesión principal | 44–70 | 2–7 |
+| Advisor (punteado en silent, sólido en replaying) | 74–87 | 2–7 |
+| Agent memory (a la izquierda del tronco) | 26–55 | 10–16 |
+| Texto `N delegated · M done` | desde 59 (`spine + 2`) | 18 |
+| Bus hacia las tarjetas, y flechas | 36–78 | 20 y 21 |
+| Tarjetas de subagente | 26–45, 47–66, 68–87 | 22–28 |
+| Bus de regreso, y flecha | 36–78 | 30 y 31 |
+| Back to lead | 41–73 | 32–35 |
+| Session log | 3–87 | 37–43 |
+| Línea de teclas | 0–89 | 44 |
 | Línea de estado | 0–89 | 45 |
 
 ### Contenido de cada elemento
 
 | Elemento | Contenido |
 | --- | --- |
-| Encabezado | `CLAUDE CODE ADVISOR · <PRINCIPAL> LEADS · <SUBAGENTES> BUILDS`, con modelos reales |
-| Leyenda | Cuadros de color: lead, build, memories, notes, advisor |
-| Project memory | Alcance real, hitos `before work`, `repeat failure` y `before sign-off` con flechas a la sesión, a la primera tarjeta y al lead, último agente y archivo, y totales de agentes, memorias, herramientas y errores |
+| Encabezado | `SINAPSIS · <carpeta> · <modo>` (`LIVE`, `REPLAY xN`, `PAUSED`, `REPLAY END`, `DEMO` o `WAITING FOR A SESSION`) |
+| Leyenda | Cuadros de color: `lead · <modelo>`, `build · <modelo>`, `agent memory`, `project memory`, `advisor · <modelo>` |
+| Project memory | Alcance real, hitos `before work`, `repeat failure` y `before sign-off` con su hora de disparo y flechas a la sesión, a la primera tarjeta y al lead, lista real de archivos de memoria tocados y totales (`totals`: `agents`, `memories`, `tools`, `errors`) |
 | Sesión principal | Modelo, tarea (`ai-title` o último prompt), medidor de effort y actividad con spinner, o `--model` en reposo |
-| Advisor | Modelo, estado (`silent` o `replaying`), consultas y tokens leídos |
-| Agent memory | `roles` con memoria sobre el total, y una fila por rol: nombre, barra según sus operaciones y `recall`, `check` o `save`. Pie `memory · real tool calls`, o `illustrative activity` en la demo |
-| Tarjetas | Nombre, modelo, `read-only` si corresponde, barra con contador de herramientas, descripción y estado. **Sin porcentaje inventado:** barra indeterminada en vivo |
-| Back to lead | `back to <modelo> · lead` y resúmenes recibidos |
+| Advisor | Modelo, estado (`silent`, `replaying` u `off`), borde punteado en `silent` y sólido en `replaying`, consultas y tokens leídos (`N consults · Xk tok`) |
+| Agent memory | `roles` con memoria sobre el total, y una fila por rol existente: nombre, barra según sus operaciones y `recall`, `check` o `save` (o `no subagents yet` sin subagentes). Pie `memory · real tool calls`, o `illustrative activity` en la demo |
+| Tarjetas | Nombre, modelo, `read-only` si corresponde, barra por cantidad real de herramientas (`countBar`, 1 celda por herramienta en curso y llena al terminar), contador de herramientas, descripción y estado |
+| Back to lead | `back to <modelo> · lead`, y resúmenes recibidos (`N back · <resumen>`), `waiting for N summaries` o `no summaries yet` |
 | Session log | Tiempo desde el inicio, agente, evento |
-| Prompt | Comando reconstruido desde los modelos reales, con cursor parpadeante. No se presenta como literal |
-| Línea de estado | Cada rol con su estado entre corchetes (`lead`, `subagents`, `memories`, `build` y `advisor`), y eventos en cola con cuadros de color |
+| Línea de teclas | Controles reales disponibles: `q quit` siempre, y `space pause · +/- speed` en replay/demo (más el rótulo `demo: illustrative activity` en la demo) |
+| Línea de estado | Tiempo transcurrido (`elapsed`), costo (`cost $X.XX` si existe), último evento mostrado y eventos en cola con cuadros de color (`N queued`) |
 
 **No copiar** valores de ejemplo de las imágenes: `~/app`, `SUBAGENT TIP`, `builder`, `Sonnet 5.5`, `integrate + verify`
 como dato, tiempos del log. Los nombres de agentes y modelos salen de cada sesión.

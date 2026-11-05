@@ -48,25 +48,23 @@ describe('geometría medida sobre el buffer', () => {
   });
 
   it('filas de texto', () => {
-    expect(textRow(buf, 'CLAUDE CODE ADVISOR')).toBe(L.rows.header);
-    expect(buf.rowText(L.rows.separator as number)).toContain('━━━━');
+    expect(textRow(buf, 'SINAPSIS')).toBe(L.rows.header);
     expect(textRow(buf, 'lead · Haiku 5.5')).toBe(L.rows.legend);
-    expect(textRow(buf, 'delegate to subagents')).toBe(L.rows.delegate);
-    expect(textRow(buf, '--advisor opus')).toBe(L.rows.prompt);
+    expect(textRow(buf, 'delegated')).toBe(L.rows.delegate);
+    expect(textRow(buf, 'q quit')).toBe(L.rows.prompt);
     expect(textRow(buf, 'queued')).toBe(L.rows.status);
   });
 
   it('encabezado centrado', () => {
     const header = buf.rowText(L.rows.header);
-    const start = header.indexOf('CLAUDE');
-    const end = header.lastIndexOf('BUILDS') + 6;
+    const start = header.indexOf('SINAPSIS');
+    const end = header.lastIndexOf('LIVE') + 4;
     expect(Math.abs(start - (FULL_COLS - end))).toBeLessThanOrEqual(1);
   });
 
-  it('conectores: del tronco al bus, del bus a cada tarjeta y de vuelta al lead', () => {
-    const { rows, spine, cardCenters, main, memory } = L;
-    expect(buf.charAt(spine, main.y + main.h)).toBe('│');
-    expect(buf.charAt(spine, memory.y + memory.h)).toBe('│');
+  it('conectores: tronco continuo hasta el bus, del bus a cada tarjeta y de vuelta al lead', () => {
+    const { rows, spine, cardCenters, main } = L;
+    for (let y = main.y + main.h; y < rows.bus; y += 1) expect(buf.charAt(spine, y), `fila ${y}`).toBe('│');
     expect(buf.charAt(cardCenters[0], rows.bus)).toBe('┌');
     expect(buf.charAt(spine, rows.bus)).toBe('┼');
     expect(buf.charAt(cardCenters[2], rows.bus)).toBe('┐');
@@ -90,29 +88,58 @@ describe('geometría medida sobre el buffer', () => {
     const layout = layoutFor(120, 60) as SceneLayout;
     expectBox(big, layout.project, layout.originX, layout.originY);
     expectBox(big, layout.log, layout.originX, layout.originY);
-    expect(big.rowText(layout.rows.header + layout.originY)).toContain('CLAUDE CODE ADVISOR');
+    expect(big.rowText(layout.rows.header + layout.originY)).toContain('SINAPSIS');
   });
 });
 
 describe('contenido', () => {
-  it('modelos reales en el encabezado, sin valores de ejemplo de las imágenes', () => {
+  it('identidad de sesión en el encabezado y sin valores de ejemplo ni textos fijos de las imágenes', () => {
     const all = screenText(render(FULL_COLS, FULL_ROWS, fixtureView()));
-    expect(all).toContain('HAIKU 5.5 LEADS');
-    expect(all).toContain('HAIKU 5.5 BUILDS');
-    for (const banned of ['skunzu', 'jev', 'forks', '2,625', 'files: 156', 'call sites', '%', 'SUBAGENT TIP', '~/app', 'builder', 'debugger', 'reviewer', 'Sonnet', 'illustrative']) expect(all).not.toContain(banned);
+    expect(all).toContain('SINAPSIS');
+    expect(all).toContain('LIVE');
+    for (const banned of [
+      'CLAUDE CODE ADVISOR',
+      'skunzu',
+      'jev',
+      'forks',
+      '2,625',
+      'files: 156',
+      'call sites',
+      '%',
+      'SUBAGENT TIP',
+      '~/app',
+      'builder',
+      'debugger',
+      'reviewer',
+      'Sonnet',
+      'illustrative',
+      'saved findings',
+      'loaded next time',
+      'per-agent notes',
+      'build then debug',
+      'review the diff',
+      'read so far',
+      'persistent',
+      'integrate + verify',
+      'delegate to subagents',
+      'claude --model',
+      'reconstructed, not literal',
+    ]) {
+      expect(all).not.toContain(banned);
+    }
   });
 
-  it('están todos los apartados de la referencia', () => {
+  it('están todos los apartados funcionales', () => {
     const all = screenText(render(FULL_COLS, FULL_ROWS, fixtureView()));
-    for (const part of ['PROJECT MEMORY', 'before work', 'repeat failure', 'before sign-off', 'agent memories:', 'main session', 'AGENT MEMORY', 'roles', 'delegate to subagents', 'back to', '· lead', 'session log', 'claude --model', 'ADVISOR']) expect(all).toContain(part);
+    for (const part of ['PROJECT MEMORY', 'before work', 'repeat failure', 'before sign-off', 'totals', 'errors', 'main session', 'AGENT MEMORY', 'roles', 'delegated ·', 'back to', '· lead', 'session log', 'q quit', 'elapsed', 'ADVISOR']) expect(all).toContain(part);
   });
 
   it('los datos del advisor y de las tarjetas son los del reductor', () => {
     const view = fixtureView();
     const buf = render(FULL_COLS, FULL_ROWS, view);
     const advisorBox = rectText(buf, L.advisor);
-    expect(advisorBox).toContain('opus 5.5');
-    expect(advisorBox).toContain('2 · 97.9k');
+    expect(advisorBox).toContain('Opus 5.5');
+    expect(advisorBox).toContain('97.9k tok');
     const cards = L.cards.map((r) => rectText(buf, r)).join('\n');
     expect(cards).toContain('explore');
     expect(cards).toContain('Haiku 5.5');
@@ -176,13 +203,18 @@ describe('contenido', () => {
   it('panel en reposo sin sesión', () => {
     const buf = render(FULL_COLS, FULL_ROWS, idleView());
     expect(rectText(buf, L.main)).toContain('waiting for a session');
+    expect(buf.rowText(L.rows.header)).toContain('SINAPSIS');
     expect(buf.rowText(L.rows.header)).toContain('WAITING FOR A SESSION');
-    expect(rectText(buf, L.project)).toContain('none yet');
+    expect(rectText(buf, L.project)).toContain('no memory files');
+    expect(rectText(buf, L.memory)).toContain('no subagents yet');
+    expect(buf.rowText(L.rows.delegate)).toContain('no subagents yet');
+    expect(rectText(buf, L.lead)).toContain('no summaries yet');
   });
 
   it('los modelos que la cola aún no deja ver evitan el encabezado en espera', () => {
     const buf = render(FULL_COLS, FULL_ROWS, { ...idleView(), preview: { main: 'claude-haiku-5-5', advisor: 'claude-opus-5-5' } });
-    expect(buf.rowText(L.rows.header)).toContain('HAIKU 5.5 LEADS');
+    expect(buf.rowText(L.rows.header)).not.toContain('WAITING FOR A SESSION');
+    expect(buf.rowText(L.rows.legend)).toContain('lead · Haiku 5.5');
   });
 
   it('un texto ancho o con controles no desarma las filas', () => {
@@ -215,10 +247,15 @@ describe('layout compacto', () => {
       expect(layout.kind).toBe('compact');
       const buf = render(cols, rows, fixtureView());
       const all = screenText(buf);
-      for (const part of ['PROJECT MEMORY', 'before work', 'repeat failure', 'before sign-off', 'main session', 'ADVISOR', 'AGENT MEMORY', 'delegate to subagents', 'explore', 'back to', 'session log', 'claude --model', 'queued']) {
+      for (const part of ['PROJECT MEMORY', 'before work', 'repeat failure', 'before sign-off', 'main session', 'ADVISOR', 'AGENT MEMORY', 'delegated ·', 'explore', 'back to', 'session log', 'q quit', 'queued']) {
         expect(all, `${cols}x${rows}: ${part}`).toContain(part);
       }
-      for (const r of [layout.project, layout.main, layout.memory, ...layout.cards, layout.lead, layout.log]) expect(buf.charAt(r.x + layout.originX, r.y + layout.originY)).toBe('┌');
+      for (const r of [layout.project, layout.main, layout.memory, ...layout.cards, layout.lead, layout.log]) {
+        expect(buf.charAt(r.x + layout.originX, r.y + layout.originY)).toBe('┌');
+        expect(buf.charAt(r.x + r.w - 1 + layout.originX, r.y + layout.originY)).toBe('┐');
+        expect(buf.charAt(r.x + layout.originX, r.y + r.h - 1 + layout.originY)).toBe('└');
+        expect(buf.charAt(r.x + r.w - 1 + layout.originX, r.y + r.h - 1 + layout.originY)).toBe('┘');
+      }
       expect(buf.charAt(layout.spine + layout.originX, layout.rows.bus + layout.originY)).toBe('┼');
       expect(buf.charAt(layout.spine + layout.originX, layout.rows.merge + layout.originY)).toBe('┼');
     }
@@ -358,7 +395,7 @@ describe('animación 1: arranque', () => {
 
   it('al empezar no hay paneles ni encabezado completo', () => {
     const buf = frame(0);
-    expect(buf.rowText(L.rows.header)).not.toContain('CLAUDE');
+    expect(buf.rowText(L.rows.header)).not.toContain('SINAPSIS');
     expect(buf.charAt(L.project.x, L.project.y)).toBe(' ');
     expect(buf.charAt(L.main.x, L.main.y)).toBe(' ');
   });
@@ -504,8 +541,9 @@ describe('AGENT MEMORY por rol y rótulos de rol', () => {
     const lines = memoryText(view).split('\n');
     const full = lines.find((line) => line.includes('builder')) as string;
     const half = lines.find((line) => line.includes('reviewer')) as string;
-    expect(full).toContain('██████████');
-    expect(half).toContain('█████░░░░░');
+    expect(full).toContain('███████');
+    expect(full).not.toContain('░');
+    expect(half).toContain('███▌░░░');
   });
 
   it('un subagente sin tipo es su propio rol', () => {
@@ -535,7 +573,7 @@ describe('AGENT MEMORY por rol y rótulos de rol', () => {
     expect(order).toEqual([...order].sort((a, b) => a - b));
   });
 
-  it('la demo no cambia: una fila por tarjeta, aunque repitan rol', () => {
+  it('la demo no cambia: una fila por tarjeta activa, aunque repitan rol, y sin filas — para slots vacíos', () => {
     const base = roleView([['builder', false, true], ['builder', false, true], ['builder', false, true]]);
     const illustrative = { percents: [10, 20, 30], memory: [{ fraction: 0.7, label: 'recall' as const }, { fraction: 0.8, label: 'check' as const }, { fraction: 0.9, label: 'recall' as const }] };
     const view: SceneView = {
@@ -548,26 +586,32 @@ describe('AGENT MEMORY por rol y rótulos de rol', () => {
     expect(text).toContain('3 / 3');
     expect(text).toContain('illustrative activity');
     expect(text).toContain('check');
+    const oneSlot = roleView([['builder', false, true]]);
+    const oneSlotDemo: SceneView = {
+      ...oneSlot,
+      illustrativeDemo: true,
+      anim: { cards: [{ id: 'ag0', grow: 1, fade: 0 }, undefined, undefined], illustrative },
+    };
+    expect(memoryText(oneSlotDemo)).not.toContain('│ —');
   });
 
-  it('leyenda con el rol primero y línea de estado con el rol y su estado entre corchetes', () => {
+  it('leyenda con agent memory / project memory y línea de estado con elapsed, cost y cola', () => {
     const view = roleView([['builder', true, true]]);
+    view.state.costUSD = 0.42;
+    view.queue = { last: 'builder · Read · CLAUDE.md', pending: ['tool'] };
     const buf = render(FULL_COLS, FULL_ROWS, view);
     const legend = buf.rowText(L.rows.legend);
-    for (const part of ['lead · Opus 5.5', 'build · Sonnet 5.5', 'memories', 'notes', 'advisor · Opus 5.5']) expect(legend).toContain(part);
+    for (const part of ['lead · Opus 5.5', 'build · sonnet', 'agent memory', 'project memory', 'advisor · opus']) expect(legend).toContain(part);
+    const wideLegend = render(120, 30, view).rowText((layoutFor(120, 30) as SceneLayout).rows.legend);
+    for (const part of ['lead · Opus 5.5', 'build · Sonnet 5.5', 'agent memory', 'project memory', 'advisor · Opus 5.5']) expect(wideLegend).toContain(part);
     const status = buf.rowText(L.rows.status);
-    for (const part of ['lead [working]', 'subagents [0/1]', 'memories [project]', 'build [building]']) expect(status).toContain(part);
-    // Con todo en reposo caben los cinco grupos en 90 columnas.
-    const idle = roleView([['builder', true, false]]);
-    idle.state.status = 'idle';
-    const idleStatus = render(FULL_COLS, FULL_ROWS, idle).rowText(L.rows.status);
-    for (const part of ['lead [idle]', 'subagents [1/1]', 'memories [project]', 'build [idle]', 'advisor [silent]']) expect(idleStatus).toContain(part);
-    // El encabezado y la tarjeta de regreso conservan el modelo.
-    expect(buf.rowText(L.rows.header)).toContain('OPUS 5.5 LEADS');
+    for (const part of ['elapsed 00:00:01', 'cost $0.42', 'builder · Read', '■', '1 queued']) expect(status).toContain(part);
+    for (const old of ['lead [', 'subagents [', 'memories [', 'build [', 'advisor [']) expect(status).not.toContain(old);
+    expect(buf.rowText(L.rows.header)).toContain('SINAPSIS · p · LIVE');
     expect(rectText(buf, L.lead)).toContain('back to Opus 5.5 · lead');
   });
 
-  it('back to lead: sin resumen no inventa texto, y sin subagentes cerrados queda atenuado', () => {
+  it('back to lead: sin resumen no inventa texto, y sin subagentes cerrados muestra waiting for N summaries', () => {
     const row = L.lead.y + 2;
     const rowAndColor = (view: SceneView): { text: string; fg: unknown } => {
       const buf = render(FULL_COLS, FULL_ROWS, view);
@@ -579,25 +623,91 @@ describe('AGENT MEMORY por rol y rótulos de rol', () => {
     expect(closed.text).toContain('1 back');
     expect(closed.text).not.toContain('integrate');
     expect(closed.fg).toEqual(theme.text);
-    const none = rowAndColor(roleView([['builder', true, true]]));
-    expect(none.text).toContain('integrate + verify');
-    expect(none.fg).toEqual(theme.dim);
+    const running = rowAndColor(roleView([['builder', true, true], ['reviewer', false, true]]));
+    expect(running.text).toContain('waiting for 2 summaries');
+    expect(running.fg).toEqual(theme.dim);
   });
 
-  it('sin sesión activa, el corchete del lead dice idle, y al terminar, ended', () => {
+  it('borde del advisor: punteado en silent y sólido en replaying', () => {
+    const silent = render(FULL_COLS, FULL_ROWS, roleView([]));
+    expect(silent.charAt(L.advisor.x + 1, L.advisor.y)).toBe('╌');
+    const view = roleView([]);
+    applyEvent(view.state, { type: 'advisor_consult', t: 5000, id: 'c1', reason: 'before a plan' });
+    const replaying = render(FULL_COLS, FULL_ROWS, view);
+    expect(replaying.charAt(L.advisor.x + 1, L.advisor.y)).toBe('─');
+  });
+
+  it('barra de tarjeta en curso representa toolCount real (1 celda por herramienta) y nunca barra indeterminada', () => {
+    const view = roleView([['builder', false, true]]);
+    const sub = view.state.subagents[0]!;
+    sub.toolCount = 3;
+    const buf = render(FULL_COLS, FULL_ROWS, view);
+    const card = L.cards[0];
+    const barRow = buf.rowText(card.y + 3, card.x + 2, card.x + 10);
+    expect(barRow.startsWith('███░')).toBe(true);
+    // La celda más reciente brilla más que las anteriores.
+    expect(buf.fgAt(card.x + 4, card.y + 3)).not.toBe(buf.fgAt(card.x + 2, card.y + 3));
+  });
+
+  it('hitos de memoria de proyecto muestran la hora del primer disparo (incluso en compact y en repeat failure / before sign-off) o — si no ocurrió', () => {
     const view = roleView([['builder', true, false]]);
-    view.state.status = 'idle';
-    expect(render(FULL_COLS, FULL_ROWS, view).rowText(L.rows.status)).toContain('lead [idle]');
-    view.state.ended = true;
-    expect(render(FULL_COLS, FULL_ROWS, view).rowText(L.rows.status)).toContain('lead [ended]');
+    const buf = render(FULL_COLS, FULL_ROWS, view);
+    const m0Row = buf.rowText(L.milestones[0], L.project.x + 1, L.project.x + L.project.w - 1);
+    const m1Row = buf.rowText(L.milestones[1], L.project.x + 1, L.project.x + L.project.w - 1);
+    expect(m0Row).toContain('before work');
+    expect(m0Row).toMatch(/\d+:\d{2}/);
+    expect(m1Row).toContain('repeat failure');
+    expect(m1Row).toContain('—');
+
+    // En compacto (80x30) before work también muestra su hora.
+    const compactL = layoutFor(80, 30) as SceneLayout;
+    const compactBuf = render(80, 30, view);
+    const cm0Row = compactBuf.rowText(compactL.milestones[0] + compactL.originY, compactL.project.x + 1 + compactL.originX, compactL.project.x + compactL.project.w - 1 + compactL.originX);
+    expect(cm0Row).toContain('before work');
+    expect(cm0Row).toMatch(/\d+:\d{2}/);
+
+    // Cuando se disparan repeat failure y before sign-off, su hora aparece en la fila inferior del hito.
+    // after subagent_end (en t=1500), un toque antes de un error (en t=10_000) es before sign-off (slot 2).
+    view.state.memory.touches.push({ t: 5_001, file: 'MEMORY.md', op: 'write', scope: 'project' });
+    // Con un error registrado en t=10_000, un toque posterior (en t=15_001) es repeat failure (slot 1).
+    view.state.errorTimes.push(10_000);
+    view.state.memory.touches.push({ t: 15_001, file: 'MEMORY.md', op: 'read', scope: 'project', agentId: 'ag0' });
+    const firedBuf = render(FULL_COLS, FULL_ROWS, view);
+    const m1Next = firedBuf.rowText(L.milestones[1] + 1, L.project.x + 1, L.project.x + L.project.w - 1);
+    const m2Next = firedBuf.rowText(L.milestones[2] + 1, L.project.x + 1, L.project.x + L.project.w - 1);
+    expect(m1Next).toContain('00:14');
+    expect(m2Next).toContain('00:04');
   });
 
-  it('la línea de estado cabe en todos los tamaños con el rol primero', () => {
+  it('drawStatus reserva espacio para los cuadros de cola aunque last sea largo y no duplica el costo', () => {
+    const view = roleView([['builder', true, false]]);
+    view.state.costUSD = 0.59;
+    view.queue = {
+      last: 'session · ended (inferred) · texto muy largo de resumen que ocupa todo el espacio · $0.59',
+      pending: ['tool', 'advisor', 'sub'],
+    };
+    const buf = render(FULL_COLS, FULL_ROWS, view);
+    const status = buf.rowText(L.rows.status);
+    expect(status).toContain('■■■');
+    expect(status).toContain('3 queued');
+    expect(status.match(/\$0\.59/g)?.length).toBe(1);
+  });
+
+  it('línea de teclas muestra q quit siempre y controles de replay/demo cuando corresponde', () => {
+    const live = render(FULL_COLS, FULL_ROWS, roleView([]));
+    expect(live.rowText(L.rows.prompt)).toContain('q quit');
+    expect(live.rowText(L.rows.prompt)).not.toContain('space pause');
+    const replay = render(FULL_COLS, FULL_ROWS, { ...roleView([]), replay: { speed: 2, paused: false, finished: false } });
+    expect(replay.rowText(L.rows.prompt)).toContain('q quit · space pause · +/- speed');
+    expect(replay.rowText(L.rows.header)).toContain('REPLAY x2');
+  });
+
+  it('la línea de estado cabe en todos los tamaños sin cortar grupos', () => {
     for (const [cols, rows] of [[FULL_COLS, FULL_ROWS], [80, 30], [120, 30], [100, 35], [120, 45]] as const) {
       const layout = layoutFor(cols, rows) as SceneLayout;
       const buf = render(cols, rows, roleView([['builder', true, true]]));
       const status = buf.rowText(layout.rows.status + layout.originY);
-      expect(status, `${cols}x${rows}`).toContain('lead [working]');
+      expect(status, `${cols}x${rows}`).toContain('elapsed');
       expect(status, `${cols}x${rows}`).toContain('queued');
       expect([...status].length).toBe(cols);
     }

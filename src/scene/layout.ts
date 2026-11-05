@@ -35,14 +35,12 @@ export type RouteName =
 
 export interface SceneLayout {
   kind: 'full' | 'compact';
-  /** Tamaño de la grilla dibujada, sin la barra de ventana. */
+  /** Tamaño de la grilla dibujada. */
   width: number;
   height: number;
   originX: number;
   originY: number;
-  /** La barra falsa de ventana va en la fila -1, si cabe. */
-  windowBar: boolean;
-  rows: { header: number; separator?: number; legend: number; delegate: number; bus: number; merge: number; prompt: number; status: number };
+  rows: { header: number; legend: number; delegate: number; bus: number; merge: number; prompt: number; status: number };
   project: Rect;
   main: Rect;
   advisor: Rect;
@@ -64,7 +62,6 @@ export interface SceneLayout {
 
 /** Alturas de cada tramo vertical. */
 interface Heights {
-  separator: number;
   main: number;
   stem: number;
   memory: number;
@@ -80,13 +77,13 @@ interface Heights {
 }
 
 /** El mínimo que conserva todos los apartados: suma 30 filas. */
-const COMPACT_HEIGHTS: Heights = { separator: 0, main: 4, stem: 1, memory: 5, afterMemory: 0, afterDelegate: 0, cardArrow: 0, card: 5, cardStem: 0, leadArrow: 0, lead: 3, beforeLog: 0, log: 5 };
+const COMPACT_HEIGHTS: Heights = { main: 4, stem: 1, memory: 5, afterMemory: 0, afterDelegate: 0, cardArrow: 0, card: 5, cardStem: 0, leadArrow: 0, lead: 3, beforeLog: 0, log: 5 };
 
-/** Medidas de la referencia: suma 46 filas. */
-const FULL_HEIGHTS: Heights = { separator: 1, main: 6, stem: 2, memory: 7, afterMemory: 1, afterDelegate: 1, cardArrow: 1, card: 7, cardStem: 1, leadArrow: 1, lead: 4, beforeLog: 1, log: 6 };
+/** Medidas de la referencia (con la fila del separador dada al log): suma 46 filas. */
+const FULL_HEIGHTS: Heights = { main: 6, stem: 2, memory: 7, afterMemory: 1, afterDelegate: 1, cardArrow: 1, card: 7, cardStem: 1, leadArrow: 1, lead: 4, beforeLog: 1, log: 7 };
 
 /** Orden en que el compacto gasta las filas que sobran. Lo primero es lo que más información agrega. */
-const SPARE_ORDER: Array<keyof Heights> = ['log', 'memory', 'card', 'memory', 'card', 'main', 'main', 'separator', 'stem', 'afterMemory', 'afterDelegate', 'cardArrow', 'cardStem', 'leadArrow', 'lead', 'beforeLog'];
+const SPARE_ORDER: Array<keyof Heights> = ['log', 'memory', 'card', 'memory', 'card', 'main', 'main', 'log', 'stem', 'afterMemory', 'afterDelegate', 'cardArrow', 'cardStem', 'leadArrow', 'lead', 'beforeLog'];
 
 const span = (x0: number, x1: number, y0: number, y1: number): Rect => ({ x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 });
 
@@ -118,13 +115,13 @@ interface Columns {
   spine: number;
 }
 
-/** Columnas medidas en la referencia, a 8 px por celda. */
+/** Columnas del layout completo. El panel de memoria de agentes queda a la izquierda del tronco. */
 const FULL_COLUMNS: Columns = {
   width: FULL_COLS,
   project: { x: 3, w: 21 },
   main: { x0: 44, x1: 70 },
   advisor: { x0: 74, x1: 87 },
-  memory: { x0: 36, x1: 78 },
+  memory: { x0: 26, x1: 55 },
   cards: [[26, 45], [47, 66], [68, 87]],
   centers: [36, 57, 78],
   lead: { x0: 41, x1: 73 },
@@ -153,7 +150,7 @@ function compactColumns(cols: number): Columns {
     project: { x: 0, w: 20 },
     main: { x0: spine - half, x1: mainEnd },
     advisor: { x0: mainEnd + 4, x1: mainEnd + 3 + advisorWidth },
-    memory: { x0: spine - 20, x1: spine + 20 },
+    memory: { x0: cards[0][0], x1: spine - 2 },
     cards,
     centers,
     lead: { x0: spine - 16, x1: spine + 16 },
@@ -170,7 +167,6 @@ function build(c: Columns, h: Heights, kind: SceneLayout['kind'], cols: number, 
     return at;
   };
   const header = next();
-  const separator = h.separator ? next() : undefined;
   const legend = next();
   const mainY = next(h.main);
   next(h.stem);
@@ -206,10 +202,9 @@ function build(c: Columns, h: Heights, kind: SceneLayout['kind'], cols: number, 
   const projectEdge = project.x + project.w - 1;
   const { spine } = c;
   const mainBottom = mainY + h.main - 1;
-  const memoryBottom = memoryY + h.memory - 1;
 
-  // Las tarjetas se alcanzan por el bus, y el paquete cruza el panel de memoria y el texto sin dibujarse encima.
-  const trunk: Point[] = [...route([spine, mainBottom], [spine, memoryY]), ...route([spine, memoryBottom], [spine, memoryBottom + h.afterMemory]), ...(h.afterDelegate ? route([spine, delegate + 1], [spine, bus]) : [[spine, bus] as Point])];
+  // El tronco baja continuo desde la sesión principal hasta el bus; la memoria de agentes queda a su izquierda.
+  const trunk: Point[] = route([spine, mainBottom], [spine, bus]);
   const branch = (center: number): Point[] => route([spine, bus], [center, bus], [center, cardY]);
   const toCard = (center: number): Point[] => [...trunk, ...branch(center).slice(1)];
   const home = (center: number): Point[] => route([center, cardY + h.card - 1], [center, merge], [spine, merge], [spine, leadY]);
@@ -217,7 +212,7 @@ function build(c: Columns, h: Heights, kind: SceneLayout['kind'], cols: number, 
   const [c0, c1, c2] = c.centers;
   const advisorOut = route([main.x + main.w - 1, advisorLink], [advisor.x, advisorLink]);
   const routes: SceneLayout['routes'] = {
-    tool: route([spine, mainBottom], [spine, memoryY]),
+    tool: route([spine, mainBottom], [spine, bus - 1]),
     'advisor-out': advisorOut,
     'advisor-back': [...advisorOut].reverse(),
     'delegate-0': toCard(c0),
@@ -234,15 +229,13 @@ function build(c: Columns, h: Heights, kind: SceneLayout['kind'], cols: number, 
     'memory-2': route([projectEdge, milestones[2]], [lead.x, milestones[2]]),
   };
 
-  const windowBar = rows > height;
   return {
     kind,
     width: c.width,
     height,
     originX: Math.max(0, Math.floor((cols - c.width) / 2)),
-    originY: Math.max(0, Math.floor((rows - height - (windowBar ? 1 : 0)) / 2)) + (windowBar ? 1 : 0),
-    windowBar,
-    rows: { header, separator, legend, delegate, bus, merge, prompt, status },
+    originY: Math.max(0, Math.floor((rows - height) / 2)),
+    rows: { header, legend, delegate, bus, merge, prompt, status },
     project,
     main,
     advisor,

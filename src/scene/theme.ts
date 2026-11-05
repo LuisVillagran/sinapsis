@@ -7,7 +7,6 @@ export const theme = {
   bg: rgb('#191e24'),
   panel: rgb('#191e24'),
   chip: rgb('#262c36'),
-  windowBar: rgb('#242831'),
 
   /** Modelo principal: sesión principal y "back to lead". */
   main: rgb('#e38d63'),
@@ -23,7 +22,7 @@ export const theme = {
   advisor: rgb('#e59ad8'),
   /** Errores: más rojo que el naranjo del modelo principal, para que se distingan. */
   alert: rgb('#f0695a'),
-  /** Pie del panel de memoria. */
+  /** Rótulos destacados como el aviso de actividad ilustrativa de la demo. */
   caption: rgb('#e8b56e'),
 
   text: rgb('#dfe3ea'),
@@ -36,8 +35,4 @@ export const theme = {
   barGood: rgb('#76d099'),
   barAlert: rgb('#c9574b'),
   barSub: rgb('#8cc0ff'),
-
-  dotRed: rgb('#ff5f57'),
-  dotYellow: rgb('#febc2e'),
-  dotGreen: rgb('#28c840'),
 };

@@ -128,7 +128,6 @@ export function applyBootFull(buf: CellBuffer, ms: number, layout: SceneLayout, 
   const typed = Math.floor(easeInOutCubic(segment(ms, 0, 800)) * headerLength);
   hideRow(buf, rows.header, headerStart + typed, width, base);
   if (typed > 0 && typed < headerLength) buf.put(headerStart + typed, rows.header, '▌', theme.main);
-  if (rows.separator !== undefined) fadeRow(buf, rows.separator, width, 1 - easeOutCubic(segment(ms, 300, 800)), base);
   fadeRow(buf, rows.legend, width, 1 - easeOutCubic(segment(ms, 450, 950)), base);
 
   fadeConnectors(buf, layout, 1 - easeOutCubic(segment(ms, 1500, 2100)), base);

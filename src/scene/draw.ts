@@ -115,27 +115,15 @@ export function bar(buf: CellBuffer, x: number, y: number, width: number, fracti
   }
 }
 
-/**
- * Barra indeterminada: una franja que recorre el ancho sin decir cuánto falta, porque ese dato no existe.
- * `phase` avanza de 0 a 1 en cada pasada.
- */
-export function indeterminateBar(buf: CellBuffer, x: number, y: number, width: number, phase: number, color: Rgb, rail: Rgb = theme.barTrack): void {
-  const band = Math.max(3, width * 0.32);
-  const start = (phase - Math.floor(phase)) * (width + band) - band;
-  const end = start + band;
+/** Barra por conteo de herramientas: una celda llena por cada herramienta usada (`count`), sobre el riel `░`. */
+export function countBar(buf: CellBuffer, x: number, y: number, width: number, count: number, color: Rgb, latestColor: Rgb = theme.subBright, rail: Rgb = theme.barTrack): void {
+  const filled = Math.max(0, Math.min(width, Math.floor(count)));
   for (let i = 0; i < width; i += 1) {
-    track(buf, x + i, y, rail);
-    const covered = Math.min(i + 1, end) - Math.max(i, start);
-    if (covered <= 0) continue;
-    buf.clearCell(x + i, y, theme.bg);
-    if (covered >= 1) {
-      buf.put(x + i, y, '█', color);
-    } else if (start > i) {
-      // Borde izquierdo de la franja: la celda se pinta entera y el trozo vacío lleva el color del fondo.
-      buf.setBg(x + i, y, color);
-      buf.put(x + i, y, PARTIAL[Math.max(1, Math.round((1 - covered) * 8))] ?? '▏', theme.bg);
+    if (i < filled) {
+      buf.clearCell(x + i, y, theme.bg);
+      buf.put(x + i, y, '█', i === filled - 1 ? mix(color, latestColor, 0.35) : color);
     } else {
-      buf.put(x + i, y, PARTIAL[Math.max(1, Math.round(covered * 8))] ?? '▉', color);
+      track(buf, x + i, y, rail);
     }
   }
 }

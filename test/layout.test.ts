@@ -18,47 +18,48 @@ const panels = (L: SceneLayout): Array<[string, Rect]> => [
   ['log', L.log],
 ];
 
-describe('layout completo: medidas de las imágenes de referencia', () => {
-  // Columna = x / 8 px; fila = (y - 399) / 18,36 px, contando desde el encabezado.
-  it('cada panel está donde lo muestra la referencia', () => {
-    expect(edges(FULL.project)).toEqual([3, 23, 3, 36]);
-    expect(edges(FULL.main)).toEqual([44, 70, 3, 8]);
-    expect(edges(FULL.memory)).toEqual([36, 78, 11, 17]);
-    expect(edges(FULL.cards[0])).toEqual([26, 45, 23, 29]);
-    expect(edges(FULL.cards[1])).toEqual([47, 66, 23, 29]);
-    expect(edges(FULL.cards[2])).toEqual([68, 87, 23, 29]);
-    expect(edges(FULL.lead)).toEqual([41, 73, 33, 36]);
-    expect(edges(FULL.log)).toEqual([3, 87, 38, 43]);
+describe('layout completo: geometría funcional', () => {
+  it('cada panel está en su posición', () => {
+    expect(edges(FULL.project)).toEqual([3, 23, 2, 35]);
+    expect(edges(FULL.main)).toEqual([44, 70, 2, 7]);
+    expect(edges(FULL.memory)).toEqual([26, 55, 10, 16]);
+    expect(edges(FULL.cards[0])).toEqual([26, 45, 22, 28]);
+    expect(edges(FULL.cards[1])).toEqual([47, 66, 22, 28]);
+    expect(edges(FULL.cards[2])).toEqual([68, 87, 22, 28]);
+    expect(edges(FULL.lead)).toEqual([41, 73, 32, 35]);
+    expect(edges(FULL.log)).toEqual([3, 87, 37, 43]);
   });
 
   it('las filas sueltas también', () => {
-    expect(FULL.rows).toEqual({ header: 0, separator: 1, legend: 2, delegate: 19, bus: 21, merge: 31, prompt: 44, status: 45 });
+    expect(FULL.rows).toEqual({ header: 0, legend: 1, delegate: 18, bus: 20, merge: 30, prompt: 44, status: 45 });
     expect(FULL.height).toBe(FULL_ROWS);
-    expect(FULL.cardArrowRow).toBe(22);
-    expect(FULL.leadArrowRow).toBe(32);
+    expect(FULL.cardArrowRow).toBe(21);
+    expect(FULL.leadArrowRow).toBe(31);
     expect(FULL.spine).toBe(57);
     expect(FULL.cardCenters).toEqual([36, 57, 78]);
   });
 
   it('los hitos quedan alineados con el panel al que apuntan', () => {
-    expect(FULL.milestones).toEqual([6, 26, 34]);
+    expect(FULL.milestones).toEqual([5, 25, 33]);
   });
 
   it('la caja del advisor ocupa el espacio vacío a la derecha de la sesión principal', () => {
-    expect(edges(FULL.advisor)).toEqual([74, 87, 3, 8]);
+    expect(edges(FULL.advisor)).toEqual([74, 87, 2, 7]);
   });
 
-  it('la barra de ventana solo aparece si cabe una fila más', () => {
-    expect(FULL.windowBar).toBe(false);
-    const withBar = layoutFor(90, 47) as SceneLayout;
-    expect(withBar.windowBar).toBe(true);
-    expect(withBar.originY).toBe(1);
+  it('sin barra de ventana: las filas extra solo centran verticalmente', () => {
+    expect('windowBar' in FULL).toBe(false);
+    const taller = layoutFor(90, 47) as SceneLayout;
+    expect(taller.originY).toBe(0);
+    const muchTaller = layoutFor(90, 48) as SceneLayout;
+    expect(muchTaller.originY).toBe(1);
   });
 
   it('una terminal mayor centra la misma geometría', () => {
     const big = layoutFor(120, 60) as SceneLayout;
     expect(big.kind).toBe('full');
     expect(big.originX).toBe(15);
+    expect(big.originY).toBe(7);
     expect(edges(big.main)).toEqual(edges(FULL.main));
   });
 });
@@ -117,7 +118,7 @@ describe('en todos los tamaños con escena completa', () => {
         return [cells[0] as [number, number], cells[cells.length - 1] as [number, number]];
       };
       expect(onBorder(L.main, ends('tool')[0]), label).toBe(true);
-      expect(onBorder(L.memory, ends('tool')[1]), label).toBe(true);
+      expect(ends('tool')[1], label).toEqual([L.spine, L.rows.bus - 1]);
       expect(onBorder(L.main, ends('advisor-out')[0]), label).toBe(true);
       expect(onBorder(L.advisor, ends('advisor-out')[1]), label).toBe(true);
       expect(onBorder(L.project, ends('memory-0')[0]), label).toBe(true);
@@ -134,26 +135,26 @@ describe('en todos los tamaños con escena completa', () => {
     }
   });
 
-  it('un paquete solo salta para cruzar el panel de memoria y la fila de texto', () => {
+  it('el tronco y todos los caminos son continuos (sin saltos) y no cruzan paneles ajenos', () => {
+    const inside = (r: Rect, x: number, y: number): boolean => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
     for (const [cols, rows] of sizes) {
       const L = layoutFor(cols, rows) as SceneLayout;
+      expect(L.memory.x).toBe(L.cards[0].x);
+      expect(L.memory.x + L.memory.w - 1).toBe(L.spine - 2);
       for (const [name, cells] of Object.entries(L.routes)) {
         for (let i = 1; i < cells.length; i += 1) {
           const [ax, ay] = cells[i - 1] as [number, number];
           const [bx, by] = cells[i] as [number, number];
-          if (Math.abs(ax - bx) + Math.abs(ay - by) === 1) continue;
-          // El único salto permitido va por la columna central, hacia abajo, sobre lo que no se debe pisar.
-          expect(ax, `${cols}x${rows} ${name}`).toBe(L.spine);
-          expect(bx, `${cols}x${rows} ${name}`).toBe(L.spine);
-          expect(by, `${cols}x${rows} ${name}`).toBeGreaterThan(ay);
+          expect(Math.abs(ax - bx) + Math.abs(ay - by), `${cols}x${rows} ${name}`).toBe(1);
+        }
+        // Las celdas interiores de la ruta (sin los extremos en el borde) nunca caen dentro de un panel.
+        for (const [x, y] of cells.slice(1, -1)) {
+          for (const [panelName, r] of panels(L)) {
+            expect(inside(r, x, y), `${cols}x${rows} ${name} cruza ${panelName}`).toBe(false);
+          }
         }
       }
     }
-  });
-
-  it('ningún paquete pasa por la fila del texto de delegación', () => {
-    const L = layoutFor(80, 30) as SceneLayout;
-    for (const cells of Object.values(L.routes)) for (const [, y] of cells) expect(y).not.toBe(L.rows.delegate);
   });
 
   it('con más filas nunca se pierde información: cada panel crece o se mantiene', () => {

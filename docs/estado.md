@@ -4,6 +4,19 @@ Bitácora para retomar el trabajo solo con este archivo. Ver `CLAUDE.md` para el
 
 ## Fase actual
 
+**Retoque visual funcional (2026-11-05), en la rama `rediseno-funcional` (creada desde `rediseno-referencia`), sin fusionar ni publicar.** Se eliminaron todos los adornos de las imágenes de referencia que no tenían respaldo funcional (barra falsa de ventana con botones de colores, separador grueso, textos fijos de `PROJECT MEMORY`, filas vacías `—`, barra que rebota sin dato, `integrate + verify`, prompt falso con cursor parpadeante y estados repetidos en la línea inferior) y se sacó `AGENT MEMORY` del camino del tronco de delegación. Implementado con `builder`, revisado con `reviewer` y verificado con 309 tests.
+
+## Retoque visual funcional (2026-11-05)
+
+El usuario pidió revisar la interfaz de arriba a abajo y quitar o reemplazar todo lo que no tuviera una función o un dato real, aprobando los 22 puntos propuestos en la rama nueva `rediseno-funcional`:
+
+- **Quitado por no tener función real:** barra falsa de ventana con botones rojo/amarillo/verde (1), separador grueso bajo el encabezado (3, su fila pasó al `session log`), textos fijos de `PROJECT MEMORY` (`saved findings…`, `per-agent notes…`, `build then debug…`) (5), rótulo suelto `read so far` (7), filas vacías `—` en `AGENT MEMORY` (14), `integrate + verify` en `back to lead` (19) y el prompt falso con comando reconstruido y cursor parpadeante (21).
+- **Reubicado por lógica de datos:** `AGENT MEMORY` pasó a la izquierda del tronco (`26..55` en full), de modo que el tronco baja directo de la sesión principal al bus de las tarjetas sin atravesar el panel de memoria (13), y la fila de delegación muestra `N delegated · M done` a la derecha del tronco (`spine + 2`) sin interrumpir la línea `│` (16).
+- **Datos reales en lugar de adornos:** encabezado con identidad de sesión `SINAPSIS · <carpeta> · <modo>` (2), leyenda con `agent memory` y `project memory` (4), hitos de `PROJECT MEMORY` con hora del primer disparo (6), bloque `totals` con `errors` siempre visible (8), lista real de archivos de memoria tocados con hora, agente y operación (9), advisor con capitalización normal, sufijo `tok` y borde punteado en `silent` / sólido en `replaying` (11, 12), pie de `AGENT MEMORY` en `dim` (15), barra de tarjetas en curso por `toolCount` real (`countBar`, 1 celda por herramienta) en vez de barra indeterminada (17), `waiting for N summaries` / `no summaries yet` en `back to lead` (19), línea de teclas reales `q quit · space pause · +/- speed` (21) y línea de estado con `elapsed`, `cost`, último evento y cola (22, lo que también resuelve el corte del grupo `advisor` a 90 columnas).
+- **Correcciones tras la auditoría de `reviewer`:** hora de los hitos `repeat failure` y `before sign-off` en la fila inferior cuando no caben en la misma línea, hora compacta `m:ss` para `before work` en layout compacto (`80x30`, `120x30`), esquina `┐` de `AGENT MEMORY` preservada en compacto, reserva de espacio para los cuadros `■` de la cola en `drawStatus` aunque `last` sea largo (y sin duplicar el costo), y las 4 filas de totales visibles entre `repeat failure` y `before sign-off` en compacto de 30 filas.
+
+## Fase anterior (`rediseno-referencia`)
+
 **Rediseño según las nuevas imágenes de referencia, en la rama `rediseno-referencia`, sin fusionar ni publicar.** Espera
 que el usuario lo revise en su terminal. Fases 0 a 6 cerradas antes. Repositorio público:
 https://github.com/LuisVillagran/sinapsis (tag `v0.1.0`, con el diseño anterior).
