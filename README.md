@@ -63,11 +63,11 @@ Para seguir una sesión, abre Sinapsis en otra ventana mientras usas Claude Code
 
 | Elemento | Contenido |
 | --- | --- |
-| Project memory | Tres hitos con flechas hacia sus destinos, último agente y archivo de memoria, y totales de agentes, memorias, herramientas y errores |
+| Project memory | Tres hitos con flechas hacia sus destinos y su hora, archivos de memoria tocados, y totales de agentes, memorias, herramientas y errores |
 | Sesión principal | Modelo, tarea, effort y lo que está haciendo |
 | Advisor | Modelo, estado, consultas y tokens leídos |
-| Agent memory | Por cada agente, cuántas veces tocó archivos de memoria y si fue `recall`, `check` o `save` |
-| Tarjetas | Cada subagente, su modelo, su descripción, su contador de herramientas y, al terminar, la duración |
+| Agent memory | Por cada rol, cuántas veces tocó archivos de memoria y si fue `recall`, `check` o `save`. Sin operaciones, `indexed` si tiene notas, `no memory` si no tiene y `no data` si no se sabe |
+| Tarjetas | Cada subagente, su modelo, su descripción, su barra y contador de herramientas y, al terminar, la duración |
 | Back to lead | Los resúmenes que los subagentes devuelven al modelo principal |
 | Session log | Cada evento, con el tiempo desde el inicio de la sesión |
 
@@ -99,17 +99,17 @@ Sinapsis no inventa lo que no sabe. Esto es lo que no puede mostrar:
 - **El consejo está cifrado.** Solo se muestran su duración y sus tokens (`sealed reply · 42 s`).
 - **El motivo de una consulta es inferido.** El transcript no lo registra. Se deduce con reglas, como `after errors`
   o `before a plan`, y puede equivocarse.
-- **Los subagentes no tienen porcentaje de avance.** En vivo, la barra es indeterminada y lo real es su contador de
-  herramientas.
+- **Los subagentes no tienen porcentaje de avance.** En curso, la barra avanza una celda por herramienta y vuelve a
+  empezar antes de llenarse, porque una barra llena significa `done`. No mide cuánto falta: el dato real es su contador.
 - **La memoria se deduce de los archivos.** Se detecta cuando una herramienta de archivos lee o escribe un archivo de
   memoria, o cuando Claude Code carga `CLAUDE.md` o `MEMORY.md`. No se ven los comandos de consola que lean esos
-  archivos, ni se sabe para qué se consultaron: los tres hitos son inferidos. Si los agentes no usan memoria, ese
-  panel queda quieto, porque eso fue lo que ocurrió.
-- **La memoria por agente (`.claude/agent-memory/`) no se ha observado.** La regla se escribió a partir de la ruta
-  esperada y se probó con líneas de prueba, no con una sesión real.
+  archivos, ni se sabe para qué se consultaron: los tres hitos son inferidos. Si los agentes no usan memoria, las barras
+  de `AGENT MEMORY` quedan quietas, porque eso fue lo que ocurrió.
+- **`indexed` depende de un formato interno.** Sale del prompt de sistema que el transcript guarda de cada subagente, y
+  dice que recibió un índice de notas, no que lo usara. Si Claude Code cambia ese formato, el panel dirá `no data` o
+  `no memory`.
 - **`read-only` depende del tipo del subagente** (`Explore` o `Plan`), no de lo que hizo.
 - **El fin de una sesión es inferido.** Una sesión puede reanudarse.
-- **El comando que se ve abajo es una reconstrucción** a partir de los modelos, no el comando literal.
 - **Una terminal no tiene brillo real.** El halo de un panel encendido son fondos tintados por celda.
 - **Solo caben tres tarjetas.** Con más subagentes, uno nuevo reemplaza a uno terminado o espera su turno, y la lista
   completa queda en el log.

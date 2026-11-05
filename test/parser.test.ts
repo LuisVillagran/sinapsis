@@ -734,6 +734,8 @@ describe('memoria', () => {
     expect(JSON.stringify(events)).not.toContain('Secreto');
 
     expect(indexed('a', snapshot([memory('Your MEMORY.md is currently empty. When you save new memories, they will appear here.')]))[0]).toMatchObject({ memoryIndexed: false });
+    // Una nota que contiene esas palabras sigue siendo una nota.
+    expect(indexed('a', snapshot([memory('- [Caché](nota.md) — queda currently empty al iniciar')]))[0]).toMatchObject({ memoryIndexed: true });
     // Lo que sigue a la sección no cuenta como notas.
     expect(indexed('a', snapshot([memory('', '\n## Otra sección\n\n- no es una nota')]))[0]).toMatchObject({ memoryIndexed: false });
     // Un subagente sin sistema de memoria no tiene la sección.

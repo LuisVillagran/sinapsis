@@ -263,7 +263,7 @@ describe('layout compacto', () => {
 
   it('el rótulo de la memoria se ve también sin fila propia', () => {
     const all = screenText(render(80, 30, fixtureView()));
-    expect(all).toContain('memory · real tool calls');
+    expect(all).toContain('bars · real tool calls');
   });
 
   it('el nombre del agente no se corta para mostrar el modelo', () => {
@@ -726,6 +726,53 @@ describe('AGENT MEMORY por rol y rótulos de rol', () => {
     const barOf = (view: SceneView): string => render(FULL_COLS, FULL_ROWS, view).rowText(card.y + 3, card.x + 2, card.x + 9);
     expect(barOf(running)).toContain('░');
     expect(barOf(done)).toBe('███████');
+  });
+
+  it('hora de los hitos en compacto: nunca pisa un total ni se pierde, también con horas de sesión', () => {
+    for (const rows of [30, 32, 34, 36, 38]) {
+      const view = roleView([['builder', false, false]]);
+      view.state.startedAt = 0;
+      view.state.promptTimes = [0, 7_200_000];
+      view.state.subagents[0]!.endedAt = 7_205_000;
+      view.state.errorTimes = [7_211_000];
+      // A las 2 h (`2h00`): tras cerrar el subagente es `before sign-off`, y tras el error, `repeat failure`.
+      view.state.memory.touches.push({ t: 7_210_000, file: 'MEMORY.md', op: 'read', scope: 'project' });
+      view.state.memory.touches.push({ t: 7_215_000, file: 'MEMORY.md', op: 'read', scope: 'project' });
+      const layout = layoutFor(80, rows) as SceneLayout;
+      const buf = render(80, rows, view);
+      const panel = rectText(buf, { ...layout.project, x: layout.project.x + layout.originX, y: layout.project.y + layout.originY });
+      expect(panel, `80x${rows}`).toMatch(/agents\s+1/);
+      expect(panel, `80x${rows}`).toMatch(/tools\s+0/);
+      expect(panel.match(/2h00|02:00:\d\d/g)?.length ?? 0, `80x${rows}`).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it('lista de archivos de memoria: con horas de sesión, el nombre del archivo cabe', () => {
+    const view = roleView([['builder', false, false]]);
+    view.state.startedAt = 0;
+    view.state.memory.touches.push({ t: 10_686_000, file: 'CLAUDE.md', op: 'read', scope: 'project' });
+    const panel = rectText(render(FULL_COLS, FULL_ROWS, view), L.project);
+    expect(panel).toContain('2h58 CLAUDE.md');
+  });
+
+  it('leyenda: si los alias tampoco caben, ningún modelo queda a medias', () => {
+    const view = roleView([['builder', false, true]]);
+    view.state.mainModel = 'modelo-muy-largo-del-lead';
+    const legend = render(80, 30, view).rowText((layoutFor(80, 30) as SceneLayout).rows.legend);
+    expect(legend).not.toContain('modelo-muy-largo');
+    expect(legend).not.toContain(' · ');
+    for (const part of ['lead', 'build', 'agent memory', 'project memory', 'advisor']) expect(legend).toContain(part);
+  });
+
+  it('caja del advisor en compacto: consultas y tokens con su unidad, y estado sobre el borde', () => {
+    const view = roleView([]);
+    applyEvent(view.state, { type: 'advisor_consult', t: 5000, id: 'c1', reason: 'before a plan' });
+    applyEvent(view.state, { type: 'advisor_reply', t: 6000, id: 'c1', durationMs: 1000, tokensRead: 87_460, tokensWritten: 10, isError: false });
+    for (const [cols, rows] of [[80, 30], [120, 30], [84, 34]] as const) {
+      const layout = layoutFor(cols, rows) as SceneLayout;
+      const text = rectText(render(cols, rows, view), { ...layout.advisor, x: layout.advisor.x + layout.originX, y: layout.advisor.y + layout.originY });
+      for (const part of ['ADVISOR', 'silent', '1 consult', '87.5k tok']) expect(text, `${cols}x${rows}: ${part}`).toContain(part);
+    }
   });
 
   it('hitos de memoria de proyecto muestran la hora del primer disparo (incluso en compact y en repeat failure / before sign-off) o — si no ocurrió', () => {

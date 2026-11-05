@@ -246,7 +246,7 @@ Lo que hace el parser (`src/core/parser.ts`):
 
 No hay porcentaje ni total de pasos. Lo real para una tarjeta en vivo:
 
-- **Barra:** indeterminada.
+- **Barra:** una celda por herramienta, reiniciada antes de llenarse. No mide avance: llena solo significa `done`.
 - **Contador de herramientas:** sus `tool_use` llegan con 136 a 970 ms de retraso.
 - **Herramienta actual:** el último `tool_use` sin resultado.
 - **Al terminar:** duración, tokens y herramientas desde `toolUseResult`.
@@ -427,7 +427,7 @@ Esta tabla corresponde a la primera referencia, que ya no se usa. El diseño vig
 | Caja model / mode | `advisorModel`, adjunto `advisor_tool` | Real |
 | Caja state | Derivado de consulta abierta o cerrada | **Solo a posteriori** |
 | Tarjetas de subagente | `subagents/agent-*.jsonl`, `tool_use` de `Agent` | Real |
-| Barra de avance con % | No existe | **Reemplazar** por barra indeterminada y contador real de herramientas |
+| Barra de avance con % | No existe | **Reemplazar** por barra por conteo y contador real de herramientas |
 | "files: 156", "call sites: 15" | No existen | **Reemplazar** por `tools: N` y, al terminar, duración y tokens |
 | Caja "back to lead" | `tool_result` del `Agent` | Real |
 | Session log | `timestamp`, modelo y evento | Real |

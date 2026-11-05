@@ -122,7 +122,7 @@ function drawLegend(buf: CellBuffer, view: SceneView, L: SceneLayout): void {
     [theme.advisor, `advisor · ${modelAlias(advisorModelOf(view))}`],
   ];
   const shortItems: Array<[Rgb, string]> = [
-    [theme.main, `lead · ${mainName(view)}`],
+    [theme.main, 'lead'],
     [theme.sub, 'build'],
     [theme.metrics, 'agent memory'],
     [theme.notes, 'project memory'],
@@ -211,12 +211,15 @@ function memoryFileLines(view: SceneView, maxRows: number): PanelLine[] {
     })),
   ];
   if (items.length === 0) return [{ text: 'no memory files yet', color: theme.faint }];
+  items.sort((a, b) => a.t - b.t);
   const withDetail = maxRows >= 4;
   const step = withDetail ? 2 : 1;
   const recent = items.slice(-Math.max(1, Math.floor(maxRows / step)));
   const lines: PanelLine[] = [];
   for (const item of recent) {
-    const time = item.t > 0 ? formatShortElapsed(item.t, state.startedAt) : '--:--';
+    // Con horas, `02:58:06` no deja lugar al nombre del archivo.
+    const short = formatShortElapsed(item.t, state.startedAt);
+    const time = item.t <= 0 ? '--:--' : cellLength(short) > 5 ? formatCompactMilestoneTime(item.t, state.startedAt) : short;
     lines.push({ text: `${time} ${toCells(item.file)}`, color: theme.notes });
     if (withDetail && lines.length < maxRows) lines.push({ text: toCells(item.detail), color: theme.dim });
   }
@@ -276,11 +279,14 @@ function drawProject(buf: CellBuffer, view: SceneView, L: SceneLayout): void {
 
   // Prioridad: hitos > totales > lista de archivos. En compacto de 30 filas, secondSpace es 4 y caben las 4 filas de valores.
   const totalsRows = secondSpace === totals.length - 1 ? totals.slice(1) : totals;
+  /** La fila bajo `repeat failure` ya tiene un total: su hora no puede ir ahí. */
+  let totalsBelowMilestone = false;
   if (secondSpace >= totalsRows.length) {
     const fileBudget = firstSpace >= 3 ? firstSpace - 2 : firstSpace;
     const files = memoryFileLines(view, fileBudget);
     drawPanelLines(buf, r, text, m0 + 1, m1, firstSpace >= files.length + 1 ? [blank, ...files] : files);
-    drawPanelLines(buf, r, text, m1 + 1, m2, secondSpace >= totalsRows.length + 1 ? [blank, ...totalsRows] : totalsRows);
+    totalsBelowMilestone = secondSpace < totalsRows.length + 1;
+    drawPanelLines(buf, r, text, m1 + 1, m2, totalsBelowMilestone ? totalsRows : [blank, ...totalsRows]);
   } else {
     const fileBudget = Math.max(0, firstSpace - totals.length - 1);
     const files = fileBudget > 0 ? [...memoryFileLines(view, fileBudget), blank] : [];
@@ -307,10 +313,14 @@ function drawProject(buf: CellBuffer, view: SceneView, L: SceneLayout): void {
       : ['—'];
     const fitsOnRow = (t: string): boolean => cellLength(name) + 1 + cellLength(t) <= rowWidth;
     const inlineTime = candidates.find(fitsOnRow);
-    buf.text(text, row, fit(name, rowWidth), fired || pulse > 0 ? theme.text : mix(theme.notes, theme.bg, 0.15));
-    if (inlineTime) {
-      rightText(buf, r.x + r.w - 2, row, inlineTime, hasFiredTime ? theme.dim : theme.faint);
-    } else if (hasFiredTime && row + 1 < r.y + r.h - 1 && !L.milestones.includes(row + 1)) {
+    const rowBelowIsFree = row + 1 < r.y + r.h - 1 && !L.milestones.includes(row + 1) && !(row === m1 && totalsBelowMilestone);
+    // Sin lugar en ninguna fila, se acorta el nombre: la hora es un dato y el hito se sigue reconociendo.
+    const squeezedTime = !inlineTime && hasFiredTime && !rowBelowIsFree ? formatCompactMilestoneTime(firedAt, view.state.startedAt) : undefined;
+    const nameWidth = squeezedTime ? rowWidth - cellLength(squeezedTime) - 1 : rowWidth;
+    buf.text(text, row, fit(name, nameWidth), fired || pulse > 0 ? theme.text : mix(theme.notes, theme.bg, 0.15));
+    if (inlineTime ?? squeezedTime) {
+      rightText(buf, r.x + r.w - 2, row, (inlineTime ?? squeezedTime) as string, hasFiredTime ? theme.dim : theme.faint);
+    } else if (hasFiredTime) {
       rightText(buf, r.x + r.w - 2, row + 1, formatShortElapsed(firedAt, view.state.startedAt), theme.dim);
     }
   });
@@ -431,23 +441,23 @@ function drawAdvisorBox(buf: CellBuffer, view: SceneView, r: Rect): void {
   const calls = String(callsCount);
   const consultWord = callsCount === 1 ? 'consult' : 'consults';
   const tokens = formatTokens(Math.round(numbers?.tokensRead ?? state.advisor.tokensRead));
-  // `replaying` no deja lugar para el contador en una fila.
-  const fullShort = `${status} · ${calls} ${consultWord}`;
-  const shortStatus = replaying ? status : cellLength(fullShort) <= inner ? fullShort : `${status} · ${calls}`;
+  const callsLine = `${calls} ${consultWord}`;
+  const tokensLine = `${tokens} tok`;
 
-  centerText(buf, left, inner, r.y + 1, 'ADVISOR', theme.advisor, true);
+  // El estado va sobre el borde: así las consultas y los tokens caben completos, con su unidad.
   if (r.h >= 6) {
-    // El estado va sobre el borde: así las consultas y los tokens caben completos, con su unidad.
     centerText(buf, left, inner, r.y, ` ${status} `, statusColor, replaying);
+    centerText(buf, left, inner, r.y + 1, 'ADVISOR', theme.advisor, true);
     centerText(buf, left, inner, r.y + 2, advisorName(view), theme.text);
-    centerText(buf, left, inner, r.y + 3, `${calls} ${consultWord}`, theme.dim);
-    centerText(buf, left, inner, r.y + 4, `${tokens} tok`, theme.dim);
-  } else if (r.h === 5) {
-    centerText(buf, left, inner, r.y + 2, advisorName(view), theme.text);
-    centerText(buf, left, inner, r.y + 3, shortStatus, statusColor, replaying);
-  } else {
-    centerText(buf, left, inner, r.y + 2, shortStatus, statusColor, replaying);
+    centerText(buf, left, inner, r.y + 3, callsLine, theme.dim);
+    centerText(buf, left, inner, r.y + 4, tokensLine, theme.dim);
+    return;
   }
+  // Con menos filas, también el título: el modelo cede su fila primero, porque la leyenda lo nombra.
+  centerText(buf, left, inner, r.y, ' ADVISOR ', theme.advisor, true);
+  centerText(buf, left, inner, r.y + r.h - 1, ` ${status} `, statusColor, replaying);
+  const rows = r.h >= 5 ? [advisorName(view), callsLine, tokensLine] : [callsLine, tokensLine];
+  rows.forEach((line, i) => centerText(buf, left, inner, r.y + 1 + i, line, i === 0 && rows.length === 3 ? theme.text : theme.dim));
 }
 
 // --- Memoria de agentes ---
@@ -574,7 +584,8 @@ function drawAgentMemory(buf: CellBuffer, view: SceneView, r: Rect): void {
     { text: 'roles ', color: theme.dim },
     { text: `${rolesWithMemory}/${rolesTotal}`, color: theme.metrics },
   ];
-  const footerFull = view.illustrativeDemo ? 'memory · illustrative activity' : 'memory · real tool calls';
+  // `indexed` y `no memory` salen del prompt del subagente: solo las barras son llamadas a herramientas.
+  const footerFull = view.illustrativeDemo ? 'memory · illustrative activity' : 'bars · real tool calls';
   const footerMaxWidth = r.h >= 7 ? r.w - 4 : r.w - 2;
   const footerText = view.illustrativeDemo && cellLength(footerFull) > footerMaxWidth ? 'illustrative activity' : footerFull;
 

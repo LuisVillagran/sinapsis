@@ -4,7 +4,7 @@ Bitácora para retomar el trabajo solo con este archivo. Ver `CLAUDE.md` para el
 
 ## Fase actual
 
-**Retoque visual funcional (2026-11-05), en la rama `rediseno-funcional` (creada desde `rediseno-referencia`), sin fusionar ni publicar.** Se eliminaron todos los adornos de las imágenes de referencia que no tenían respaldo funcional (barra falsa de ventana con botones de colores, separador grueso, textos fijos de `PROJECT MEMORY`, filas vacías `—`, barra que rebota sin dato, `integrate + verify`, prompt falso con cursor parpadeante y estados repetidos en la línea inferior) y se sacó `AGENT MEMORY` del camino del tronco de delegación. Según informó el usuario, lo hizo con Gemini, así que no consta que pasara por `builder` ni `reviewer`. 309 tests comprobados de forma independiente con Claude Code.
+**Retoque visual funcional (2026-11-05), en la rama `rediseno-funcional` (creada desde `rediseno-referencia`), sin fusionar ni publicar.** Probado por el usuario con subagentes reales en su terminal, con `replay`. Las correcciones posteriores (ver la sección siguiente) y el seguimiento en vivo con subagentes aún no los confirma en su terminal. Se eliminaron todos los adornos de las imágenes de referencia que no tenían respaldo funcional (barra falsa de ventana con botones de colores, separador grueso, textos fijos de `PROJECT MEMORY`, filas vacías `—`, barra que rebota sin dato, `integrate + verify`, prompt falso con cursor parpadeante y estados repetidos en la línea inferior) y se sacó `AGENT MEMORY` del camino del tronco de delegación. Según informó el usuario, lo hizo con Gemini, así que no consta que pasara por `builder` ni `reviewer`. 309 tests comprobados de forma independiente con Claude Code.
 
 ## Retoque visual funcional (2026-11-05)
 
@@ -21,13 +21,30 @@ Corrida de solo lectura con `builder`, `debugger` y `reviewer` en segundo plano,
 
 **`AGENT MEMORY` mostró `no memory` en los tres, y el usuario lo reportó.** Causa: esos subagentes no usaron ninguna herramienta sobre su memoria (0 de 22), en parte porque el prompt de la prueba les pidió no guardar. No es una falla de detección: con la sesión antigua `c390b003`, que sí tiene operaciones reales, el reductor cuenta lo mismo que un conteo independiente de `Read`, `Write`, `Edit` y `Glob` (builder 8, debugger 4, reviewer 6), y el panel dibuja `roles 3 / 3` con barras. Es la primera comprobación con datos reales, sobre el frame final y sin animar. Sigue sin haber un fixture con memoria de agente.
 
+**Decisiones del usuario, ya implementadas:**
+
+- **Memoria sin operaciones:** `indexed` si el subagente recibió un índice `MEMORY.md` con notas, `no memory` si no tiene y `no data` si el transcript no lo dice. Se pactó `index loaded`, pero no cabe en las 9 celdas de esa columna. El parser guarda solo sí o no. Comprobado contra una lectura independiente del prompt en los 23 subagentes reales de este proyecto, sin diferencias. `roles` cuenta `indexed` como memoria. El pie pasó a `bars · real tool calls`, porque `indexed` no es una herramienta.
+- **Barra de tarjetas:** se reinicia antes de llenarse, y llena solo significa `done`.
+
+**También corregido, sin decisión pendiente:**
+
+- Leyenda sin modelo atribuido a `build` sin subagentes, y sin mezclar nombres completos y alias.
+- Caja del advisor con consultas y tokens completos, también a 80x30 y 120x30, con el estado sobre el borde.
+- De la revisión de `reviewer` sobre el retoque de Gemini: la hora de un hito pisaba `agents` o se perdía en compacto; la lista de archivos recortaba el nombre con horas de sesión; y README, `CLAUDE.md` y `docs/eventos.md` desfasados.
+
+**Hallazgos de `reviewer` que se dejaron sin corregir, por menores:**
+
+- Nombres de rol largos en `AGENT MEMORY` (`general-…`), con 9 celdas a 90x46.
+- `memories` cuenta nombres de archivo: varios `MEMORY.md` de roles distintos suman 1. La lista tampoco dice de qué rol es cada uno, salvo en la línea de detalle.
+- `roles 0 / 1` con `no data` afirma un 0 que no se sabe. Solo pasa con un transcript sin `systemPrompt`, como un fixture sanitizado.
+- Barras de tarjetas de anchos distintos según `1 tool` o `3 tools`, `LIVE` en gris sin conexión y `elapsed` congelado entre eventos, porque es la hora del último evento y no el reloj.
+- A 120x30 o 80x30, con alias que no caben, el modelo del advisor no aparece en ninguna parte.
+
 **Sin decidir:**
 
-- **`no memory` puede ser falso.** `builder` y `reviewer` sí tenían notas: su índice llega en el adjunto `prompt_snapshot`, sin herramienta. `debugger` no tenía ninguna. Se observó en esta corrida; no se sabe si el formato es estable. Opciones: distinguir índice cargado de vacío (recomendado), solo cambiar el rótulo a algo como `no tool calls`, o dejarlo.
-- **Barra saturada:** `countBar` queda llena antes de terminar si hay más herramientas que celdas (`reviewer` lo notó en `src/scene/draw.ts:120`). Cambiarla toca el punto 17 del retoque.
-- **Leyenda:** en la primera captura dice `build · opus` sin ningún subagente, y usa el alias en vez de `Opus 5.5`. Sin investigar.
-- **Advisor:** la caja muestra `1·87.5k tok`, sin `consults`, por falta de ancho. `CLAUDE.md` pide `N consults · Xk tok`.
-- **Bash no se cuenta como memoria:** la sesión antigua tiene 5 comandos `Bash` que mencionan `agent-memory`. Quedan fuera del panel.
+- **Bash no se cuenta como memoria:** la sesión antigua tiene 5 comandos `Bash` que mencionan `agent-memory`. Quedan fuera del panel, como dice el README.
+- **Fixture de esta corrida:** es la primera grabación real con subagentes en segundo plano y sigue sin entrar a `fixtures/`. El sanitizador borra `systemPrompt`, así que `indexed` seguiría sin poder probarse desde el repositorio.
+- **Fusión y publicación:** pendientes de la aprobación del usuario.
 
 ## Fase anterior (`rediseno-referencia`)
 

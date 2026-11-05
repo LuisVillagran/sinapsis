@@ -126,7 +126,7 @@ Teclas: `q` o `Ctrl+C` para salir; en replay, `espacio` pausa y `+` / `-` cambia
 - Usa la pantalla alternativa, oculta el cursor y **siempre restaura la terminal** al salir,
   también ante errores y señales.
 - Se adapta al redimensionar.
-- **Layout completo desde 90x46**, con la barra falsa de ventana si hay una fila más.
+- **Layout completo desde 90x46.**
 - **Layout compacto desde 80x30:** los mismos apartados, conexiones y paquetes, en menos filas. Es el que se ve en una
   ventana normal, de unas 120x30.
 - Entre 80x24 y 80x30, un resumen en texto que avisa cómo ver la escena completa. Por debajo, un mensaje pidiendo
@@ -247,11 +247,11 @@ Medida sobre 90x46 (sin barra falsa de ventana ni separador decorativo, y con `A
 | Elemento | Contenido |
 | --- | --- |
 | Encabezado | `SINAPSIS · <carpeta> · <modo>` (`LIVE`, `REPLAY xN`, `PAUSED`, `REPLAY END`, `DEMO` o `WAITING FOR A SESSION`) |
-| Leyenda | Cuadros de color: `lead · <modelo>`, `build · <modelo>` (solo `build` sin subagentes), `agent memory`, `project memory`, `advisor · <modelo>`. Si los nombres completos no caben, todos pasan a su alias |
+| Leyenda | Cuadros de color: `lead · <modelo>`, `build · <modelo>` (solo `build` sin subagentes), `agent memory`, `project memory`, `advisor · <modelo>`. Si los nombres completos no caben, todos pasan a su alias, y si tampoco, ninguno lleva modelo |
 | Project memory | Alcance real, hitos `before work`, `repeat failure` y `before sign-off` con su hora de disparo y flechas a la sesión, a la primera tarjeta y al lead, lista real de archivos de memoria tocados y totales (`totals`: `agents`, `memories`, `tools`, `errors`) |
 | Sesión principal | Modelo, tarea (`ai-title` o último prompt), medidor de effort y actividad con spinner, o `--model` en reposo |
-| Advisor | Modelo, estado (`silent`, `replaying` u `off`) sobre el borde superior, borde punteado salvo en `replaying`, y en filas separadas consultas (`N consults`) y tokens leídos (`Xk tok`) |
-| Agent memory | `roles` con memoria sobre el total, y una fila por rol existente: nombre, barra según sus operaciones y `recall`, `check` o `save`. Sin operaciones: `indexed` si recibió un índice `MEMORY.md` con notas, `no memory` si no tiene notas y `no data` si el transcript no lo dice (o `no subagents yet` sin subagentes). Pie `memory · real tool calls`, o `illustrative activity` en la demo |
+| Advisor | Modelo, estado (`silent`, `replaying` u `off`) sobre el borde superior, borde punteado salvo en `replaying`, y en filas separadas consultas (`N consults`) y tokens leídos (`Xk tok`). En compacto, título arriba y estado abajo sobre el borde; con 4 filas, el modelo queda solo en la leyenda |
+| Agent memory | `roles` con memoria sobre el total, y una fila por rol existente: nombre, barra según sus operaciones y `recall`, `check` o `save`. Sin operaciones: `indexed` si recibió un índice `MEMORY.md` con notas, `no memory` si no tiene notas y `no data` si el transcript no lo dice (o `no subagents yet` sin subagentes). Pie `bars · real tool calls`, o `illustrative activity` en la demo |
 | Tarjetas | Nombre, modelo, `read-only` si corresponde, barra por cantidad real de herramientas (`countBar`, 1 celda por herramienta en curso, reiniciada antes de llenarse, y llena solo al terminar), contador de herramientas, descripción y estado |
 | Back to lead | `back to <modelo> · lead`, y resúmenes recibidos (`N back · <resumen>`), `waiting for N summaries` o `no summaries yet` |
 | Session log | Tiempo desde el inicio, agente, evento |

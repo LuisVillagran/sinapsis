@@ -1682,7 +1682,7 @@ function drawLegend(buf, view, L) {
     [theme.advisor, `advisor \xB7 ${modelAlias(advisorModelOf(view))}`]
   ];
   const shortItems = [
-    [theme.main, `lead \xB7 ${mainName(view)}`],
+    [theme.main, "lead"],
     [theme.sub, "build"],
     [theme.metrics, "agent memory"],
     [theme.notes, "project memory"],
@@ -1748,12 +1748,14 @@ function memoryFileLines(view, maxRows) {
     }))
   ];
   if (items.length === 0) return [{ text: "no memory files yet", color: theme.faint }];
+  items.sort((a, b) => a.t - b.t);
   const withDetail = maxRows >= 4;
   const step = withDetail ? 2 : 1;
   const recent = items.slice(-Math.max(1, Math.floor(maxRows / step)));
   const lines = [];
   for (const item of recent) {
-    const time = item.t > 0 ? formatShortElapsed(item.t, state.startedAt) : "--:--";
+    const short = formatShortElapsed(item.t, state.startedAt);
+    const time = item.t <= 0 ? "--:--" : cellLength(short) > 5 ? formatCompactMilestoneTime(item.t, state.startedAt) : short;
     lines.push({ text: `${time} ${toCells(item.file)}`, color: theme.notes });
     if (withDetail && lines.length < maxRows) lines.push({ text: toCells(item.detail), color: theme.dim });
   }
@@ -1803,11 +1805,13 @@ function drawProject(buf, view, L) {
   const firstSpace = m1 - m0 - 1;
   const secondSpace = m2 - m1 - 1;
   const totalsRows = secondSpace === totals.length - 1 ? totals.slice(1) : totals;
+  let totalsBelowMilestone = false;
   if (secondSpace >= totalsRows.length) {
     const fileBudget = firstSpace >= 3 ? firstSpace - 2 : firstSpace;
     const files = memoryFileLines(view, fileBudget);
     drawPanelLines(buf, r, text, m0 + 1, m1, firstSpace >= files.length + 1 ? [blank, ...files] : files);
-    drawPanelLines(buf, r, text, m1 + 1, m2, secondSpace >= totalsRows.length + 1 ? [blank, ...totalsRows] : totalsRows);
+    totalsBelowMilestone = secondSpace < totalsRows.length + 1;
+    drawPanelLines(buf, r, text, m1 + 1, m2, totalsBelowMilestone ? totalsRows : [blank, ...totalsRows]);
   } else {
     const fileBudget = Math.max(0, firstSpace - totals.length - 1);
     const files = fileBudget > 0 ? [...memoryFileLines(view, fileBudget), blank] : [];
@@ -1831,10 +1835,13 @@ function drawProject(buf, view, L) {
     ] : ["\u2014"];
     const fitsOnRow = (t) => cellLength(name) + 1 + cellLength(t) <= rowWidth;
     const inlineTime = candidates.find(fitsOnRow);
-    buf.text(text, row, fit(name, rowWidth), fired || pulse > 0 ? theme.text : mix(theme.notes, theme.bg, 0.15));
-    if (inlineTime) {
-      rightText(buf, r.x + r.w - 2, row, inlineTime, hasFiredTime ? theme.dim : theme.faint);
-    } else if (hasFiredTime && row + 1 < r.y + r.h - 1 && !L.milestones.includes(row + 1)) {
+    const rowBelowIsFree = row + 1 < r.y + r.h - 1 && !L.milestones.includes(row + 1) && !(row === m1 && totalsBelowMilestone);
+    const squeezedTime = !inlineTime && hasFiredTime && !rowBelowIsFree ? formatCompactMilestoneTime(firedAt, view.state.startedAt) : void 0;
+    const nameWidth = squeezedTime ? rowWidth - cellLength(squeezedTime) - 1 : rowWidth;
+    buf.text(text, row, fit(name, nameWidth), fired || pulse > 0 ? theme.text : mix(theme.notes, theme.bg, 0.15));
+    if (inlineTime ?? squeezedTime) {
+      rightText(buf, r.x + r.w - 2, row, inlineTime ?? squeezedTime, hasFiredTime ? theme.dim : theme.faint);
+    } else if (hasFiredTime) {
       rightText(buf, r.x + r.w - 2, row + 1, formatShortElapsed(firedAt, view.state.startedAt), theme.dim);
     }
   });
@@ -1929,20 +1936,20 @@ function drawAdvisorBox(buf, view, r) {
   const calls = String(callsCount);
   const consultWord = callsCount === 1 ? "consult" : "consults";
   const tokens = formatTokens(Math.round(numbers?.tokensRead ?? state.advisor.tokensRead));
-  const fullShort = `${status} \xB7 ${calls} ${consultWord}`;
-  const shortStatus = replaying ? status : cellLength(fullShort) <= inner ? fullShort : `${status} \xB7 ${calls}`;
-  centerText(buf, left, inner, r.y + 1, "ADVISOR", theme.advisor, true);
+  const callsLine = `${calls} ${consultWord}`;
+  const tokensLine = `${tokens} tok`;
   if (r.h >= 6) {
     centerText(buf, left, inner, r.y, ` ${status} `, statusColor, replaying);
+    centerText(buf, left, inner, r.y + 1, "ADVISOR", theme.advisor, true);
     centerText(buf, left, inner, r.y + 2, advisorName(view), theme.text);
-    centerText(buf, left, inner, r.y + 3, `${calls} ${consultWord}`, theme.dim);
-    centerText(buf, left, inner, r.y + 4, `${tokens} tok`, theme.dim);
-  } else if (r.h === 5) {
-    centerText(buf, left, inner, r.y + 2, advisorName(view), theme.text);
-    centerText(buf, left, inner, r.y + 3, shortStatus, statusColor, replaying);
-  } else {
-    centerText(buf, left, inner, r.y + 2, shortStatus, statusColor, replaying);
+    centerText(buf, left, inner, r.y + 3, callsLine, theme.dim);
+    centerText(buf, left, inner, r.y + 4, tokensLine, theme.dim);
+    return;
   }
+  centerText(buf, left, inner, r.y, " ADVISOR ", theme.advisor, true);
+  centerText(buf, left, inner, r.y + r.h - 1, ` ${status} `, statusColor, replaying);
+  const rows = r.h >= 5 ? [advisorName(view), callsLine, tokensLine] : [callsLine, tokensLine];
+  rows.forEach((line, i) => centerText(buf, left, inner, r.y + 1 + i, line, i === 0 && rows.length === 3 ? theme.text : theme.dim));
 }
 function slotMemoryRows(view, count) {
   const { state } = view;
@@ -2036,7 +2043,7 @@ function drawAgentMemory(buf, view, r) {
     { text: "roles ", color: theme.dim },
     { text: `${rolesWithMemory}/${rolesTotal}`, color: theme.metrics }
   ];
-  const footerFull = view.illustrativeDemo ? "memory \xB7 illustrative activity" : "memory \xB7 real tool calls";
+  const footerFull = view.illustrativeDemo ? "memory \xB7 illustrative activity" : "bars \xB7 real tool calls";
   const footerMaxWidth = r.h >= 7 ? r.w - 4 : r.w - 2;
   const footerText = view.illustrativeDemo && cellLength(footerFull) > footerMaxWidth ? "illustrative activity" : footerFull;
   let y = r.y + 1;
@@ -2792,7 +2799,7 @@ function memoryIndexedOf(attachment) {
   const at = prompt.lastIndexOf(heading);
   if (at < 0) return false;
   const section = prompt.slice(at + heading.length).split(/\n#{1,2} /, 1)[0];
-  return section.trim() !== "" && !section.includes("currently empty");
+  return section.trim() !== "" && !/^\s*(Your )?MEMORY\.md is currently empty/.test(section);
 }
 function memoryScopeOf(path) {
   const normal = path.replace(/\\/g, "/").toLowerCase();

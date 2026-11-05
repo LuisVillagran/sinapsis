@@ -74,7 +74,8 @@ export function memoryIndexedOf(attachment: Record<string, unknown>): boolean | 
   const at = prompt.lastIndexOf(heading);
   if (at < 0) return false;
   const section = prompt.slice(at + heading.length).split(/\n#{1,2} /, 1)[0] as string;
-  return section.trim() !== '' && !section.includes('currently empty');
+  // Se mira solo el inicio: una nota real podría contener estas palabras.
+  return section.trim() !== '' && !/^\s*(Your )?MEMORY\.md is currently empty/.test(section);
 }
 
 /** Clasifica una ruta como archivo de memoria. Las tres formas se observaron en transcripts reales (ver docs/eventos.md). */
