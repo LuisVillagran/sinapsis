@@ -132,6 +132,12 @@ function main() {
     process.exit(1);
   }
   const scrub = buildScrubber();
+  // Los .meta.json de subagentes son un solo objeto, no JSONL.
+  if (input.endsWith('.json')) {
+    writeFileSync(output, `${JSON.stringify(sanitizeValue(JSON.parse(readFileSync(input, 'utf8')), undefined, scrub))}\n`);
+    console.log(`${basename(output)}: objeto sanitizado`);
+    return;
+  }
   const rawLines = readFileSync(input, 'utf8').split('\n').filter((l) => l.trim());
   const kept = rawLines
     .map((l) => JSON.parse(l))

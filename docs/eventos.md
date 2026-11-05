@@ -14,18 +14,19 @@ debe ignorar lo que no conozca.
 | ¿Se conoce el motivo de la consulta? | **No**: `input` viene vacío. Solo se puede inferir |
 | ¿Se puede leer el consejo? | **No**: está cifrado y no se guarda en claro |
 | ¿Se ve la consulta mientras ocurre? | **No**: consulta y respuesta llegan juntas al terminar (ver [Tiempo real](#tiempo-real)) |
-| ¿Cómo aparecen los subagentes? | **No observado**: no hay ningún ejemplo en disco |
-| ¿Hay datos de una sesión Haiku + advisor Opus? | **No**: falta grabarla |
+| ¿Cómo aparecen los subagentes? | **Archivo propio** en `<sesión>/subagents/`, escrito en vivo (ver [Subagentes](#subagentes)) |
+| ¿Haiku consulta igual que Opus? | **Sí**: mismos bloques, mismo resultado cifrado, mismas iteraciones |
+| ¿Hay datos de avance de un subagente? | **Sin porcentaje.** Sí hay un contador real: sus herramientas llegan en vivo |
+| ¿Los hooks ven al advisor? | **No** (ver [Hooks](#hooks)). No se implementan |
 
 ### Evidencia disponible
 
-- **Consultas al advisor:** solo las dos de esta sesión de Fase 0
-  (Opus 5.5 principal + Opus 5.5 advisor). Ningún transcript anterior tiene una,
-  aunque el modo estaba activo.
-- **Subagentes:** cero. No hay carpetas `subagents/`, ninguna línea con
-  `isSidechain: true` ni llamadas a `Agent` o `Task`.
-- Todo lo que dependa de esos dos puntos queda marcado como no observado o
-  con una sola muestra.
+- **Consultas al advisor:** cuatro. Dos en Opus 5.5 + advisor Opus 5.5 y dos en
+  Haiku 5.5 + advisor Opus 5.5. Ningún transcript anterior tiene una, aunque el modo
+  estaba activo.
+- **Subagentes:** tres, todos `Explore` en primer plano y de una misma sesión
+  (`claude -p`, Claude Code 2.1.318). No se observaron subagentes en segundo plano,
+  anidados ni fallidos.
 
 ## Estructura general
 
@@ -54,14 +55,16 @@ Tipos que el visor puede ignorar: `permission-mode`, `session-owner`, `atis-latc
 | `session_start` | Archivo nuevo. Su primera línea es `mode`, sin `timestamp` | Observado |
 | `tool_call` | Bloque `tool_use` (`id`, `name`, `input`) en una línea `assistant` | Observado (~6.000) |
 | `tool_result` | Bloque `tool_result` (`tool_use_id`, `content`, `is_error`) en una línea `user` | Observado (~4.600) |
-| `advisor_consult` | Bloque `server_tool_use` con `name: "advisor"` en una línea `assistant` | Observado (2 muestras), siempre a posteriori |
-| `advisor_reply` | Bloque `advisor_tool_result` en una línea `assistant` | Observado (2 muestras), siempre a posteriori |
-| `subagent_start` | Sin datos | **No observado** |
-| `subagent_end` | Sin datos | **No observado** |
-| `session_end` | `cost-state` es la última línea en 30 de 33 archivos | **Inferido**: una sesión puede reanudarse |
+| `advisor_consult` | Bloque `server_tool_use` con `name: "advisor"` en una línea `assistant` | Observado (4 muestras), siempre a posteriori |
+| `advisor_reply` | Bloque `advisor_tool_result` en una línea `assistant` | Observado (4 muestras), siempre a posteriori |
+| `subagent_start` | Aparece `subagents/agent-<id>.jsonl`, con `agentId` e `isSidechain: true` | Observado (3 muestras), en vivo |
+| `subagent_end` | `toolUseResult` con `agentId` en la línea `user` del proceso principal | Observado (3 muestras), en vivo |
+| `session_end` | `cost-state` como última línea | **Inferido**: una sesión puede reanudarse. En la sesión con hooks llegó 24 ms antes que `SessionEnd` |
 
-El fin de turno sí es detectable: `stop_reason: "end_turn"` y la línea
-`system` con `subtype: "turn_duration"`.
+El fin de turno se detecta con `stop_reason: "end_turn"`. La línea `system` con
+`subtype: "turn_duration"` **no siempre existe**: la sesión con `claude -p` no la tiene y
+trae `stop_hook_summary`. Esa sesión tampoco tiene `ai-title`, así que la tarea debe caer a
+`last-prompt`, que además se repite (5 líneas).
 
 ## La consulta al advisor
 
@@ -113,6 +116,88 @@ se ve en un adjunto:
 ```json
 { "type": "advisor_tool", "available": true, "model": "claude-opus-5-5", "toolChange": "add" }
 ```
+
+## Subagentes
+
+Observado en `fixtures/sesion-haiku-advisor-opus/`. Cada subagente tiene su propio archivo:
+
+```text
+<sesión>.jsonl
+<sesión>/subagents/agent-<agentId>.jsonl       Se crea al empezar y crece en vivo
+<sesión>/subagents/agent-<agentId>.meta.json   Se crea AL TERMINAR (agentType, description, toolUseId, finished)
+```
+
+En el proceso principal se ve como una herramienta más, `tool_use` con `name: "Agent"`:
+
+```jsonc
+{ "description": "Estructura del repositorio", "subagent_type": "Explore", "run_in_background": false, "prompt": "…" }
+```
+
+Y al terminar, su línea `user` trae en `toolUseResult` los totales reales:
+
+```jsonc
+{ "status": "completed", "agentId": "ae5f…", "agentType": "Explore", "resolvedModel": "claude-haiku-5-5",
+  "totalDurationMs": 7686, "totalTokens": 63260, "totalToolUseCount": 1, "toolsUsed": ["Read"],
+  "toolStats": { "readCount": 1, "searchCount": 0, "bashCount": 0, "editFileCount": 0, "linesAdded": 0 },
+  "content": [ { "type": "text" } ] }
+```
+
+Dentro del archivo del subagente las líneas son iguales a las de la sesión principal:
+`api-request`, `assistant` con `tool_use`, `user` con `tool_result`. Las líneas de contenido llevan
+`isSidechain: true` y todas llevan `agentId`. La primera es `user` y su contenido es el prompt.
+
+### El orden real de llegada confunde
+
+El `tool_use` del `Agent` pertenece a un mensaje del proceso principal, así que se escribe **cuando ese
+mensaje termina**. Con tres subagentes en paralelo, esto fue lo que llegó a disco:
+
+| Hora | Qué llegó |
+| --- | --- |
+| 00:35:09,15 | Primera línea del subagente 1 |
+| 00:35:10,39 | Primera línea del subagente 2 |
+| 00:35:11,52 | Los tres `tool_use` de `Agent`, junto con la consulta al advisor anterior a ellos |
+| 00:35:11,75 | Primera línea del subagente 3 |
+
+Por lo tanto, un archivo de subagente puede aparecer **antes** que el `tool_use` que lo lanzó. El nombre
+de la tarjeta (`description`) se obtiene emparejando el `input.prompt` del `tool_use` con la primera línea
+del subagente. El enlace definitivo es `toolUseResult.agentId` con `tool_use_id`. **`.meta.json` no sirve
+en vivo**, porque solo existe al final.
+
+### Avance
+
+No hay porcentaje ni total de pasos. Lo real para una tarjeta en vivo:
+
+- **Barra:** indeterminada.
+- **Contador de herramientas:** sus `tool_use` llegan con 136 a 970 ms de retraso.
+- **Herramienta actual:** el último `tool_use` sin resultado.
+- **Al terminar:** duración, tokens y herramientas desde `toolUseResult`.
+- **`read-only`:** solo inferible del tipo (`Explore`). Se rotula por `agentType`, no por el contenido del prompt.
+- **Resumen para "back to lead":** el texto del `tool_result` del `Agent`.
+
+Los subagentes llevan `advisorModel`, pero ninguno consultó al advisor (0 de 3). No se sabe si pueden hacerlo.
+
+## Hooks
+
+Sesión real con `--settings` temporal, registrando `PreToolUse`, `PostToolUse`, `PostToolBatch`,
+`SubagentStart`, `SubagentStop`, `Stop` y `SessionEnd`. Llegaron 36 eventos, así que la configuración funciona.
+
+| Ventana del advisor (timestamps) | Hooks recibidos dentro |
+| --- | --- |
+| 00:34:47,738 a 00:35:07,162 (19,4 s) | **0** |
+| 00:35:26,346 a 00:36:05,631 (39,3 s) | **0** |
+
+Ningún hook menciona al advisor. Es una herramienta de servidor y el cliente no ejecuta nada.
+
+**Decisión: no se implementan hooks ni `sinapsis hooks`.** Lo único que adelantan es el inicio de un subagente:
+
+| Señal | Primer subagente |
+| --- | --- |
+| `PreToolUse` de `Agent` | 00:35:08,837 |
+| `SubagentStart` | 00:35:08,963 |
+| Línea en el archivo del subagente | 00:35:09,15 |
+| `tool_use` en la sesión principal | 00:35:11,52 |
+
+Seguir la carpeta `subagents/` da casi lo mismo (unos 300 ms) y no obliga al usuario a tocar su configuración.
 
 ## Trampas para el parser
 
@@ -182,7 +267,8 @@ consulta ocurre dentro de ese mismo mensaje porque es una herramienta de servido
 - **Mensajes largos:** todos sus bloques llegan juntos, con retrasos de decenas de
   segundos. La cola de animación debe absorber esos lotes.
 
-Los hooks quedan por probar en la Fase 2. No se sabe si ven esta herramienta de servidor.
+La sesión Haiku lo confirma con otros dos casos: las consultas de 19,4 s y 39,3 s llegaron a disco con
+23,8 s y 39,6 s de retraso. Los hooks tampoco ayudan (ver [Hooks](#hooks)).
 
 ## Elementos de la imagen frente a datos reales
 
@@ -191,10 +277,10 @@ Referencia: `referencia/diseño.png`.
 | Elemento de la imagen | Fuente real | Estado |
 | --- | --- | --- |
 | Título con modelos | `message.model`, `advisorModel` | Real |
-| Leyenda main / subagents / advisor | Modelos anteriores | Real, subagentes sin confirmar |
+| Leyenda main / subagents / advisor | Modelos anteriores y `resolvedModel` o `message.model` del subagente | Real |
 | `jev · forks` y panel "fork layer" | No existe | **Reemplazar** por distribución de herramientas (`tool_use.name`) |
 | Caja principal: modelo y effort | `message.model`, `assistant.effort` | Real |
-| Medidor de effort `▮▮▮▮` | `assistant.effort` | Real, con niveles sin confirmar: solo se observó `high` |
+| Medidor de effort `▮▮▮▮` | `assistant.effort` | Real. Se observaron `high` y `medium`; el resto sin confirmar |
 | Caja principal: tarea | `ai-title` o `last-prompt` | Real |
 | "waiting on advisor" | Bloque `server_tool_use` | **Solo a posteriori**: en vivo solo se sabe "working" |
 | Línea de tiempo: motivos | No existe | **Inferir** (ver abajo) |
@@ -204,10 +290,10 @@ Referencia: `referencia/diseño.png`.
 | routine turns | Mensajes sin iteración de advisor | Real |
 | Caja model / mode | `advisorModel`, adjunto `advisor_tool` | Real |
 | Caja state | Derivado de consulta abierta o cerrada | **Solo a posteriori** |
-| Tarjetas de subagente | Sin datos | **No observado** |
-| Barra de avance con % | Probablemente no exista | **No inventar**: decidir al ver datos reales |
-| "files: 156", "call sites: 15" | Sin fuente conocida | **No inventar** |
-| Caja "back to lead" | Sin datos | **No observado** |
+| Tarjetas de subagente | `subagents/agent-*.jsonl`, `tool_use` de `Agent` | Real |
+| Barra de avance con % | No existe | **Reemplazar** por barra indeterminada y contador real de herramientas |
+| "files: 156", "call sites: 15" | No existen | **Reemplazar** por `tools: N` y, al terminar, duración y tokens |
+| Caja "back to lead" | `tool_result` del `Agent` | Real |
 | Session log | `timestamp`, modelo y evento | Real |
 | Línea de prompt `claude --model…` | Los flags no se registran | **Reconstruir** desde los modelos y `cwd`, sin presentarlo como literal |
 | Barra `~/app — zsh` | `cwd` | Real, decorativa |
@@ -234,38 +320,29 @@ nombre para no presentarlo como el consejo del advisor. En la muestra, ese texto
 
 | Archivo | Contenido | Limitaciones |
 | --- | --- | --- |
-| `fixtures/sesion-opus-advisor-opus.jsonl` | Esta sesión de Fase 0, con 2 consultas reales | Opus + Opus, sin subagentes |
+| `fixtures/sesion-opus-advisor-opus.jsonl` | Sesión de Fase 0, con 2 consultas reales | Opus + Opus, sin subagentes |
+| `fixtures/sesion-haiku-advisor-opus.jsonl` y carpeta homónima | `claude -p` con 2 consultas y 3 subagentes (0,59 USD) | Sin errores de herramientas, sin compactación ni `ai-title` |
 
 Se generan con `scripts/sanitize-fixture.mjs`, que conserva la estructura y quita
 prompts de sistema, contenido largo, rutas, correos, identificadores de cuenta y
 nombres de otros proyectos. Los transcripts sin sanitizar no deben entrar al repositorio;
 `fixtures/raw/` está en `.gitignore` por eso.
 
-## Pendiente para cerrar la Fase 0
-
-Grabar una sesión real con el escenario objetivo:
-
-```powershell
-claude --model haiku --advisor opus
-```
-
-`--advisor` no aparece en `claude --help` (2.1.318), pero el CLI lo acepta. El prompt
-debe pedir subagentes y consultas de forma explícita, porque el modelo no suele
-usarlos por iniciativa propia:
+## Cómo se grabó la sesión Haiku
 
 ```text
-Analiza este repositorio sin modificar ningún archivo. Antes de planificar, consulta
-al advisor. Después lanza 3 subagentes en paralelo, todos de solo lectura: uno que
-describa la estructura del repositorio, otro que busque los usos de "advisor" en
-scripts/ y docs/, y otro que resuma docs/eventos.md. Reúne sus resúmenes, consulta
-al advisor otra vez antes de terminar y dame un informe de 5 líneas.
+claude -p --model haiku --advisor opus --max-budget-usd 2 --session-id <uuid>
+  --settings <hooks-temporal> --tools Read Glob Grep Agent --allowedTools Read Glob Grep Agent
 ```
 
-Al terminar, salir con `/exit` para registrar también el cierre de la sesión.
+`--advisor` no aparece en `claude --help` (2.1.318), pero el CLI lo acepta: lo confirman el adjunto
+`advisor_tool` y las consultas. El prompt pidió consultas y subagentes de forma explícita, porque el modelo
+no suele usarlos por iniciativa propia. Coste total: 0,59 USD.
 
-Esa sesión debe confirmar:
+## Sin observar todavía
 
-- cómo aparecen los subagentes (archivos, `isSidechain`, herramienta usada);
-- si Haiku consulta al advisor igual que Opus;
-- si hay algo parecido a un avance dentro de un subagente;
-- si `cost-state` marca de verdad el cierre de la sesión.
+- Otras variantes de `advisor_tool_result`, como errores.
+- Subagentes en segundo plano (`run_in_background: true`), anidados, fallidos o con otro `agentType`.
+- Si un subagente puede consultar al advisor.
+- `cost-state` con una sesión reanudada, y `SessionEnd` con una salida interactiva (`/exit`).
+- Niveles de effort aparte de `high` y `medium`.
