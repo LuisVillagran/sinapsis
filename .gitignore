@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.log
+.env
+.env.*
+
+# Transcripts sin sanitizar: nunca deben entrar al repo.
+fixtures/raw/
