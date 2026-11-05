@@ -1,107 +1,422 @@
-# Proyecto: Sinapsis — visor animado en vivo del modo advisor de Claude Code
+# Sinapsis — visor animado de consola para el modo advisor de Claude Code
 
-## Objetivo
-Construir una herramienta que muestre en tiempo real qué está haciendo cada
-modelo en una sesión de Claude Code con advisor activo (p. ej. `claude --model
-haiku --advisor opus`): el modelo principal ejecutando herramientas, los
-subagentes trabajando y las consultas al advisor. La interfaz debe replicar lo
-más fielmente posible la imagen adjunta, y la PRIORIDAD es que las animaciones
-sean fluidas y vistosas. La fidelidad visual y la animación importan más que
-agregar funciones.
+Sinapsis es una **aplicación de consola (TUI)** que muestra qué hace cada modelo en una
+sesión de Claude Code con advisor: el modelo principal ejecutando herramientas, los
+subagentes trabajando y las consultas al advisor. Se instala desde el repositorio público
+de GitHub.
 
-## Tecnologías
-- Backend (colector de eventos): Node.js + TypeScript
-  - chokidar para seguir en vivo los transcripts .jsonl en ~/.claude/projects/
-  - ws (WebSocket) para emitir eventos normalizados al frontend
-  - Endpoint opcional para recibir eventos desde hooks de Claude Code
-    (PreToolUse, PostToolUse, SubagentStop, Stop)
-- Frontend: Vite + React + TypeScript
-  - Motion (Framer Motion) para animaciones de componentes y layout
-  - SVG para los conectores entre paneles (trazos animados con stroke-dashoffset
-    y "paquetes" que viajan por las líneas)
-  - Tailwind CSS con tokens de color propios
-  - Tipografía monoespaciada: JetBrains Mono (Google Fonts)
-- Opcional al final: Tauri para empaquetarla como ventana de escritorio sin
-  marco, con la barra falsa "~/app — zsh"
-- Tests: Vitest para el parser y el modelo de eventos
+**La prioridad es que se vea muy animada y fluida.** La fidelidad visual y la animación
+importan más que agregar funciones.
 
-## Diseño (replicar la imagen adjunta)
-- Fondo azul marino muy oscuro, bordes cian/turquesa con resplandor (glow),
-  morado/magenta para todo lo del advisor (Opus), verde para barras de avance,
-  naranjo para alertas o reintentos.
-- Encabezado: "CLAUDE CODE ADVISOR · <MODELO PRINCIPAL> BUILDS · <ADVISOR> THINKS",
-  con los nombres de modelo tomados de los datos reales.
-- Fila de leyenda con cuadros de color: main, subagents, advisor.
-- Columna izquierda: panel del advisor "on call" con una línea de tiempo
-  vertical de consultas (motivo de cada una: antes de un plan, error repetido,
-  antes de terminar…) y estadísticas abajo (consultas, tokens, turnos rutinarios).
-- Centro arriba: caja de la sesión principal (modelo, tarea actual, effort,
-  herramienta en ejecución).
-- Centro medio: panel de métricas con barras horizontales. En la imagen es una
-  "fork layer" que no es un concepto real de Claude Code; reemplazarlo por datos
-  reales con la misma estética (p. ej. distribución de herramientas usadas:
-  Read, Edit, Bash, Grep…).
-- Fila "delegate to subagents": tarjetas por subagente (nombre, modelo,
-  read-only, barra de avance, resultado).
-- Caja inferior "back to <modelo> · lead" que recibe los resúmenes.
-- Columna derecha: caja punteada pequeña con model / mode / state del advisor.
-- Abajo: "session log" con hora y modelo en cada línea, y una línea de prompt
-  con cursor parpadeante.
+---
 
-## Animaciones (lo más importante)
-- Secuencia de arranque: los bordes de los paneles se dibujan solos, el
-  encabezado aparece con efecto máquina de escribir.
-- Cada evento recorre visualmente su camino: un paquete de luz viaja por el
-  conector SVG desde el panel que lo origina hasta el que lo recibe.
-- Consulta al advisor: el panel de Opus se ilumina con pulso de glow, un paquete
-  viaja de ida y otro de vuelta, y el motivo se agrega a la línea de tiempo.
-- Subagentes: las tarjetas aparecen con escala + fade, sus barras se llenan,
-  y al terminar se desvanecen mandando su resumen a la caja "back to lead".
-- Contadores que suben número a número; barras que crecen con easing.
-- Líneas del log que entran deslizándose; texto con efecto máquina de escribir.
-- Estado inactivo: "respiración" sutil de los bordes para que nunca se vea muerto.
-- Cola de animación: los eventos llegan en ráfagas, así que deben encolarse con
-  una duración mínima visible cada uno, para que todos se alcancen a ver pasar
-  sin superponerse de forma caótica.
-- Rendimiento: 60 fps, animar solo transform y opacity, sin re-renders
-  innecesarios.
+## 1. Modo de trabajo: autónomo
 
-## Metodología
-Desarrollo incremental por fases. No avanzar a la siguiente fase hasta que la
-anterior esté verificada y yo la apruebe. Al cerrar cada fase, mostrar qué se
-hizo y cómo probarlo.
+El usuario no estará disponible durante el desarrollo y no podrá aceptar permisos ni
+responder preguntas. Este documento es el acuerdo completo y reemplaza a cualquier
+versión anterior.
 
-Fase 0 — Reconocimiento de datos. Antes de escribir código de la app, inspeccionar
-transcripts .jsonl reales de una sesión con advisor y documentar en
-docs/eventos.md qué campos existen: modelo por mensaje, llamadas a
-herramientas, subagentes y, sobre todo, cómo aparecen las consultas al advisor.
-No asumir formatos: si algo no se puede detectar, decirlo. Guardar transcripts
-de ejemplo en fixtures/.
+- **Trabajar de corrido hasta terminar la Fase 6.** No detenerse a pedir aprobación ni
+  terminar el turno entre fases. Cerrar una fase es verificar sus criterios y seguir.
+- **No hacer preguntas.** Si surge una duda, elegir la opción más simple y reversible
+  que respete este documento, y registrarla en `docs/estado.md`.
+- **Las aprobaciones se reemplazan por criterios objetivos.** Cada fase tiene criterios
+  de cierre (sección 8). Una fase no se cierra si alguno falla.
+- **`docs/estado.md` es la bitácora.** Actualizarlo y hacer commit al cerrar cada fase y
+  antes de cualquier tarea larga, de modo que una sesión nueva pueda retomar solo con este
+  archivo. Contiene: fase actual, qué está hecho, decisiones tomadas, bloqueos y qué
+  debe revisar el usuario al volver.
+- **Si algo bloquea una parte:** intentar una alternativa razonable, registrarlo y seguir
+  con lo demás. Nunca fingir que algo funciona: lo no verificado se declara como tal.
+- **Consultar al advisor** al empezar cada fase con decisiones de diseño, cuando un
+  problema no converge y antes de declarar terminado el proyecto.
 
-Fase 1 — Parser y modelo de eventos. Convertir líneas del transcript en eventos
-normalizados (session_start, tool_call, tool_result, subagent_start,
-subagent_end, advisor_consult, advisor_reply, session_end), con tests sobre los
-fixtures.
+### Qué está autorizado sin preguntar
 
-Fase 2 — Servidor de eventos. Seguir el archivo en vivo y emitir por WebSocket.
-Incluir un MODO REPLAY que reproduce un transcript guardado a velocidad
-configurable: sirve para desarrollar las animaciones sin correr sesiones reales
-y para hacer demos.
+- Crear, editar y borrar archivos dentro de este repositorio.
+- Instalar dependencias del proyecto con npm.
+- Crear ramas, hacer commits y fusionar en `main`.
+- Leer los transcripts de `~/.claude/projects/` para fixtures y pruebas.
+- Lanzar sesiones reales y cortas de Claude Code (`claude -p`) para obtener datos y
+  probar. El usuario no fijó un tope de gasto; aun así, deben ser pocas y de solo lectura
+  sobre este repositorio, cada una con `--max-budget-usd 2` o menos.
+- Crear el repositorio público `sinapsis` en la cuenta de GitHub con sesión iniciada en
+  `gh`, hacer push y crear tags y releases.
 
-Fase 3 — Maqueta estática. Construir el layout completo con datos fijos y
-compararlo con la imagen hasta que se vea prácticamente igual. Sin animaciones aún.
+### Qué no se debe hacer
 
-Fase 4 — Animaciones. Agregar una por una, usando el modo replay, y ajustar
-tiempos y easing hasta que se vea fluido.
+- Modificar `~/.claude/settings.json`, la configuración global de git o cualquier
+  configuración del sistema. Para probar hooks, usar `claude --settings <archivo-temporal>`.
+- Instalar software a nivel de sistema, como Rust, o usar `npm install -g` sin `--prefix`
+  hacia una carpeta temporal.
+- `npm publish`, borrar repositorios o forzar push después del primer push.
+- Tocar otros proyectos o sus archivos.
+- Subir datos privados (ver sección 9).
 
-Fase 5 — Integración en vivo. Conectar a una sesión real de Claude Code con
-advisor y corregir lo que no calce.
+---
 
-Fase 6 — Pulido. Opcionalmente empaquetar con Tauri, y escribir el README con
-capturas y GIF de demo para portafolio.
+## 2. Decisiones pactadas
 
-## Reglas
-- Commits pequeños y descriptivos por cada avance.
-- Código y comentarios claros; README en español.
-- Si un detalle visual de la imagen no tiene equivalente en datos reales,
-  proponer una alternativa honesta en vez de inventar datos.
+| Tema | Decisión |
+| --- | --- |
+| Tipo de producto | App de consola. **Se descartan** React, Motion, SVG, Tailwind, Vite, WebSocket y Tauri |
+| Distribución | `npm install -g github:<usuario>/sinapsis`, comando `sinapsis`. Sin publicar en npm |
+| Consultas al advisor | Replay honesto más investigación de hooks (sección 3) |
+| Motivo de la consulta | Inferido con reglas y marcado como inferido |
+| Último consejo | Está cifrado. Se muestran duración y tokens (sección 3) |
+| Datos sin fuente real | No se inventan. Se reemplazan o se omiten |
+| Sesiones reales | Las lanza Claude de forma autónoma con `claude -p` |
+| Identidad de git | Configurada solo en este repositorio, con el correo personal del usuario |
+| Imagen de referencia | `referencia/diseño.png` es de un tercero: no se sube al repositorio. El README da crédito a su autor (`@skunzu` en X) como inspiración |
+| Licencia | MIT |
+| Rama principal | `main`, con una rama por fase fusionada al cerrarla |
+
+---
+
+## 3. Qué dicen los datos reales
+
+El detalle está en `docs/eventos.md`. Esto condiciona todo el diseño:
+
+- **Detectable:** consultas al advisor (`server_tool_use` con `name: "advisor"`, y
+  `advisor_tool_result`), su duración, sus tokens (`usage.iterations` con
+  `type: "advisor_message"`), herramientas, errores, modelos y effort.
+- **No existe:** el motivo de la consulta (`input` vacío) y el texto del consejo
+  (`advisor_redacted_result` cifrado).
+- **Sin observar todavía:** subagentes (se resuelve al cerrar la Fase 0).
+- **Sin avance real conocido:** el porcentaje y los contadores de las tarjetas de subagente.
+
+### Tiempo real: la consulta solo se conoce después
+
+Las líneas de un mensaje se escriben al terminar ese mensaje de la API. Una consulta de
+171,6 s llegó a disco 174 s tarde, junto con su respuesta. Por lo tanto:
+
+- **En vivo:** `api-request` llega en unos 100 ms y permite mostrar `working`, pero no
+  distingue si el modelo genera texto o consulta al advisor. **No mostrar
+  "waiting on advisor" en vivo salvo que los hooks den una señal real.**
+- **Al llegar el lote:** se reproduce la ida y vuelta del advisor. La animación se
+  **comprime** a entre 1,5 y 5 s, y la duración real se muestra como dato (`171 s`).
+  Reproducirla a tiempo real bloquearía la cola durante minutos.
+- **Hooks:** se investigan en la Fase 0. Solo se usan si aportan una señal real.
+
+---
+
+## 4. Producto
+
+### Comandos
+
+```text
+sinapsis                         Sigue la sesión activa más reciente
+sinapsis --session <id>          Sigue una sesión concreta
+sinapsis --project <carpeta>     Sigue la sesión más reciente de esa carpeta
+sinapsis replay <archivo> [--speed N]   Reproduce un transcript guardado
+sinapsis demo                    Reproduce el fixture incluido
+sinapsis hooks install|uninstall Solo si la Fase 0 demuestra que los hooks aportan
+sinapsis --help | --version
+```
+
+Teclas: `q` o `Ctrl+C` para salir; en replay, `espacio` pausa y `+` / `-` cambian la velocidad.
+
+### Comportamiento en la terminal
+
+- Usa la pantalla alternativa, oculta el cursor y **siempre restaura la terminal** al salir,
+  también ante errores y señales.
+- Se adapta al redimensionar.
+- **Layout completo desde 96x48.** Entre 80x24 y ese tamaño, un layout reducido
+  que conserva advisor, sesión principal, subagentes y log. Por debajo, un mensaje pidiendo
+  agrandar la ventana.
+- Color truecolor con caída a 256 colores. Si la salida no es una TTY, termina con un mensaje claro.
+- Sin sesión activa, muestra el panel en reposo y espera, sin fallar.
+
+---
+
+## 5. Arquitectura
+
+Un solo proceso, sin servidor ni navegador:
+
+```text
+transcript .jsonl ─► fuente (tail / replay) ─┐
+hooks (opcional)  ─► fuente HTTP local ──────┤
+                                             ▼
+            parser ─► eventos normalizados ─► estado de sesión
+                                             ▼
+                              cola de animación ─► escena ─► buffer de celdas
+                                                                  ▼
+                                                     diff ANSI ─► terminal
+```
+
+| Parte | Tecnología |
+| --- | --- |
+| Lenguaje | TypeScript, ESM, Node 20 o superior |
+| Empaquetado | `tsup` a `dist/`, con `prepare` para instalar desde git |
+| Seguimiento de archivos | `chokidar`, leyendo por offset y tolerando líneas parciales |
+| Render | **Motor propio de buffer de celdas.** Se descarta Ink: su ciclo de layout y re-render no sirve para animar celda por celda |
+| Tests | Vitest |
+| Verificación visual (solo desarrollo) | `@xterm/headless` y `xterm` en Chrome instalado vía Playwright (`channel: 'chrome'`) |
+| GIF de demo (solo desarrollo) | `gifenc` |
+
+Dependencias de ejecución al mínimo: no agregar nada que no sea necesario.
+
+```text
+src/
+  cli.ts              Argumentos y arranque
+  core/               Parser, eventos, estado de sesión. Sin E/S
+  sources/            tail, replay, descubrimiento de sesiones, hooks
+  engine/             Reloj, cola, easing, tweens
+  tui/                Buffer, color, diff ANSI, terminal
+  scene/              Layout y paneles
+tools/                Capturas PNG y GIF (no se distribuyen)
+test/
+fixtures/
+docs/
+```
+
+**Reglas de diseño del código:**
+
+- `core/` y `engine/` son puros y testeables.
+- El reloj es inyectable: cada frame debe poder reproducirse de forma determinista para
+  capturas y tests.
+- Solo el diff ANSI escribe a la terminal.
+
+---
+
+## 6. Diseño visual
+
+`referencia/diseño.png` es la referencia: una terminal de **96x48**. Consultarla y compararla
+en cada iteración de la Fase 3.
+
+### Limitaciones de una terminal
+
+No se puede imponer la fuente ni crear un glow real, y la unidad mínima es la celda.
+Traducción acordada:
+
+| En la imagen | En la terminal |
+| --- | --- |
+| Glow de bordes | Borde brillante más halo: celdas vecinas con fondo tintado tenue |
+| Trazos gruesos | `━ ┃ ┏ ┓ ┗ ┛ ┣ ┫ ┳ ┻` |
+| Línea punteada | `╌ ╎` o `┄ ┆` |
+| Fondo con viñeta | Fondo azul marino con degradado suave por celda (truecolor) |
+| Fade | Interpolar el color hacia el fondo |
+| Escala | Caja que crece desde su centro, celda a celda |
+| Movimiento fino | Caracteres de bloque y Braille para subcelda en barras y paquetes |
+| JetBrains Mono | Recomendada en el README, no se puede imponer |
+
+### Colores
+
+Tomar los valores finales muestreando la imagen. Base aproximada:
+
+| Token | Uso | Aproximado |
+| --- | --- | --- |
+| `bg` | Fondo | `#0b1026` |
+| `main` | Modelo principal, bordes | `#6fb8e8` |
+| `sub` | Subagentes, trazos brillantes | `#9fe8ff` |
+| `advisor` | Todo lo del advisor | `#b4a7ff` |
+| `metrics` | Panel de métricas, barras buenas | `#5fbf93` |
+| `alert` | Errores y reintentos | `#e08a4f` |
+| `text` / `dim` | Texto / secundario | `#e6ecff` / `#7c88a8` |
+
+### Geometría objetivo (columna, fila; desde 0; tolerancia ±1)
+
+| Elemento | Columnas | Filas |
+| --- | --- | --- |
+| Barra falsa de ventana (`● ● ●`, carpeta real, tamaño real) | 0–95 | 0 |
+| Encabezado | centrado | 2 |
+| Separador | 2–93 | 3 |
+| Leyenda | 2–93 | 4 |
+| Panel del advisor | 2–23 | 5–38 |
+| Sesión principal | 39–76 | 5–11 |
+| Estado del advisor (punteado) | 78–94 | 5–11 |
+| Panel de métricas | 38–83 | 13–19 |
+| Texto "delegate to subagents" | centrado | 21 |
+| Tarjetas de subagente | 28–48, 50–71, 73–94 | 24–30 |
+| Caja "back to lead" | 43–78 | 35–38 |
+| Session log | 2–94 | 39–44 |
+| Línea de prompt | 0–95 | 45 o 46 |
+| Línea de estado | 0–95 | 46 o 47 |
+
+### Contenido de cada elemento
+
+| Elemento | Contenido |
+| --- | --- |
+| Encabezado | `CLAUDE CODE ADVISOR · <PRINCIPAL> BUILDS · <ADVISOR> THINKS`, con modelos reales |
+| Leyenda | Cuadros de color: main, subagents, advisor, tools |
+| Panel del advisor | `OPUS 5.5` / `advisor · on call`, línea de tiempo de consultas con motivo inferido, última consulta (`sealed · 42 s · 64.7k read · 4.0k written`) y estadísticas: calls, tokens read, routine turns |
+| Sesión principal | Modelo, tarea (`ai-title` o último prompt), medidor de effort, herramienta o estado actual con spinner `[ \ ]` |
+| Estado del advisor | model, mode (`on call`), state (`silent` o `replaying`) |
+| Panel de métricas | **Reemplaza a "JEV · fork layer"**: distribución real de herramientas con barras horizontales y conteos, más total de llamadas. Naranjo para las que tuvieron errores |
+| Tarjetas | Nombre, modelo, `read-only` si corresponde, barra y resultado. **Sin porcentaje inventado:** barra indeterminada o basada en un dato real según lo que muestre la Fase 0 |
+| Back to lead | `back to <modelo> · lead`, y resúmenes recibidos |
+| Session log | Hora, modelo o subagente, evento |
+| Prompt | Comando reconstruido desde los modelos reales, con cursor parpadeante. No se presenta como literal |
+| Línea de estado | Último evento y eventos en cola, con cuadros de color |
+
+**No copiar** `X: @skunzu`, `jev`, `forks`, `2,625`, `files: 156`, `call sites: 15` ni otros
+valores de ejemplo de la imagen.
+
+---
+
+## 7. Animaciones (lo más importante)
+
+Implementarlas una por una, en este orden:
+
+1. **Arranque:** los bordes se dibujan solos recorriendo cada panel; el encabezado aparece
+   como máquina de escribir; los paneles entran en cascada.
+2. **Paquetes:** cada evento recorre su camino por los conectores. Un punto brillante con estela
+   que se desvanece, avanzando con precisión de subcelda donde sea posible.
+3. **Consulta al advisor:** el panel se ilumina con pulso, un paquete de ida y otro de vuelta,
+   y el motivo se escribe en la línea de tiempo.
+4. **Subagentes:** las tarjetas crecen desde su centro con fade, sus barras se llenan y al
+   terminar se desvanecen enviando su resumen a "back to lead", con el conector encendido.
+5. **Contadores** que suben número a número; **barras** que crecen con easing.
+6. **Log:** las líneas entran deslizándose, con texto de máquina de escribir.
+7. **Spinners** en cada elemento activo y cursor parpadeante.
+8. **Reposo:** respiración sutil de los bordes para que nunca se vea muerto.
+9. **Errores:** destello naranjo en el panel y el log.
+
+### Cola de animación
+
+- Los eventos llegan en lotes, con retrasos de hasta minutos. Se encolan y cada uno tiene una
+  **duración mínima visible** (punto de partida: 350 ms; paquete: 400 a 700 ms).
+- Si la cola crece, se acelera de forma gradual y se agrupan herramientas consecutivas.
+- **Nunca se descartan** consultas al advisor, subagentes ni errores.
+- Los animaciones no se superponen de forma caótica en un mismo conector.
+
+### Rendimiento
+
+- El bucle apunta a **60 fps** y baja de forma adaptativa, hasta 30, si la terminal no da abasto
+  (`stdout` con contrapresión). `--fps` permite fijarlo.
+- Se escriben solo las celdas que cambian, con actualización sincronizada (`CSI ? 2026`) para evitar parpadeo.
+- Presupuesto: calcular un frame en **menos de 8 ms (p95)** a 96x48.
+- En reposo, consumir poca CPU: menos del 5 % de un núcleo como meta.
+
+---
+
+## 8. Fases y criterios de cierre
+
+Cada fase va en su rama, con commits pequeños, y se fusiona a `main` al cumplir sus criterios.
+
+### Fase 0 — Cerrar el reconocimiento
+
+Ya hecho: `docs/eventos.md`, sanitizador y primer fixture. Falta:
+
+1. Lanzar una sesión real con el prompt de `docs/eventos.md`. Con `claude -p`, `--model haiku`,
+   `--advisor opus`, `--max-budget-usd 2` y solo herramientas de lectura más `Agent`.
+2. En esa misma sesión u otra, usar `--settings` con un archivo temporal para registrar todos
+   los hooks relevantes (`PreToolUse`, `PostToolUse`, `PostToolBatch`, `SubagentStart`,
+   `SubagentStop`, `Stop`, `SessionEnd`) y comprobar si alguno ve al advisor.
+
+**Criterios:**
+
+- `fixtures/sesion-haiku-advisor-opus.jsonl` sanitizado y sin datos privados.
+- `docs/eventos.md` responde cómo aparecen los subagentes, si Haiku consulta igual que Opus,
+  si hay algún dato de avance y si los hooks detectan al advisor.
+- Lo que siga sin observarse queda declarado.
+
+### Fase 1 — Parser y modelo de eventos
+
+Convierte líneas en eventos normalizados: `session_start`, `request_start` (de `api-request`),
+`tool_call`, `tool_result`, `subagent_start`, `subagent_end`, `advisor_consult`, `advisor_reply`,
+`turn_end`, `session_end`. Más un reductor que calcula el estado de sesión.
+
+**Criterios:**
+
+- Tests de Vitest pasan sobre todos los fixtures.
+- Cubren las trampas de `docs/eventos.md`: tokens por `message.id`, `is_error` opcional,
+  `<synthetic>`, compactación, tipos desconocidos ignorados y líneas inválidas sin fallar.
+- Los totales del reductor coinciden con un conteo independiente del fixture.
+- Motivo inferido testeado para cada regla.
+
+### Fase 2 — Fuentes de eventos
+
+Seguimiento en vivo, descubrimiento de sesiones, replay con velocidad configurable y hooks
+solo si la Fase 0 los justifica. Incluye un modo sin interfaz que imprime eventos.
+
+**Criterios:**
+
+- Test de extremo a extremo: agregar líneas, incluso partidas, a un archivo temporal emite los
+  eventos correctos, sin duplicados ni pérdidas.
+- Aclarar si el retraso observado en Windows depende de `stat`, y dejarlo documentado.
+- Replay respeta el orden y la velocidad configurada, con reloj falso.
+
+### Fase 3 — Maqueta estática
+
+Todo el layout con datos fijos, sin animación. Herramienta `tools/snapshot` que renderiza un
+frame a PNG a través de xterm con JetBrains Mono.
+
+**Criterios:**
+
+- Capturas en `docs/capturas/`, comparadas visualmente con la referencia leyendo ambas imágenes.
+- Geometría dentro de la tolerancia, verificada por test sobre el buffer.
+- Colores muestreados de la imagen.
+- Al menos tres iteraciones de comparación y ajuste. Registrar las diferencias que queden y por qué.
+- Layout reducido y mensaje de ventana pequeña verificados con capturas a 80x24 y 60x20.
+
+### Fase 4 — Animaciones
+
+Una por una según la sección 7, con un commit por animación, usando replay.
+
+**Criterios:**
+
+- Secuencias de capturas con reloj falso muestran cada animación en sus etapas.
+- Tests de easing, tweens y cola: duración mínima, aceleración con cola larga, nada importante se descarta.
+- Medición registrada en `docs/estado.md`: tiempo por frame (p95), bytes por segundo y CPU en reposo.
+- Cumple los presupuestos de la sección 7, o queda documentado por qué no.
+- Ninguna animación borra datos: el estado final coincide con el del reductor.
+
+### Fase 5 — Integración en vivo
+
+Conectar a una sesión real de `claude -p` lanzada de forma autónoma, ejecutando la TUI con su
+salida conectada a `@xterm/headless`.
+
+**Criterios:**
+
+- La sesión real se ve de principio a fin en la TUI, sin errores, y se guardan capturas.
+- Los eventos coinciden con el transcript resultante.
+- La terminal queda restaurada al salir: comprobar secuencias de salida, también con errores forzados.
+- Corregir lo que no calce y agregar el caso a los tests.
+
+**Límite conocido:** Claude no puede mirar una ventana real de terminal en este equipo. Declarar en
+`docs/estado.md` que el usuario debe confirmarlo en su terminal al volver.
+
+### Fase 6 — Publicación
+
+1. `package.json` con `bin`, `engines`, `files` y `prepare`. `sinapsis demo` debe funcionar
+   instalado, así que su fixture se incluye en el paquete.
+2. `LICENSE` MIT y README en español: qué es, instalación, uso, cómo se obtienen los datos,
+   limitaciones honestas, capturas, GIF y crédito de la inspiración.
+3. Revisión de privacidad de todo lo que se va a publicar, **incluido el historial de git**.
+4. Crear el repositorio público, hacer push de `main` y crear el tag `v0.1.0`.
+
+**Criterios:**
+
+- `npm test` y el build pasan en un clon limpio.
+- Instalación real **desde GitHub** en una carpeta temporal con `npm install -g --prefix <tmp>
+  github:<usuario>/sinapsis`; `sinapsis --version` y `sinapsis demo` funcionan, usando la salida
+  hacia xterm headless. Limpiar después.
+- El README se corresponde con lo que existe.
+
+**Si no se puede publicar** (por ejemplo, `gh` sin sesión): dejar todo listo y escribir en
+`docs/estado.md` los comandos exactos para que el usuario lo haga.
+
+### Fin del proyecto
+
+Consultar al advisor, actualizar `docs/estado.md` y terminar con un informe:
+qué se hizo, enlace al repositorio, cómo probar, qué quedó sin verificar y qué decisiones debe
+revisar el usuario.
+
+---
+
+## 9. Reglas
+
+- Commits pequeños y descriptivos por cada avance, en español. Código y comentarios claros;
+  README en español.
+- **Honestidad de datos:** si un detalle visual no tiene dato real, proponer una alternativa
+  honesta en vez de inventarlo. Lo inferido se rotula como inferido.
+- **Privacidad:** el repositorio es público.
+  - Todo transcript pasa por `scripts/sanitize-fixture.mjs` antes de entrar a `fixtures/`, y luego
+    se busca manualmente si quedó algo privado. `fixtures/raw/` nunca se sube.
+  - No escribir en el repositorio datos personales: correos, rutas personales, nombres de otros
+    proyectos, identificadores de cuenta.
+  - `.claude/settings.local.json` y `referencia/` no se suben.
+- **Formato de transcripts sin documentar:** ignorar tipos y campos desconocidos sin fallar.
+- **Alcance:** no agregar funciones fuera de este documento. Si una idea parece valiosa, anotarla en
+  `docs/estado.md` como sugerencia.

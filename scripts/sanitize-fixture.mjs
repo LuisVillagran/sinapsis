@@ -78,6 +78,9 @@ function buildScrubber() {
   for (const segment of projectSegments) {
     rules.push([new RegExp(`\\b${escapeRegex(segment)}\\b`, 'gi'), '<proyecto>']);
   }
+  // Dominio del correo global: puede aparecer sin el resto de la dirección.
+  const emailDomain = gitConfig('user.email').split('@')[1];
+  if (emailDomain) rules.push([new RegExp(escapeRegex(emailDomain), 'gi'), '<dominio>']);
   const gitName = gitConfig('user.name');
   if (gitName) rules.push([new RegExp(escapeRegex(gitName), 'gi'), '<usuario>']);
   rules.push([new RegExp(`\\b${escapeRegex(user)}\\b`, 'gi'), '<usuario>']);

@@ -6,3 +6,9 @@ dist/
 
 # Transcripts sin sanitizar: nunca deben entrar al repo.
 fixtures/raw/
+
+# Permisos locales de Claude Code.
+.claude/settings.local.json
+
+# Imagen de referencia de un tercero: solo para uso local.
+referencia/
