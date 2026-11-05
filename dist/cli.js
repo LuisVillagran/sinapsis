@@ -326,6 +326,9 @@ var easeInOutCubic = (t) => {
   const k = clamp01(t);
   return k < 0.5 ? 4 * k ** 3 : 1 - (-2 * k + 2) ** 3 / 2;
 };
+function progress(now, start, duration) {
+  return duration <= 0 ? 1 : clamp01((now - start) / duration);
+}
 function segment(t, from, to) {
   return to <= from ? t >= to ? 1 : 0 : clamp01((t - from) / (to - from));
 }
@@ -350,6 +353,41 @@ var FULL = {
   cardCenters: [38, 61, 84],
   arrows: { main: 9, cards: 26, lead: 35 }
 };
+function route(...points) {
+  const cells = [points[0]];
+  for (let i = 1; i < points.length; i += 1) {
+    const [tx, ty] = points[i];
+    let [x, y] = cells[cells.length - 1];
+    while (x !== tx || y !== ty) {
+      x += Math.sign(tx - x);
+      y += Math.sign(ty - y);
+      cells.push([x, y]);
+    }
+  }
+  return cells;
+}
+var delegateRoute = (center) => route([FULL.spine, 20], [FULL.spine, 22], [center, 22], [center, 23]);
+var backRoute = (center) => route([center, 31], [center, 32], [FULL.spine, 32], [FULL.spine, 34]);
+var advisorRow = (from, y) => route([from, y], [24, y]);
+var ROUTES = {
+  tool: route([FULL.spine, 11], [FULL.spine, 13]),
+  "delegate-0": delegateRoute(FULL.cardCenters[0]),
+  "delegate-1": delegateRoute(FULL.cardCenters[1]),
+  "delegate-2": delegateRoute(FULL.cardCenters[2]),
+  "back-0": backRoute(FULL.cardCenters[0]),
+  "back-1": backRoute(FULL.cardCenters[1]),
+  "back-2": backRoute(FULL.cardCenters[2]),
+  "advisor-out-0": advisorRow(38, FULL.arrows.main),
+  "advisor-out-1": advisorRow(27, FULL.arrows.cards),
+  "advisor-out-2": advisorRow(42, FULL.arrows.lead + 1),
+  "advisor-back-0": advisorRow(38, FULL.arrows.main).reverse(),
+  "advisor-back-1": advisorRow(27, FULL.arrows.cards).reverse(),
+  "advisor-back-2": advisorRow(42, FULL.arrows.lead + 1).reverse()
+};
+function consultSlot(reason) {
+  if (reason === "after errors" || reason === "after subagents") return 1;
+  return reason === "before done" ? 2 : 0;
+}
 function layoutKind(cols, rows) {
   if (cols >= FULL_COLS && rows >= FULL_ROWS) return "full";
   if (cols >= MIN_COLS && rows >= MIN_ROWS) return "reduced";
@@ -701,6 +739,9 @@ var AnimationQueue = class {
 
 // src/engine/director.ts
 var LOG_LIMIT = 200;
+var PACKET_SHARE = 0.35;
+var PULSE_PERIOD_MS = 170;
+var TYPE_CHARS_PER_MS = 0.03;
 var QUEUE_AFTER_BOOT_MS = 1600;
 var Director = class {
   truth = createState();
@@ -713,6 +754,9 @@ var Director = class {
   version = 0;
   bootStart;
   animateBoot;
+  packets = [];
+  consultAnim;
+  consultSlotById = /* @__PURE__ */ new Map();
   constructor(options = {}) {
     this.animateBoot = options.boot ?? false;
   }
@@ -726,6 +770,9 @@ var Director = class {
       this.truth = createState();
       this.shown = createState();
       this.queue.clear();
+      this.packets = [];
+      this.consultAnim = void 0;
+      this.consultSlotById.clear();
       this.log = [];
       this.last = void 0;
       this.connected = true;
@@ -755,11 +802,43 @@ var Director = class {
       this.last = `${entry.who} \xB7 ${entry.text}`;
     }
   }
+  addPacket(route2, start, duration) {
+    this.packets.push({ route: route2, start, duration });
+  }
   onStart(active, now) {
     for (const event of active.item.events) this.show(event, now);
+    const { item, start, duration } = active;
+    const first = item.events[0];
+    if (item.kind === "tool" && first?.type === "tool_call" && !first.agentId) {
+      this.addPacket("tool", start, duration);
+    } else if (item.kind === "advisor" && first?.type === "advisor_consult") {
+      const slot = consultSlot(first.reason);
+      this.consultSlotById.set(first.id, slot);
+      this.consultAnim = { id: first.id, start };
+      if (item.endEvents.length) {
+        this.addPacket(`advisor-out-${slot}`, start, duration * PACKET_SHARE);
+        this.addPacket(`advisor-back-${slot}`, start + duration * (1 - PACKET_SHARE), duration * PACKET_SHARE);
+      } else {
+        this.addPacket(`advisor-out-${slot}`, start, duration * 0.6);
+      }
+    } else if (item.kind === "advisor-reply" && first?.type === "advisor_reply") {
+      const slot = this.consultSlotById.get(first.id) ?? 0;
+      this.addPacket(`advisor-back-${slot}`, start, duration);
+    }
   }
   onEnd(active, now) {
     for (const event of active.item.endEvents) this.show(event, now);
+  }
+  activePackets(now) {
+    this.packets = this.packets.filter((p) => now < p.start + p.duration);
+    return this.packets.filter((p) => now >= p.start).map((p) => ({ route: p.route, t: progress(now, p.start, p.duration) }));
+  }
+  advisorMotion(now) {
+    const active = this.queue.active;
+    if (!active || active.item.kind !== "advisor" && active.item.kind !== "advisor-reply") return {};
+    const elapsed = now - active.start;
+    const typing = this.consultAnim ? { id: this.consultAnim.id, chars: Math.floor((now - this.consultAnim.start) * TYPE_CHARS_PER_MS) } : void 0;
+    return { advisorPulse: 0.5 + 0.5 * Math.sin(elapsed / PULSE_PERIOD_MS), typingConsult: typing };
   }
   /** Avanza hasta `now`. Devuelve si algo de los datos cambió. */
   update(now) {
@@ -780,11 +859,15 @@ var Director = class {
   /** Hay algo moviéndose que exige la frecuencia alta. */
   isBusy(now) {
     const boot = this.bootElapsed(now);
-    return !this.queue.isEmpty || boot !== void 0 && boot < BOOT_MS;
+    return !this.queue.isEmpty || this.packets.length > 0 || boot !== void 0 && boot < BOOT_MS;
   }
   animFrame(now) {
     const boot = this.bootElapsed(now);
-    return { bootMs: boot !== void 0 && boot < BOOT_MS ? boot : void 0 };
+    return {
+      bootMs: boot !== void 0 && boot < BOOT_MS ? boot : void 0,
+      packets: this.activePackets(now),
+      ...this.advisorMotion(now)
+    };
   }
   view(now, replay, flatBackground = false) {
     return {
@@ -1059,6 +1142,31 @@ function wrap(text, width, maxLines) {
   return lines;
 }
 
+// src/scene/packets.ts
+var TRAIL_CELLS = 5;
+function packetColor(route2) {
+  if (route2.startsWith("advisor")) return theme.advisor;
+  if (route2 === "tool") return theme.metrics;
+  return route2.startsWith("back") ? theme.subBright : theme.sub;
+}
+var isText = (char) => /[\p{L}\p{N}]/u.test(char);
+function drawPacket(buf, packet) {
+  const cells = ROUTES[packet.route];
+  const color = packetColor(packet.route);
+  const bright = mix(color, theme.subBright, 0.6);
+  const head = packet.t * (cells.length - 1 + TRAIL_CELLS);
+  cells.forEach(([x, y], i) => {
+    const distance = head - i;
+    if (distance < -1 || distance > TRAIL_CELLS) return;
+    const intensity = distance < 0 ? 1 + distance : (1 - distance / TRAIL_CELLS) ** 2;
+    buf.tintFg(x, y, bright, intensity);
+    buf.blendBg(x, y, color, intensity * 0.3);
+  });
+  const headCell = Math.round(head);
+  const cell = cells[headCell];
+  if (cell && !isText(buf.charAtDraw(cell[0], cell[1]))) buf.put(cell[0], cell[1], "\u25CF", bright);
+}
+
 // src/scene/scene.ts
 var backgroundCache = /* @__PURE__ */ new Map();
 function paintBackground(buf, flat) {
@@ -1115,6 +1223,7 @@ function mainActivity(view, width) {
   const { state } = view;
   if (!view.connected) return fit("waiting for a session", width);
   if (state.ended) return "session ended";
+  if (state.advisor.consults.some((c) => c.open)) return "replaying consult";
   if (state.status === "tool" && state.currentTool) {
     const { name, summary } = state.currentTool;
     return fit(toCells(summary ? `${name} \xB7 ${summary.replace(/\s+/g, " ")}` : name), width);
@@ -1165,11 +1274,11 @@ function drawLegend(buf, view, ox, oy) {
 }
 var panelBorder = (color) => mix(color, theme.panel, 0.2);
 var SLOTS = [
-  { row: FULL.arrows.main, reasons: ["before a plan", "check-in"], empty: "before a plan" },
-  { row: FULL.arrows.cards, reasons: ["after errors", "after subagents"], empty: "after errors" },
-  { row: FULL.arrows.lead, reasons: ["before done"], empty: "before done" }
+  { row: FULL.arrows.main, index: 0, empty: "before a plan" },
+  { row: FULL.arrows.cards, index: 1, empty: "after errors" },
+  { row: FULL.arrows.lead, index: 2, empty: "before done" }
 ];
-function drawSlot(buf, x, row, consults, empty, inner) {
+function drawSlot(buf, x, row, consults, empty, inner, typing) {
   const last = consults[consults.length - 1];
   if (!last) {
     buf.put(x, row, "\u25C7", theme.faint);
@@ -1178,13 +1287,25 @@ function drawSlot(buf, x, row, consults, empty, inner) {
   }
   buf.put(x, row, "\u25C6", last.isError ? theme.alert : theme.advisor, BOLD);
   const times = consults.length > 1 ? ` x${consults.length}` : "";
-  buf.text(x + 2, row, fit(`${last.reason}${times}`, inner - 2), theme.text);
+  const label = fit(`${last.reason}${times}`, inner - 2);
+  if (typing?.id === last.id && typing.chars < cellLength(label)) {
+    const end = buf.text(x + 2, row, [...label].slice(0, typing.chars).join(""), theme.text);
+    buf.put(end, row, "\u258C", theme.advisor);
+    return;
+  }
+  buf.text(x + 2, row, label, theme.text);
   const detail = last.open ? "replying\u2026" : `${formatDuration(last.durationMs)} \xB7 ${formatTokens(last.tokensRead)}`;
   buf.text(x + 2, row + 1, fit(detail, inner - 2), theme.dim);
 }
 function drawAdvisorPanel(buf, view, r) {
   const { advisor } = view.state;
-  box(buf, r, { color: panelBorder(theme.advisor), fill: theme.panel, halo: 0.35 });
+  const pulse = view.anim?.advisorPulse ?? 0;
+  box(buf, r, {
+    color: mix(panelBorder(theme.advisor), theme.subBright, pulse * 0.75),
+    fill: mix(theme.panel, theme.advisor, pulse * 0.08),
+    halo: 0.35 + pulse * 0.9,
+    bold: pulse > 0.5
+  });
   const inner = r.w - 2;
   const left = r.x + 1;
   centerText(buf, left, inner, r.y + 1, advisorName(view).toUpperCase(), theme.advisor, true);
@@ -1196,7 +1317,7 @@ function drawAdvisorPanel(buf, view, r) {
   const textWidth = inner - 2;
   for (let y2 = r.y + 4; y2 < r.y + r.h - 1; y2 += 1) buf.put(lineX, y2, "\u254E", theme.faint);
   for (const slot of SLOTS) {
-    drawSlot(buf, lineX, slot.row, advisor.consults.filter((c) => slot.reasons.includes(c.reason)), slot.empty, textWidth + 1);
+    drawSlot(buf, lineX, slot.row, advisor.consults.filter((c) => consultSlot(c.reason) === slot.index), slot.empty, textWidth + 1, view.anim?.typingConsult);
   }
   const text = lineX + 2;
   let y = FULL.arrows.main + 3;
@@ -1239,11 +1360,11 @@ function drawConnectors(buf, view) {
   const hasSubagents = subagents.length > 0;
   const anyDone = subagents.some((s) => !s.running);
   const edge = FULL.advisor.x + FULL.advisor.w;
-  const reasonsLit = (reasons) => advisor.consults.some((c) => reasons.includes(c.reason));
-  const arrowColor = (lit) => lit ? theme.advisor : mix(theme.advisor, theme.bgEdge, 0.6);
-  dashedArrow(buf, arrows.main, edge, main2.x - 1, arrowColor(reasonsLit(["before a plan", "check-in"])));
-  dashedArrow(buf, arrows.cards, edge, FULL.cards[0].x - 1, arrowColor(reasonsLit(["after errors", "after subagents"])));
-  dashedArrow(buf, arrows.lead + 1, edge, lead.x - 1, arrowColor(reasonsLit(["before done"])));
+  const lit = (slot) => advisor.consults.some((c) => consultSlot(c.reason) === slot);
+  const arrowColor = (slot) => lit(slot) ? theme.advisor : mix(theme.advisor, theme.bgEdge, 0.6);
+  dashedArrow(buf, arrows.main, edge, main2.x - 1, arrowColor(0));
+  dashedArrow(buf, arrows.cards, edge, FULL.cards[0].x - 1, arrowColor(1));
+  dashedArrow(buf, arrows.lead + 1, edge, lead.x - 1, arrowColor(2));
   buf.put(spine, main2.y + main2.h, "\u2503", theme.main);
   const busColor = hasSubagents ? theme.sub : mix(theme.sub, theme.bgEdge, 0.65);
   buf.put(spine, metrics.y + metrics.h, "\u2503", mix(theme.metrics, busColor, 0.5));
@@ -1304,7 +1425,8 @@ function drawAdvisorState(buf, view, r) {
   const replaying = state.advisor.consults.some((c) => c.open);
   const row = (y, label, value, color = theme.text) => {
     buf.text(r.x + 1, y, label, theme.dim);
-    rightText(buf, r.x + r.w - 3, y, fit(value, r.w - 9), color, true);
+    const shown = fit(value, r.w - 8);
+    rightText(buf, r.x + r.w - (cellLength(shown) > r.w - 9 ? 2 : 3), y, shown, color, true);
   };
   row(r.y + 2, "model", advisorName(view).toLowerCase());
   row(r.y + 3, "mode", state.advisorEnabled || state.advisorModel ? "on call" : "off");
@@ -1464,6 +1586,7 @@ function renderFull(buf, view) {
   drawLog(target, view, FULL.log);
   drawPrompt(target, view, rows.prompt, 0, FULL_COLS);
   drawStatus(target, view, rows.status, 0, FULL_COLS);
+  for (const packet of view.anim?.packets ?? []) drawPacket(target, packet);
   const bootMs = view.anim?.bootMs;
   if (bootMs !== void 0 && bootMs < BOOT_MS) {
     const width = segmentsWidth(headerSegments(view));

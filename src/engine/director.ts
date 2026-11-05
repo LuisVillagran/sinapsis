@@ -7,11 +7,18 @@ import { describeEvent } from '../core/describe.js';
 import type { SinapsisEvent } from '../core/events.js';
 import { type SessionState, applyEvent, createState } from '../core/state.js';
 import { BOOT_MS } from '../scene/boot.js';
+import { type RouteName, consultSlot } from '../scene/layout.js';
+import type { PacketView } from '../scene/packets.js';
 import type { AnimFrame, ReplayStatus, SceneView, ShownLogEntry } from '../scene/view.js';
 import type { SourceUpdate } from '../sources/types.js';
+import { progress } from './easing.js';
 import { type ActiveItem, AnimationQueue } from './queue.js';
 
 const LOG_LIMIT = 200;
+/** Parte de la consulta que ocupa cada viaje. El resto es la espera, con el panel latiendo. */
+const PACKET_SHARE = 0.35;
+const PULSE_PERIOD_MS = 170;
+const TYPE_CHARS_PER_MS = 0.03;
 /** Los eventos esperan a que el arranque casi termine, para que no se mezclen con él. */
 const QUEUE_AFTER_BOOT_MS = 1600;
 
@@ -31,6 +38,9 @@ export class Director {
   version = 0;
   private bootStart: number | undefined;
   private readonly animateBoot: boolean;
+  private packets: Array<{ route: RouteName; start: number; duration: number }> = [];
+  private consultAnim: { id: string; start: number } | undefined;
+  private readonly consultSlotById = new Map<string, 0 | 1 | 2>();
 
   constructor(options: DirectorOptions = {}) {
     this.animateBoot = options.boot ?? false;
@@ -47,6 +57,9 @@ export class Director {
       this.truth = createState();
       this.shown = createState();
       this.queue.clear();
+      this.packets = [];
+      this.consultAnim = undefined;
+      this.consultSlotById.clear();
       this.log = [];
       this.last = undefined;
       this.connected = true;
@@ -80,12 +93,49 @@ export class Director {
     }
   }
 
+  private addPacket(route: RouteName, start: number, duration: number): void {
+    this.packets.push({ route, start, duration });
+  }
+
   private onStart(active: ActiveItem, now: number): void {
     for (const event of active.item.events) this.show(event, now);
+    const { item, start, duration } = active;
+    const first = item.events[0];
+
+    if (item.kind === 'tool' && first?.type === 'tool_call' && !first.agentId) {
+      this.addPacket('tool', start, duration);
+    } else if (item.kind === 'advisor' && first?.type === 'advisor_consult') {
+      const slot = consultSlot(first.reason);
+      this.consultSlotById.set(first.id, slot);
+      this.consultAnim = { id: first.id, start };
+      if (item.endEvents.length) {
+        // Ida, espera y vuelta dentro del mismo elemento.
+        this.addPacket(`advisor-out-${slot}`, start, duration * PACKET_SHARE);
+        this.addPacket(`advisor-back-${slot}`, start + duration * (1 - PACKET_SHARE), duration * PACKET_SHARE);
+      } else {
+        this.addPacket(`advisor-out-${slot}`, start, duration * 0.6);
+      }
+    } else if (item.kind === 'advisor-reply' && first?.type === 'advisor_reply') {
+      const slot = this.consultSlotById.get(first.id) ?? 0;
+      this.addPacket(`advisor-back-${slot}`, start, duration);
+    }
   }
 
   private onEnd(active: ActiveItem, now: number): void {
     for (const event of active.item.endEvents) this.show(event, now);
+  }
+
+  private activePackets(now: number): PacketView[] {
+    this.packets = this.packets.filter((p) => now < p.start + p.duration);
+    return this.packets.filter((p) => now >= p.start).map((p) => ({ route: p.route, t: progress(now, p.start, p.duration) }));
+  }
+
+  private advisorMotion(now: number): Pick<AnimFrame, 'advisorPulse' | 'typingConsult'> {
+    const active = this.queue.active;
+    if (!active || (active.item.kind !== 'advisor' && active.item.kind !== 'advisor-reply')) return {};
+    const elapsed = now - active.start;
+    const typing = this.consultAnim ? { id: this.consultAnim.id, chars: Math.floor((now - this.consultAnim.start) * TYPE_CHARS_PER_MS) } : undefined;
+    return { advisorPulse: 0.5 + 0.5 * Math.sin(elapsed / PULSE_PERIOD_MS), typingConsult: typing };
   }
 
   /** Avanza hasta `now`. Devuelve si algo de los datos cambió. */
@@ -109,12 +159,16 @@ export class Director {
   /** Hay algo moviéndose que exige la frecuencia alta. */
   isBusy(now: number): boolean {
     const boot = this.bootElapsed(now);
-    return !this.queue.isEmpty || (boot !== undefined && boot < BOOT_MS);
+    return !this.queue.isEmpty || this.packets.length > 0 || (boot !== undefined && boot < BOOT_MS);
   }
 
   private animFrame(now: number): AnimFrame {
     const boot = this.bootElapsed(now);
-    return { bootMs: boot !== undefined && boot < BOOT_MS ? boot : undefined };
+    return {
+      bootMs: boot !== undefined && boot < BOOT_MS ? boot : undefined,
+      packets: this.activePackets(now),
+      ...this.advisorMotion(now),
+    };
   }
 
   view(now: number, replay?: ReplayStatus, flatBackground = false): SceneView {

@@ -67,6 +67,8 @@ Bitácora para retomar el trabajo solo con este archivo. Ver `CLAUDE.md` para el
   queda atrás: hay que ejecutar `npm run build` antes de cada commit que toque `src/`.
   **Riesgo abierto:** instalar desde un tarball funciona (`--version` y `demo` verificados), pero `git+file://`
   deja la carpeta vacía en este equipo. La prueba definitiva con `github:` real es de la Fase 6.
+- **Animaciones 2 y 3 en un solo commit:** la consulta al advisor es el primer uso de los paquetes y comparten el
+  mismo código en el director. El resto va con un commit por animación.
 - **Privacidad:** el fixture antiguo traía en una línea la salida de una revisión anterior, con fragmentos
   de nombres de otros proyectos. Se limpió también en el historial local con `git filter-branch`, antes del
   primer push. Por eso los hashes de la Fase 0 cambiaron.

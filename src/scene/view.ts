@@ -2,6 +2,7 @@
 
 import type { LogEntry, LogKind } from '../core/describe.js';
 import type { SessionState } from '../core/state.js';
+import type { PacketView } from './packets.js';
 
 export interface QueueStatus {
   /** Último evento mostrado. */
@@ -26,6 +27,11 @@ export interface ShownLogEntry extends LogEntry {
 export interface AnimFrame {
   /** Milisegundos desde el arranque, mientras dura. Después, ausente. */
   bootMs?: number;
+  packets?: PacketView[];
+  /** Intensidad del pulso del panel del advisor, de 0 a 1. */
+  advisorPulse?: number;
+  /** Consulta cuyo motivo se está escribiendo, y cuántos caracteres van. */
+  typingConsult?: { id: string; chars: number };
 }
 
 export interface SceneView {
