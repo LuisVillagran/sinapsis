@@ -268,6 +268,15 @@ describe('cola', () => {
     expect(drain(queue).started.map((s) => s.kind)).toEqual(['subagent-start', 'instant']);
   });
 
+  it('un segundo fin del mismo subagente no se anima dos veces, pero se aplica', () => {
+    const queue = new AnimationQueue();
+    const end = (handback?: boolean): SinapsisEvent => ({ type: 'subagent_end', t: 1, subagentId: 's', status: 'completed', summary: 'x', ...(handback ? { handback } : {}) });
+    queue.push([{ type: 'subagent_start', t: 1, subagentId: 's' }, end(), end(true)]);
+    const out = drain(queue);
+    expect(out.started.map((s) => s.kind)).toEqual(['subagent-start', 'subagent-end', 'instant']);
+    expect(out.events.filter((e) => e.type === 'subagent_end')).toHaveLength(2);
+  });
+
   it('pendientes y sus colores', () => {
     const queue = new AnimationQueue();
     queue.push([usage(), tool('a'), consult('c'), toolBad('a')]);
@@ -295,5 +304,38 @@ describe('cola', () => {
     expect(queue.isEmpty).toBe(false);
     collect(102_000);
     expect(queue.isEmpty).toBe(true);
+  });
+});
+
+describe('consulta abandonada en la cola', () => {
+  const abandoned = (id: string): SinapsisEvent => ({ type: 'advisor_abandoned', t: 3, id });
+
+  it('si la consulta aún no empieza, sale sin animación y ambos eventos se aplican en orden', () => {
+    const queue = new AnimationQueue();
+    queue.push([consult('x'), tool('t'), abandoned('x')]);
+    const out = drain(queue);
+    expect(out.started.map((s) => s.kind)).toEqual(['instant', 'tool', 'instant']);
+    expect(out.events.map((e) => e.type)).toEqual(['advisor_consult', 'tool_call', 'advisor_abandoned']);
+    expect(queue.pending).toBe(0);
+    expect(out.total).toBeLessThan(1000);
+  });
+
+  it('si la consulta ya está en curso, termina de forma normal sin bloquear la cola', () => {
+    const queue = new AnimationQueue();
+    queue.push([consult('x')]);
+    queue.update(0);
+    queue.push([abandoned('x'), tool('t')]);
+    const out = drain(queue);
+    expect(out.events.map((e) => e.type)).toEqual(['advisor_abandoned', 'tool_call']);
+    expect(queue.isEmpty).toBe(true);
+    // La consulta en curso dura lo normal y lo demás sigue de inmediato.
+    expect(out.total).toBeLessThan(2500);
+  });
+
+  it('una consulta ya respondida no se trata como abandonada', () => {
+    const queue = new AnimationQueue();
+    queue.push([consult('x'), reply('x', 1000), abandoned('x')]);
+    const out = drain(queue);
+    expect(out.started.map((s) => s.kind)).toEqual(['advisor', 'instant']);
   });
 });

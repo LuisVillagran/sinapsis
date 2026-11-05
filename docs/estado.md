@@ -11,6 +11,40 @@ https://github.com/LuisVillagran/sinapsis (tag `v0.1.0`, con el diseño anterior
 **Equipo de subagentes: Fase A terminada, en la misma rama, con carga y memoria probadas.** Espera que el usuario apruebe los ajustes de abajo
 antes de empezar la Fase B.
 
+**Corrección de lo que el usuario vio al probar (2026-11-05), en la misma rama.** Espera que lo confirme en su terminal.
+
+## Corrección tras la prueba del usuario (2026-11-05)
+
+El usuario reportó que las tareas quedaban en `0/2` o `0/N`, y que Opus 5.5 aparecía como principal, advisor y lead.
+
+- **Subagentes sin cerrar, corregido:** los de segundo plano terminan con `tool_use` `SubagentHandback`, no con `end_turn`. El
+  test anterior suponía otra forma. Ahora se cierran con esa señal, y los totales llegan por `<task-notification>`.
+- **Modelos, no era un error de datos:** esa sesión usa Opus 5.5 en ambos roles, según 88 líneas de `model`, `advisorModel` y
+  la iteración `advisor_message`. El problema era nombrar por modelo. **Decisión del usuario:** leyenda y línea de estado con
+  el rol primero. El encabezado no cambia.
+- **`AGENT MEMORY`, decisión del usuario:** una fila por rol con datos reales. `roles` cuenta roles. La demo no cambia.
+- **Consulta huérfana, encontrada al verificar:** un `server_tool_use` sin respuesta dejaba `replaying` pegado y contaba de más.
+  Ahora se abandona con `advisor_abandoned`. El log lo rotula como inferido.
+
+**Verificado:** 307 tests y `tsc`. Con el transcript real de esta sesión, en replay y con la TUI real en vivo hacia
+`@xterm/headless`, durante 45 s a 120x30: `subagents [9/9]`, `advisor [silent]`, `roles 3 / 3`, código de salida 0 y terminal
+restaurada. Primer trabajo real de `builder` y `reviewer`, ambos revisados de forma independiente.
+
+**Sin verificar o pendiente:**
+
+- **Ventana real de terminal:** sigue siendo lo que el usuario debe confirmar.
+- **`debugger`:** todavía no corrige nada real.
+- **Sin fixture:** la forma de segundo plano no está en `fixtures/`, los tests usan líneas sintéticas. La grabación de la Fase B
+  debería llenar este vacío, pasando por el sanitizador.
+- **Falla intermitente sin identificar:** una corrida de tests dio 286 de 287 en 389 s, cuando lo normal son 56 s. La salida se
+  recortó y no se sabe cuál falló. No se repitió en las tres corridas posteriores que se comprobaron. Si reaparece, delegar en `debugger`.
+- **Línea de estado a 90 columnas:** si están activos a la vez `memories [project]` y `build [building]`, el grupo `advisor` no
+  cabe. Ya pasaba antes y la caja del advisor sigue mostrando su estado.
+- **Subagente reanudado:** con `SendMessage`, uno cerrado no se reabre. Hay que resolverlo en las fases B o C.
+- **Capturas y GIF de `docs/` y del README:** muestran los rótulos anteriores. Regenerarlos antes de publicar.
+- **`reviewer` escribió un archivo:** creó y borró un test temporal en `test/`, pese a la orden de no modificar archivos. Lo
+  declaró y no quedó rastro. Bloquear `Edit` y `Write` no evitaría esto del todo, porque también tiene `Bash`. Lo decide el usuario.
+
 ## Equipo de subagentes (2026-11-05)
 
 El usuario pidió trabajar con `builder`, `debugger` y `reviewer`, y que Sinapsis los muestre por su rol, en tres fases con

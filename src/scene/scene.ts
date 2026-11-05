@@ -1,7 +1,7 @@
 // Dibuja un frame completo. Función pura de la vista y del tamaño del buffer.
 
 import { agentLabel, displayModel, formatDuration, formatTokens, modelAlias, plainText, subagentName } from '../core/describe.js';
-import { type SubagentState, memoryLabel, memoryMilestone } from '../core/state.js';
+import { type MemoryTouchState, type SubagentState, memoryLabel, memoryMilestone } from '../core/state.js';
 import { easeInOutCubic, easeOutCubic, segment } from '../engine/easing.js';
 import { BOOT_MS, applyBootFade, applyBootFull } from './boot.js';
 import { BOLD, type CellBuffer, cellLength, fit, toCells } from '../tui/buffer.js';
@@ -107,11 +107,11 @@ function headerSegments(view: SceneView): Segment[] {
 
 function drawLegend(buf: CellBuffer, view: SceneView, L: SceneLayout): void {
   const items: Array<[Rgb, string]> = [
-    [theme.main, `${mainName(view)} · lead`],
-    [theme.sub, `${builderName(view)} · build`],
+    [theme.main, `lead · ${mainName(view)}`],
+    [theme.sub, `build · ${builderName(view)}`],
     [theme.metrics, 'memories'],
     [theme.notes, 'notes'],
-    [theme.advisor, `${advisorName(view)} · advisor`],
+    [theme.advisor, `advisor · ${advisorName(view)}`],
   ];
   const used = items.reduce((sum, [, label]) => sum + cellLength(label) + 2, 0);
   const gap = Math.max(1, Math.floor((L.width - used) / (items.length + 1)));
@@ -373,7 +373,8 @@ interface MemoryRow {
   barColor: Rgb;
 }
 
-function memoryRows(view: SceneView, count: number): MemoryRow[] {
+/** Demo: una fila por tarjeta, con la actividad ilustrativa de cada una. */
+function slotMemoryRows(view: SceneView, count: number): MemoryRow[] {
   const { state } = view;
   const slots = cardSlots(view, count);
   const shown = (id: string): number => view.anim?.numbers?.memory[id] ?? state.memory.touches.filter((t) => t.agentId === id).length;
@@ -402,16 +403,81 @@ function memoryRows(view: SceneView, count: number): MemoryRow[] {
   return rows;
 }
 
+/** Ejecuciones de un mismo rol (`agentType`). Sin tipo, cada ejecución es su propio rol. */
+interface RoleGroup {
+  name: string;
+  members: SubagentState[];
+  running: boolean;
+  /** Primera ejecución del rol, en el orden del estado: da el orden estable de las filas. */
+  order: number;
+  /** Hora de su última operación de memoria. */
+  lastTouch?: MemoryTouchState;
+}
+
+function roleGroups(view: SceneView): RoleGroup[] {
+  const { state } = view;
+  const groups = new Map<string, RoleGroup>();
+  const byAgent = new Map<string, RoleGroup>();
+  state.subagents.forEach((sub, order) => {
+    const key = sub.agentType ? `type:${sub.agentType}` : `id:${sub.id}`;
+    let group = groups.get(key);
+    if (!group) {
+      const name = sub.agentType || sub.description ? agentLabel(state, sub.id) : 'starting…';
+      group = { name, members: [], running: false, order };
+      groups.set(key, group);
+    }
+    group.members.push(sub);
+    group.running ||= sub.running;
+    byAgent.set(sub.id, group);
+  });
+  // `touches` está ordenada por hora: la última de cada rol es su operación más reciente.
+  for (const touch of state.memory.touches) {
+    const group = touch.agentId ? byAgent.get(touch.agentId) : undefined;
+    if (group) group.lastTouch = touch;
+  }
+  return [...groups.values()];
+}
+
+/** Datos reales: una fila por rol, con las operaciones de memoria de todas sus ejecuciones. */
+function memoryRows(view: SceneView, count: number): MemoryRow[] {
+  if (view.illustrativeDemo) return slotMemoryRows(view, count);
+  const { state } = view;
+  let groups = roleGroups(view);
+  if (groups.length > count) {
+    // Primero los que corren y luego los de memoria más reciente. Se muestran en el orden en que aparecieron.
+    const priority = (g: RoleGroup): number => (g.running ? 1e15 : 0) + (g.lastTouch?.t ?? 0);
+    groups = [...groups].sort((a, b) => priority(b) - priority(a) || a.order - b.order).slice(0, count).sort((a, b) => a.order - b.order);
+  }
+  const shown = (id: string): number => view.anim?.numbers?.memory[id] ?? state.memory.touches.filter((t) => t.agentId === id).length;
+  const total = (g: RoleGroup): number => g.members.reduce((sum, m) => sum + shown(m.id), 0);
+  const max = Math.max(1, ...groups.map(total));
+  const rows: MemoryRow[] = [];
+  for (let i = 0; i < count; i += 1) {
+    const group = groups[i];
+    if (!group) {
+      rows.push({ name: '—', fraction: 0, label: '', labelColor: theme.faint, barColor: theme.barGood });
+      continue;
+    }
+    const last = group.lastTouch;
+    const label = last ? memoryLabel(state, last) : 'no memory';
+    const check = label === 'check';
+    rows.push({ name: group.name, fraction: total(group) / max, label, labelColor: last ? (check ? theme.main : theme.metrics) : theme.faint, barColor: check ? theme.main : theme.barGood });
+  }
+  return rows;
+}
+
 function drawAgentMemory(buf: CellBuffer, view: SceneView, r: Rect): void {
   const { state } = view;
   box(buf, r, { color: panelBorder(theme.metrics, view), fill: theme.panel });
   const left = r.x + 2;
   const right = r.x + r.w - 3;
   const rows = memoryRows(view, 3);
-  const withMemory = view.illustrativeDemo ? state.subagents.length : new Set(state.memory.touches.map((t) => t.agentId).filter(Boolean)).size;
+  const allRoles = view.illustrativeDemo ? undefined : roleGroups(view);
+  const rolesTotal = allRoles ? allRoles.length : state.subagents.length;
+  const rolesWithMemory = allRoles ? allRoles.filter((g) => g.lastTouch).length : state.subagents.length;
   const roles: Segment[] = [
     { text: 'roles  ', color: theme.dim },
-    { text: `${Math.min(withMemory, state.subagents.length)} / ${state.subagents.length}`, color: theme.metrics },
+    { text: `${rolesWithMemory} / ${rolesTotal}`, color: theme.metrics },
   ];
   const footerText = view.illustrativeDemo ? 'memory · illustrative activity' : 'memory · real tool calls';
 
@@ -610,7 +676,8 @@ function drawLead(buf: CellBuffer, view: SceneView, r: Rect): void {
   if (r.h >= 4) {
     centerSegments(buf, left, inner, r.y + 1, title);
     const latest = done[done.length - 1];
-    const summary = latest?.summary ? `${done.length} back · ${plainText(latest.summary)}` : 'integrate + verify';
+    // Sin ningún subagente cerrado es un texto de relleno (atenuado); con uno cerrado solo se muestra lo real.
+    const summary = !latest ? 'integrate + verify' : latest.summary ? `${done.length} back · ${plainText(latest.summary)}` : `${done.length} back`;
     centerText(buf, left + 1, inner - 2, r.y + 2, summary, latest ? theme.text : theme.dim);
   } else {
     centerSegments(buf, left, inner, r.y + 1, [...title, { text: subagents.length ? ` · ${done.length}/${subagents.length}` : '', color: theme.dim }]);
@@ -683,11 +750,11 @@ function drawStatus(buf: CellBuffer, view: SceneView, y: number, x: number, widt
   const replaying = state.advisor.consults.some((c) => c.open);
   const hasMemory = memory.touches.length > 0 || memory.loaded.length > 0 || view.illustrativeDemo;
   const groups: Segment[][] = [
-    bracket(mainName(view), state.ended ? 'ended' : isMainActive(view) ? 'lead' : 'idle', theme.main),
+    bracket('lead', state.ended ? 'ended' : isMainActive(view) ? 'working' : 'idle', theme.main),
     bracket('subagents', `${subagents.length - active}/${subagents.length}`, theme.sub),
     bracket('memories', hasMemory ? memoryScopeLabel(view) : 'none', theme.metrics),
-    bracket(builderName(view), active ? 'building' : 'idle', theme.sub),
-    bracket(advisorName(view), replaying ? 'replaying' : 'silent', theme.advisor),
+    bracket('build', active ? 'building' : 'idle', theme.sub),
+    bracket('advisor', replaying ? 'replaying' : 'silent', theme.advisor),
   ];
   const pending = view.queue.pending.length;
   const queued = `${pending} queued`;

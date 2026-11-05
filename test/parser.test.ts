@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { describeEvent } from '../src/core/describe.js';
 import type { SinapsisEvent } from '../src/core/events.js';
 import { createParser, inferConsultReason, memoryScopeOf, memoryTouchOf, newTurnFacts, summarizeToolInput } from '../src/core/parser.js';
 import { memoryLabel, memoryMilestone, reduce } from '../src/core/state.js';
@@ -29,6 +30,8 @@ const toolResult = (id: string, isError?: boolean): object => ({
 });
 
 const consultBlock = (id: string): object => ({ type: 'server_tool_use', id, name: 'advisor', input: {} });
+
+const resultBlock = (id: string): object => ({ type: 'advisor_tool_result', tool_use_id: id, content: { type: 'advisor_redacted_result' } });
 
 const ofType = <T extends SinapsisEvent['type']>(events: SinapsisEvent[], type: T): Extract<SinapsisEvent, { type: T }>[] =>
   events.filter((e): e is Extract<SinapsisEvent, { type: T }> => e.type === type);
@@ -197,16 +200,21 @@ describe('motivo inferido', () => {
   });
 
   it('secuencia completa: los hechos se reinician por consulta y por turno', () => {
+    // Cada consulta recibe su resultado en su mensaje: una sin respuesta se abandonaría y devolvería sus hechos.
     const events = parseOne(
       { type: 'user', message: { role: 'user', content: 'primer prompt' }, turnOrigin: 'human' },
       assistant('m1', [consultBlock('c1')]),
+      assistant('m1', [resultBlock('c1')]),
       assistant('m2', [{ type: 'tool_use', id: 't1', name: 'Bash', input: {} }]),
       toolResult('t1', true),
       assistant('m3', [consultBlock('c2')]),
+      assistant('m3', [resultBlock('c2')]),
       assistant('m4', [{ type: 'tool_use', id: 't2', name: 'Edit', input: {} }]),
       toolResult('t2'),
       assistant('m5', [consultBlock('c3')]),
+      assistant('m5', [resultBlock('c3')]),
       assistant('m6', [consultBlock('c4')], { stop_reason: 'end_turn' }),
+      assistant('m6', [resultBlock('c4')], { stop_reason: 'end_turn' }),
       { type: 'user', message: { role: 'user', content: 'otro prompt' }, turnOrigin: 'human' },
       assistant('m7', [consultBlock('c5')]),
     );
@@ -443,17 +451,6 @@ describe('subagentes: casos no observados', () => {
     expect(state.subagents[0]).toMatchObject({ id: 'a9', running: false, toolCount: 4, totalTokens: 10, durationMs: 5, description: 'desc t1' });
   });
 
-  it('en segundo plano (forma supuesta): lanzado no se cierra; su end_turn sí', () => {
-    const parser = createParser();
-    const events = [
-      ...parser.feed(JSON.stringify(launch('t1', 'p'))),
-      ...parser.feed(JSON.stringify({ ...toolResult('t1'), toolUseResult: { status: 'async_launched', agentId: 'a1' } })),
-    ];
-    expect(reduce(events).subagents[0]?.running).toBe(true);
-    events.push(...parser.feed(JSON.stringify(assistant('s1', [{ type: 'text', text: 'listo' }], { stop_reason: 'end_turn' })), { agentId: 'a1' }));
-    expect(reduce(events).subagents[0]).toMatchObject({ running: false, status: 'completed', summary: 'listo' });
-  });
-
   it('error del Agent sin totales cierra el subagente enlazado', () => {
     const parser = createParser();
     const events = [
@@ -479,6 +476,188 @@ describe('subagentes: casos no observados', () => {
     const state = reduce(parseOne({ ...assistant('s1', [{ type: 'tool_use', id: 't', name: 'Read', input: {} }]), isSidechain: true, agentId: 'a7' }));
     expect(state.subagents[0]?.id).toBe('a7');
     expect(state.messages).toBe(0);
+  });
+});
+
+describe('subagentes en segundo plano (forma observada)', () => {
+  const DELIVERED = 'This agent\'s report was delivered to you as a message from "ag1" (its SubagentHandback call). Read it there; it is not repeated here.';
+  const at = (second: number): string => `2026-01-01T00:00:${String(second).padStart(2, '0')}.000Z`;
+
+  const noticeText = (o: { taskId?: string; toolUseId?: string; status?: string; report?: string; tokens?: number; tools?: number; ms?: number } = {}): string =>
+    [
+      '<task-notification>',
+      `<task-id>${o.taskId ?? 'ag1'}</task-id>`,
+      `<tool-use-id>${o.toolUseId ?? 'tu1'}</tool-use-id>`,
+      '<output-file>/tmp/ag1.output</output-file>',
+      `<status>${o.status ?? 'completed'}</status>`,
+      '<summary>Agent "tarea" finished</summary>',
+      '<note>aviso de prueba</note>',
+      `<result>${o.report ?? DELIVERED}`,
+      '</result>',
+      `<usage><subagent_tokens>${o.tokens ?? 1200}</subagent_tokens><tool_uses>${o.tools ?? 4}</tool_uses><duration_ms>${o.ms ?? 15000}</duration_ms></usage>`,
+      '</task-notification>',
+    ].join('\n');
+
+  // Los tres portadores observados del mismo aviso.
+  const queued = (text: string, operation = 'enqueue', second = 6): object => ({ type: 'queue-operation', operation, timestamp: at(second), content: text });
+  const asUser = (text: string, second = 7): object => ({ type: 'user', timestamp: at(second), origin: { kind: 'task-notification' }, message: { role: 'user', content: text } });
+  const asAttachment = (text: string, second = 8): object => ({ type: 'attachment', timestamp: at(second), attachment: { type: 'queued_command', prompt: text } });
+
+  const launch = (id = 'tu1', name = 'Agent'): object => assistant('m1', [{ type: 'tool_use', id, name, input: { prompt: 'haz la tarea', description: 'tarea de prueba', subagent_type: 'builder' } }]);
+  const launched = (id = 'tu1'): object => ({ ...toolResult(id), toolUseResult: { isAsync: true, status: 'async_launched', agentId: 'ag1', resolvedModel: 'claude-haiku-5-5' } });
+  const subFirstLine = JSON.stringify({ type: 'user', parentUuid: null, isSidechain: true, agentId: 'ag1', timestamp: at(1), message: { role: 'user', content: 'haz la tarea' } });
+  const handbackLine = (message = 'informe real'): string =>
+    JSON.stringify({ ...assistant('s1', [{ type: 'tool_use', id: 'hb1', name: 'SubagentHandback', input: { message } }]), timestamp: at(5) });
+
+  type Chunk = [string, { agentId?: string }?];
+  const main = (...objects: object[]): Chunk[] => objects.map((o) => [JSON.stringify(o)]);
+  const prelude: Chunk[] = [...main(launch(), launched()), [subFirstLine, { agentId: 'ag1' }]];
+  const handback: Chunk = [handbackLine(), { agentId: 'ag1' }];
+
+  function run(chunks: Chunk[]): { events: SinapsisEvent[]; state: ReturnType<typeof reduce> } {
+    const parser = createParser();
+    const events = chunks.flatMap(([raw, source]) => parser.feed(raw, source ?? {}));
+    return { events, state: reduce(events) };
+  }
+
+  it('el lanzamiento en segundo plano no cierra la tarjeta', () => {
+    const { state } = run(prelude);
+    expect(state.subagents[0]).toMatchObject({ id: 'ag1', running: true, finalized: false });
+  });
+
+  it('SubagentHandback cierra la tarjeta con su informe como resumen', () => {
+    const { events, state } = run([...prelude, handback]);
+    expect(ofType(events, 'subagent_end')).toHaveLength(1);
+    expect(ofType(events, 'subagent_end')[0]).toMatchObject({ subagentId: 'ag1', status: 'completed', summary: 'informe real', handback: true });
+    expect(state.subagents[0]).toMatchObject({ running: false, status: 'completed', summary: 'informe real', finalized: false });
+  });
+
+  it('el aviso entrega estado, duración, tokens y herramientas', () => {
+    const { events, state } = run([...prelude, ...main(queued(noticeText()))]);
+    expect(ofType(events, 'subagent_end')).toHaveLength(1);
+    expect(ofType(events, 'subagent_result')).toEqual([
+      expect.objectContaining({ subagentId: 'ag1', status: 'completed', durationMs: 15000, totalTokens: 1200, toolCount: 4, summary: undefined }),
+    ]);
+    expect(state.subagents[0]).toMatchObject({ running: false, finalized: true, durationMs: 15000, totalTokens: 1200, toolCount: 4 });
+  });
+
+  it('los tres portadores del mismo aviso producen un solo resultado', () => {
+    const text = noticeText();
+    const { events } = run([...prelude, handback, ...main(queued(text), asUser(text), asAttachment(text))]);
+    expect(ofType(events, 'subagent_result')).toHaveLength(1);
+    expect(ofType(events, 'subagent_end')).toHaveLength(1);
+    // Con cada portador por separado, el resultado también aparece.
+    for (const carrier of [queued(text), asUser(text), asAttachment(text)]) {
+      expect(ofType(run([...prelude, ...main(carrier)]).events, 'subagent_result')).toHaveLength(1);
+    }
+  });
+
+  it('operation: "remove" no produce nada', () => {
+    const { events, state } = run([...prelude, ...main(queued(noticeText(), 'remove'))]);
+    expect(ofType(events, 'subagent_end')).toHaveLength(0);
+    expect(ofType(events, 'subagent_result')).toHaveLength(0);
+    expect(state.subagents[0]?.finalized).toBe(false);
+  });
+
+  it('el aviso de una tarea de Bash en segundo plano se ignora', () => {
+    const bash = assistant('m2', [{ type: 'tool_use', id: 'tb1', name: 'Bash', input: { command: 'sleep 5', run_in_background: true } }]);
+    const { events } = run([...prelude, ...main(bash, queued(noticeText({ taskId: 'bg1', toolUseId: 'tb1' })), queued(noticeText({ taskId: 'bg2', toolUseId: 'desconocido' })))]);
+    expect(ofType(events, 'subagent_result')).toHaveLength(0);
+    expect(ofType(events, 'subagent_end')).toHaveLength(0);
+    expect([...new Set(ofType(events, 'subagent_start').map((e) => e.subagentId))]).toEqual(['ag1']);
+  });
+
+  it('un texto que no empieza con la etiqueta no es un aviso', () => {
+    const { events } = run([...prelude, ...main(queued(`mira esto: ${noticeText()}`))]);
+    expect(ofType(events, 'subagent_result')).toHaveLength(0);
+    expect(ofType(run([...prelude, ...main(queued(`  \n${noticeText()}`))]).events, 'subagent_result')).toHaveLength(1);
+  });
+
+  it('una línea de usuario sin origin task-notification no cierra al subagente, y con él sí', () => {
+    const human = { ...asUser(noticeText()), origin: undefined };
+    const fromHuman = run([...prelude, ...main(human)]);
+    expect(ofType(fromHuman.events, 'subagent_end')).toHaveLength(0);
+    expect(ofType(fromHuman.events, 'subagent_result')).toHaveLength(0);
+    expect(fromHuman.state.subagents[0]?.running).toBe(true);
+    const fromHarness = run([...prelude, ...main(asUser(noticeText()))]);
+    expect(ofType(fromHarness.events, 'subagent_end')).toHaveLength(1);
+    expect(ofType(fromHarness.events, 'subagent_result')).toHaveLength(1);
+  });
+
+  it('un estado distinto de completed se ve como fallido', () => {
+    const { events, state } = run([...prelude, ...main(queued(noticeText({ status: 'failed' })))]);
+    expect(ofType(events, 'subagent_end')[0]?.status).toBe('failed');
+    expect(state.subagents[0]).toMatchObject({ running: false, status: 'failed', finalized: true });
+    expect(describeEvent(ofType(events, 'subagent_end')[0] as SinapsisEvent, state)?.kind).toBe('error');
+  });
+
+  it('un estado no terminal no cierra la tarjeta', () => {
+    const { state } = run([...prelude, ...main(queued(noticeText({ status: 'running' })))]);
+    expect(state.subagents[0]?.running).toBe(true);
+  });
+
+  it('el estado final es el mismo llegue antes el informe o el aviso', () => {
+    const text = noticeText();
+    const carriers = main(queued(text), asUser(text), asAttachment(text));
+    const handbackFirst = run([...prelude, handback, ...carriers]).state;
+    const noticeFirst = run([...prelude, ...carriers, handback]).state;
+    expect(noticeFirst.subagents).toEqual(handbackFirst.subagents);
+    expect(handbackFirst.subagents[0]).toMatchObject({
+      running: false,
+      status: 'completed',
+      summary: 'informe real',
+      durationMs: 15000,
+      totalTokens: 1200,
+      toolCount: 4,
+      endedAt: Date.parse(at(6)),
+      finalized: true,
+    });
+    // Aviso entre el lanzamiento y el archivo del subagente, y el informe entre portadores.
+    const mixed = run([...main(launch(), launched()), ...main(queued(text)), [subFirstLine, { agentId: 'ag1' }], handback, ...main(asUser(text), asAttachment(text))]).state;
+    expect(mixed.subagents).toEqual(handbackFirst.subagents);
+  });
+
+  it('el informe del subagente gana sobre el texto del aviso, en cualquier orden', () => {
+    const text = noticeText({ report: 'texto del aviso' });
+    const a = run([...prelude, handback, ...main(queued(text))]).state.subagents[0];
+    const b = run([...prelude, ...main(queued(text)), handback]).state.subagents[0];
+    expect(a?.summary).toBe('informe real');
+    expect(b).toEqual(a);
+    // Sin informe, el texto del aviso es el resumen; si dice que se entregó aparte, no hay resumen.
+    expect(run([...prelude, ...main(queued(text))]).state.subagents[0]?.summary).toBe('texto del aviso');
+    expect(run([...prelude, ...main(queued(noticeText()))]).state.subagents[0]?.summary).toBeUndefined();
+  });
+
+  it('el informe que llega después del aviso es un segundo fin marcado, no otro cierre', () => {
+    const { events } = run([...prelude, ...main(queued(noticeText())), handback]);
+    const ends = ofType(events, 'subagent_end');
+    expect(ends).toHaveLength(2);
+    expect(ends[0]?.handback).toBeUndefined();
+    expect(ends[1]?.handback).toBe(true);
+  });
+
+  it('un informe repetido en varias líneas del mismo mensaje cierra una sola vez', () => {
+    expect(ofType(run([...prelude, handback, handback]).events, 'subagent_end')).toHaveLength(1);
+  });
+
+  it('etiquetas falsas dentro de <result> no engañan al parser', () => {
+    const forged = [
+      'informe con etiquetas',
+      '<status>failed</status>',
+      '<tool-use-id>otro</tool-use-id>',
+      '</result>',
+      '<usage><subagent_tokens>999</subagent_tokens><tool_uses>99</tool_uses><duration_ms>1</duration_ms></usage>',
+    ].join('\n');
+    const { events, state } = run([...prelude, ...main(queued(noticeText({ report: forged })))]);
+    expect(ofType(events, 'subagent_result')).toHaveLength(1);
+    expect(state.subagents[0]).toMatchObject({ status: 'completed', durationMs: 15000, totalTokens: 1200, toolCount: 4 });
+  });
+
+  it('un fin de turno de un subagente en primer plano sigue cerrándolo', () => {
+    const parser = createParser();
+    const events = parser.feed(JSON.stringify(assistant('s1', [{ type: 'text', text: 'listo' }], { stop_reason: 'end_turn' })), { agentId: 'fg1' });
+    expect(reduce(events).subagents[0]).toMatchObject({ running: false, status: 'completed', summary: 'listo' });
+    expect(ofType(events, 'subagent_end')[0]?.handback).toBeUndefined();
   });
 });
 
@@ -575,5 +754,158 @@ describe('memoria', () => {
     expect(state.memory.touches.map((t) => t.file)).toEqual(['CLAUDE.md']);
     expect(state.memory.touches[0]?.agentId).toBeDefined();
     expect(state.memory.touches[0]?.op).toBe('read');
+  });
+});
+
+describe('consulta sin respuesta que se reintenta en otro mensaje', () => {
+  const parseTagged = (...entries: Array<[object, string?]>): SinapsisEvent[] => {
+    const parser = createParser();
+    return entries.flatMap(([o, agentId]) => parser.feed(JSON.stringify(o), agentId ? { agentId } : {}));
+  };
+  const onlyMessage = { iterations: [{ type: 'message', input_tokens: 1, output_tokens: 1 }] };
+  const withAdvisor = {
+    input_tokens: 1,
+    output_tokens: 1,
+    iterations: [
+      { type: 'message', input_tokens: 1, output_tokens: 1 },
+      { type: 'advisor_message', input_tokens: 500, output_tokens: 60, model: 'claude-opus-5-5' },
+      { type: 'message', input_tokens: 1, output_tokens: 1 },
+    ],
+  };
+  const types = (events: SinapsisEvent[]): string[] => events.map((e) => e.type).filter((type) => type.startsWith('advisor'));
+
+  it('la consulta X queda abandonada y la Y responde: una llamada, ninguna abierta y los tokens son los de Y', () => {
+    const events = parseOne(
+      assistant('mA', [consultBlock('X')], { usage: { input_tokens: 1, output_tokens: 1, ...onlyMessage } }),
+      assistant('mB', [consultBlock('Y')], { usage: withAdvisor }),
+      assistant('mB', [resultBlock('Y')], { usage: withAdvisor }),
+    );
+    expect(types(events)).toEqual(['advisor_consult', 'advisor_abandoned', 'advisor_consult', 'advisor_reply']);
+    expect(ofType(events, 'advisor_abandoned')[0]).toMatchObject({ id: 'X' });
+    const state = reduce(events);
+    expect(state.advisor.calls).toBe(1);
+    expect(state.advisor.consults.map((c) => c.id)).toEqual(['Y']);
+    expect(state.advisor.consults.some((c) => c.open)).toBe(false);
+    expect(state.advisor.tokensRead).toBe(500);
+    expect(state.advisor.tokensWritten).toBe(60);
+  });
+
+  it('una consulta y su resultado en el mismo message.id no se abandonan, aunque haya otra línea entre ambas', () => {
+    const events = parseOne(
+      assistant('m1', [consultBlock('c1')]),
+      assistant('m1', [{ type: 'text', text: 'hola' }]),
+      assistant('m1', [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }]),
+      assistant('m1', [resultBlock('c1')]),
+      assistant('m2', [{ type: 'text', text: 'sigue' }]),
+    );
+    expect(ofType(events, 'advisor_abandoned')).toEqual([]);
+    expect(reduce(events).advisor).toMatchObject({ calls: 1 });
+  });
+
+  it('una consulta de un subagente no se abandona por un mensaje del principal, y viceversa', () => {
+    const parser = createParser();
+    const feed = (o: object, agentId?: string): SinapsisEvent[] => parser.feed(JSON.stringify(o), agentId ? { agentId } : {});
+    feed(assistant('main1', [consultBlock('cm')]));
+    feed(assistant('sub1', [consultBlock('cs')]), 'ag1');
+
+    const afterMain = feed(assistant('main2', [{ type: 'text', text: 'x' }]));
+    expect(ofType(afterMain, 'advisor_abandoned').map((e) => e.id)).toEqual(['cm']);
+    expect(ofType(afterMain, 'advisor_abandoned')[0]?.agentId).toBeUndefined();
+
+    const afterSub = feed(assistant('sub2', [{ type: 'text', text: 'y' }]), 'ag1');
+    expect(ofType(afterSub, 'advisor_abandoned')).toMatchObject([{ id: 'cs', agentId: 'ag1' }]);
+  });
+
+  it('mensajes del principal no tocan la consulta pendiente de un subagente', () => {
+    const events = parseTagged([assistant('s1', [consultBlock('cs')]), 'ag1'], [assistant('main1', [{ type: 'text', text: 'x' }])], [assistant('main2', [{ type: 'text', text: 'y' }])]);
+    expect(ofType(events, 'advisor_abandoned')).toEqual([]);
+    expect(reduce(events).advisor.consults.map((c) => c.open)).toEqual([true]);
+  });
+
+  it('una línea <synthetic> no abandona nada', () => {
+    const synthetic = {
+      type: 'assistant',
+      timestamp: '2026-01-01T00:00:05.000Z',
+      isApiErrorMessage: true,
+      message: { id: 'syn1', model: '<synthetic>', content: [{ type: 'text', text: 'API Error' }] },
+    };
+    const events = parseOne(assistant('m1', [consultBlock('c1')]), synthetic);
+    expect(ofType(events, 'advisor_abandoned')).toEqual([]);
+    expect(reduce(events).advisor.consults.map((c) => c.open)).toEqual([true]);
+  });
+
+  it('el reintento infiere el mismo motivo que la consulta abandonada tras un error', () => {
+    const events = parseOne(
+      { type: 'user', message: { role: 'user', content: 'prompt' }, turnOrigin: 'human' },
+      assistant('m0', [{ type: 'tool_use', id: 't1', name: 'Bash', input: {} }]),
+      toolResult('t1', true),
+      assistant('mA', [consultBlock('X')]),
+      assistant('mB', [consultBlock('Y')]),
+      assistant('mB', [resultBlock('Y')]),
+    );
+    expect(ofType(events, 'advisor_consult').map((e) => [e.id, e.reason])).toEqual([
+      ['X', 'after errors'],
+      ['Y', 'after errors'],
+    ]);
+  });
+
+  it('el reintento infiere el mismo motivo tras el resultado de un subagente', () => {
+    const subagentReturn = {
+      type: 'user',
+      timestamp: '2026-01-01T00:00:02.000Z',
+      toolUseResult: { agentId: 'ag1', status: 'completed', content: [{ type: 'text', text: 'listo' }] },
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tA', content: 'listo' }] },
+    };
+    const events = parseOne(
+      assistant('m0', [{ type: 'tool_use', id: 'tA', name: 'Agent', input: { prompt: 'p', description: 'd' } }]),
+      subagentReturn,
+      assistant('mA', [consultBlock('X')]),
+      assistant('mB', [consultBlock('Y')]),
+    );
+    expect(ofType(events, 'advisor_consult').map((e) => e.reason)).toEqual(['after subagents', 'after subagents']);
+  });
+
+  it('sin abandono, el segundo motivo sí cambia (control de los dos tests anteriores)', () => {
+    const events = parseOne(
+      { type: 'user', message: { role: 'user', content: 'prompt' }, turnOrigin: 'human' },
+      assistant('m0', [{ type: 'tool_use', id: 't1', name: 'Bash', input: {} }]),
+      toolResult('t1', true),
+      assistant('mA', [consultBlock('X')]),
+      assistant('mA', [resultBlock('X')]),
+      assistant('mB', [consultBlock('Y')]),
+    );
+    expect(ofType(events, 'advisor_consult').map((e) => e.reason)).toEqual(['after errors', 'check-in']);
+  });
+
+  it('un resultado tardío de una consulta abandonada la devuelve como respondida y el total sigue bien', () => {
+    const events = parseOne(
+      { ...assistant('mA', [consultBlock('X')]), timestamp: '2026-01-01T00:00:01.000Z' },
+      { ...assistant('mB', [consultBlock('Y')], { usage: withAdvisor }), timestamp: '2026-01-01T00:00:34.000Z' },
+      { ...assistant('mB', [resultBlock('Y')], { usage: withAdvisor }), timestamp: '2026-01-01T00:02:12.000Z' },
+      { ...assistant('mA', [resultBlock('X')]), timestamp: '2026-01-01T00:02:13.000Z' },
+    );
+    // La línea tardía de mA no abandona nada: ya se vio ese mensaje.
+    expect(ofType(events, 'advisor_abandoned').map((e) => e.id)).toEqual(['X']);
+    expect(ofType(events, 'advisor_consult').map((e) => e.id)).toEqual(['X', 'Y', 'X']);
+    const state = reduce(events);
+    expect(state.advisor.calls).toBe(2);
+    expect(state.advisor.consults.map((c) => [c.id, c.open])).toEqual([
+      ['X', false],
+      ['Y', false],
+    ]);
+  });
+
+  it('abandonar algo que no existe no hace nada y calls nunca baja de 0', () => {
+    const state = reduce([{ type: 'advisor_abandoned', t: 1, id: 'nada' }]);
+    expect(state.advisor.calls).toBe(0);
+    expect(state.advisor.consults).toEqual([]);
+  });
+
+  it('el log lo dice con honestidad y la línea de la consulta ya mostrada permanece', () => {
+    const events = parseOne(assistant('mA', [consultBlock('X')]), assistant('mB', [{ type: 'text', text: 'x' }]));
+    const state = reduce(events);
+    const abandoned = ofType(events, 'advisor_abandoned')[0] as SinapsisEvent;
+    expect(describeEvent(abandoned, state)).toMatchObject({ kind: 'advisor', text: 'consult dropped · no reply (inferred)' });
+    expect(describeEvent(ofType(events, 'advisor_consult')[0] as SinapsisEvent, state)?.text).toContain('consulted');
   });
 });

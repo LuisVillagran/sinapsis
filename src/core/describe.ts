@@ -95,6 +95,8 @@ export function describeEvent(event: SinapsisEvent, state: SessionState): LogEnt
         kind: event.isError ? 'error' : 'advisor',
         text: `${event.isError ? 'failed' : 'sealed reply'} · ${formatDuration(event.durationMs)} · ${formatTokens(event.tokensRead)} read · ${formatTokens(event.tokensWritten)} written`,
       };
+    case 'advisor_abandoned':
+      return { t, who: advisor, kind: 'advisor', text: 'consult dropped · no reply (inferred)' };
     case 'subagent_start':
       return { t, who: agentLabel(state, event.subagentId), kind: 'sub', text: 'subagent started' };
     case 'subagent_info':

@@ -129,6 +129,20 @@ interface SubagentRecord {
   started: boolean;
   /** Ya llegó alguna línea de su propio archivo. */
   fileSeen: boolean;
+  /** Ya se emitió su informe (`SubagentHandback`). */
+  handback: boolean;
+}
+
+/** Una consulta sin respuesta y lo que gastó de los hechos del turno, para devolverlo si se abandona. */
+interface PendingConsult {
+  id: string;
+  messageId: string;
+  t: number;
+  reason: ConsultReason;
+  errors: number;
+  subagentResults: number;
+  /** Turno en que se hizo: si ya empezó otro, no hay nada que devolver. */
+  turn: TurnFacts;
 }
 
 export interface Parser {
@@ -140,6 +154,21 @@ export interface Parser {
 // Un subagente que aún no termina puede devolver estos estados al lanzarse en segundo plano.
 const isTerminalStatus = (status: string): boolean => !/launch|running|started|pending/i.test(status);
 
+const HANDBACK_TOOL = 'SubagentHandback';
+const NOTIFICATION_TAG = '<task-notification>';
+/** El aviso no repite el informe cuando este ya se entregó con `SubagentHandback`: ese texto no sirve de resumen. */
+const REPORT_DELIVERED = /report was delivered to you as a message/i;
+
+const tagValue = (text: string, tag: string): string | undefined => {
+  const value = new RegExp(`<${tag}>([^<]*)</${tag}>`).exec(text)?.[1]?.trim();
+  return value || undefined;
+};
+const tagNumber = (text: string, tag: string): number | undefined => {
+  const raw = tagValue(text, tag);
+  const value = Number(raw);
+  return raw !== undefined && Number.isFinite(value) ? value : undefined;
+};
+
 export function createParser(): Parser {
   let invalidLines = 0;
   let mainStarted = false;
@@ -149,12 +178,20 @@ export function createParser(): Parser {
   const toolNames = new Map<string, string>();
   const consultTimes = new Map<string, number>();
   const advisorSeenByMessage = new Map<string, number>();
+  /** Consultas sin respuesta por fuente (`main` o el id del subagente). */
+  const pendingConsults = new Map<string, PendingConsult[]>();
+  /** Mensajes de la API ya vistos por fuente (`fuente|message.id`). */
+  const seenMessages = new Set<string>();
+  /** Consultas abandonadas: si su resultado llega tarde, la consulta vuelve a existir. */
+  const abandonedConsults = new Map<string, PendingConsult>();
   const usageSeen = new Map<string, string>();
   const turnEnded = new Set<string>();
   const launches: Launch[] = [];
   const subagents = new Map<string, SubagentRecord>();
   const info: Record<string, string | boolean | undefined> = {};
   const loadedMemory = new Set<string>();
+  /** Avisos de tarea ya procesados: el mismo texto llega por varios portadores. */
+  const notified = new Set<string>();
 
   /** El adjunto se repite durante la sesión: solo se avisa de los archivos nuevos. */
   function memoryLoads(attachment: Json, t: number): SinapsisEvent[] {
@@ -183,7 +220,7 @@ export function createParser(): Parser {
   function subagentRecord(id: string): SubagentRecord {
     let record = subagents.get(id);
     if (!record) {
-      record = { id, linked: false, ended: false, started: false, fileSeen: false };
+      record = { id, linked: false, ended: false, started: false, fileSeen: false, handback: false };
       subagents.set(id, record);
     }
     return record;
@@ -224,6 +261,27 @@ export function createParser(): Parser {
     return events;
   }
 
+  /**
+   * Si la fuente siguió con otro mensaje de la API, sus consultas sin respuesta se reintentaron o se perdieron: ya no
+   * van a recibirla. Consulta y resultado comparten `message.id`, así que las del mismo mensaje siguen abiertas.
+   */
+  function abandonStale(sourceKey: string, messageId: string, agentId: string | undefined, t: number): SinapsisEvent[] {
+    const pending = pendingConsults.get(sourceKey) ?? [];
+    const stale = pending.filter((c) => c.messageId !== messageId);
+    if (!stale.length) return [];
+    pendingConsults.set(sourceKey, pending.filter((c) => c.messageId === messageId));
+    return stale.map((c) => {
+      abandonedConsults.set(c.id, c);
+      // El reintento debe inferir el mismo motivo: se devuelve lo que la consulta gastó, salvo que ya sea otro turno.
+      if (c.turn === turn) {
+        turn.consults = Math.max(0, turn.consults - 1);
+        turn.errorsSinceConsult += c.errors;
+        turn.subagentResultsSinceConsult += c.subagentResults;
+      }
+      return { type: 'advisor_abandoned', t, id: c.id, ...(agentId ? { agentId } : {}) };
+    });
+  }
+
   function parseAssistant(line: Json, agentId: string | undefined, t: number): SinapsisEvent[] {
     const message = line.message;
     if (!isObject(message)) return [];
@@ -239,6 +297,13 @@ export function createParser(): Parser {
         events.push({ type: 'api_error', t, status: num(line.apiErrorStatus), message: text && firstLineShort(text, 120), ...(agentId ? { agentId } : {}) });
       }
       return events;
+    }
+
+    // El mensaje nuevo se procesa después: un reintento dentro de él no se cancela a sí mismo.
+    // Solo cuenta un mensaje nuevo: una línea tardía de un mensaje anterior no abandona nada.
+    if (messageId && !seenMessages.has(`${agentId ?? 'main'}|${messageId}`)) {
+      seenMessages.add(`${agentId ?? 'main'}|${messageId}`);
+      events.push(...abandonStale(agentId ?? 'main', messageId, agentId, t));
     }
 
     if (!agentId) {
@@ -277,10 +342,24 @@ export function createParser(): Parser {
           launches.push({ toolUseId: id, prompt: str(block.input.prompt), description: str(block.input.description), agentType: str(block.input.subagent_type) });
           events.push(...linkSubagents(t));
         }
+        // Un subagente en segundo plano no termina con `end_turn`: su último mensaje entrega el informe con esta herramienta.
+        if (agentId && name === HANDBACK_TOOL && isObject(block.input) && str(block.input.message) !== undefined) {
+          const record = subagentRecord(agentId);
+          if (!record.handback) {
+            record.handback = true;
+            record.ended = true;
+            events.push({ type: 'subagent_end', t, subagentId: agentId, status: 'completed', summary: str(block.input.message), handback: true });
+          }
+        }
       } else if (block.type === 'server_tool_use' && block.name === 'advisor') {
         const id = str(block.id) ?? '';
         consultTimes.set(id, t);
         const reason = inferConsultReason(turn, stopReason);
+        if (messageId) {
+          const list = pendingConsults.get(agentId ?? 'main') ?? [];
+          list.push({ id, messageId, t, reason, errors: turn.errorsSinceConsult, subagentResults: turn.subagentResultsSinceConsult, turn });
+          pendingConsults.set(agentId ?? 'main', list);
+        }
         turn.consults += 1;
         turn.errorsSinceConsult = 0;
         turn.subagentResultsSinceConsult = 0;
@@ -293,6 +372,14 @@ export function createParser(): Parser {
         const iteration = advisorIterations[seen];
         const id = str(block.tool_use_id) ?? '';
         const startedAt = consultTimes.get(id);
+        const pending = pendingConsults.get(agentId ?? 'main');
+        if (pending) pendingConsults.set(agentId ?? 'main', pending.filter((c) => c.id !== id));
+        // Un resultado tardío de una consulta ya abandonada: vuelve a existir, ahora respondida.
+        const late = abandonedConsults.get(id);
+        if (late) {
+          abandonedConsults.delete(id);
+          events.push({ type: 'advisor_consult', t: late.t, id, messageId: late.messageId, reason: late.reason, ...(agentId ? { agentId } : {}) });
+        }
         const resultType = isObject(block.content) ? str(block.content.type) : undefined;
         events.push({
           type: 'advisor_reply',
@@ -352,6 +439,10 @@ export function createParser(): Parser {
       }
     }
 
+    // Solo cuenta si el arnés lo marca: un humano podría escribir un texto que empiece igual.
+    const fromHarness = isObject(line.origin) && line.origin.kind === 'task-notification';
+    if (!agentId && fromHarness) events.push(...parseNotification(resultText(message.content), t));
+
     if (!agentId && !line.isSidechain) {
       const text = realPromptText(line, message);
       if (text) {
@@ -384,6 +475,27 @@ export function createParser(): Parser {
     }
 
     const status = str(totals?.status) ?? (block.is_error === true ? 'error' : 'completed');
+    events.push(
+      ...settleSubagent(t, subagentId, launch, status, summary, {
+        model: str(totals?.resolvedModel),
+        durationMs: num(totals?.totalDurationMs),
+        totalTokens: num(totals?.totalTokens),
+        toolCount: num(totals?.totalToolUseCount),
+      }),
+    );
+    return events;
+  }
+
+  /** Inicio, enlace, fin y totales definitivos de un subagente que el proceso principal da por terminado. */
+  function settleSubagent(
+    t: number,
+    subagentId: string,
+    launch: Launch | undefined,
+    status: string,
+    summary: string | undefined,
+    totals: Pick<Extract<SinapsisEvent, { type: 'subagent_result' }>, 'model' | 'durationMs' | 'totalTokens' | 'toolCount'>,
+  ): SinapsisEvent[] {
+    const events: SinapsisEvent[] = [];
     const record = subagentRecord(subagentId);
     if (!record.started) {
       record.started = true;
@@ -400,18 +512,41 @@ export function createParser(): Parser {
       record.ended = true;
       events.push({ type: 'subagent_end', t, subagentId, status, summary });
     }
-    events.push({
-      type: 'subagent_result',
-      t,
-      subagentId,
-      status,
-      summary,
-      model: str(totals?.resolvedModel),
-      durationMs: num(totals?.totalDurationMs),
-      totalTokens: num(totals?.totalTokens),
-      toolCount: num(totals?.totalToolUseCount),
-    });
+    events.push({ type: 'subagent_result', t, subagentId, status, summary, ...totals });
     return events;
+  }
+
+  /**
+   * Aviso `<task-notification>` que el proceso principal recibe cuando termina un subagente en segundo plano. El mismo
+   * texto llega por tres portadores (`queue-operation`, línea de usuario y adjunto `queued_command`): se procesa una vez.
+   */
+  function parseNotification(text: string | undefined, t: number): SinapsisEvent[] {
+    const body = text?.trimStart();
+    if (!body?.startsWith(NOTIFICATION_TAG)) return [];
+    // Estado e identificadores van antes de `<result>` y el uso después del último `</result>`: el informe podría
+    // traer etiquetas parecidas.
+    const resultStart = body.indexOf('<result>');
+    const resultEnd = body.lastIndexOf('</result>');
+    const head = resultStart >= 0 ? body.slice(0, resultStart) : body;
+    const tail = resultEnd >= 0 ? body.slice(resultEnd + '</result>'.length) : resultStart >= 0 ? '' : body;
+    const report = resultStart >= 0 && resultEnd > resultStart ? body.slice(resultStart + '<result>'.length, resultEnd).trim() : undefined;
+
+    const toolUseId = tagValue(head, 'tool-use-id');
+    const launch = launches.find((l) => l.toolUseId === toolUseId);
+    // Las tareas de `Bash` en segundo plano también avisan y no son subagentes.
+    if (!toolUseId || (!launch && !SUBAGENT_TOOLS.has(toolNames.get(toolUseId) ?? ''))) return [];
+    const subagentId = tagValue(head, 'task-id') ?? launch?.subagentId;
+    if (!subagentId) return [];
+    const status = tagValue(head, 'status') ?? 'completed';
+    const key = `${subagentId}|${status}|${tail.trim()}`;
+    if (notified.has(key)) return [];
+    notified.add(key);
+
+    return settleSubagent(t, subagentId, launch, status, report && !REPORT_DELIVERED.test(report) ? report : undefined, {
+      durationMs: tagNumber(tail, 'duration_ms'),
+      totalTokens: tagNumber(tail, 'subagent_tokens'),
+      toolCount: tagNumber(tail, 'tool_uses'),
+    });
   }
 
   function parseLine(line: Json, source: LineSource): SinapsisEvent[] {
@@ -462,6 +597,10 @@ export function createParser(): Parser {
         if (!agentId) events.push(...sessionInfo(t, { mainModel: model === SYNTHETIC_MODEL ? undefined : model, effort }));
         break;
       }
+      case 'queue-operation':
+        // `remove` repite el texto del aviso: solo cuenta la entrada en la cola.
+        if (!agentId && line.operation === 'enqueue') events.push(...parseNotification(str(line.content), t));
+        break;
       case 'mode':
         events.push(...sessionInfo(t, { mode: str(line.mode) }));
         break;
@@ -477,6 +616,7 @@ export function createParser(): Parser {
           events.push(...sessionInfo(t, { advisorEnabled: attachment.available === true, advisorModel: str(attachment.model) }));
         }
         if (!agentId && attachment?.type === 'instructions') events.push(...memoryLoads(attachment, t));
+        if (!agentId && attachment?.type === 'queued_command') events.push(...parseNotification(str(attachment.prompt), t));
         break;
       }
       case 'system':

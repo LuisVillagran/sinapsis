@@ -137,6 +137,7 @@ export class Director {
       for (const event of update.events) {
         const isNew = event.type === 'subagent_start' && !this.shown.subagents.some((s) => s.id === event.subagentId);
         if (event.type === 'subagent_start') this.queue.markKnown(event.subagentId);
+        if (event.type === 'subagent_end') this.queue.markEnded(event.subagentId);
         this.show(event, undefined);
         if (isNew && event.type === 'subagent_start') this.placeCard(event.subagentId, now, undefined);
       }
@@ -165,7 +166,10 @@ export class Director {
 
   private show(event: SinapsisEvent, bornAt: number | undefined): void {
     // El parser puede repetir un inicio para corregir su hora: no es otra línea de log.
-    const repeated = event.type === 'subagent_start' && this.shown.subagents.some((s) => s.id === event.subagentId);
+    // Lo mismo con el informe de un subagente que el aviso del principal ya había cerrado.
+    const repeated =
+      (event.type === 'subagent_start' && this.shown.subagents.some((s) => s.id === event.subagentId)) ||
+      (event.type === 'subagent_end' && event.handback && this.shown.subagents.some((s) => s.id === event.subagentId && !s.running));
     applyEvent(this.shown, event);
     const entry = repeated ? undefined : describeEvent(event, this.shown);
     if (entry) {

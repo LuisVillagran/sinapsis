@@ -117,6 +117,42 @@ describe('director', () => {
   });
 });
 
+describe('subagente en segundo plano que termina por dos archivos', () => {
+  const events = (noticeFirst: boolean): SinapsisEvent[] => {
+    const start: SinapsisEvent = { type: 'subagent_start', t: 1000, subagentId: 'bg' };
+    const info: SinapsisEvent = { type: 'subagent_info', t: 1000, subagentId: 'bg', description: 'tarea', agentType: 'builder' };
+    const noticeEnd: SinapsisEvent = { type: 'subagent_end', t: 9000, subagentId: 'bg', status: 'completed' };
+    const result: SinapsisEvent = { type: 'subagent_result', t: 9000, subagentId: 'bg', status: 'completed', durationMs: 8000, totalTokens: 50, toolCount: 3 };
+    const handback: SinapsisEvent = { type: 'subagent_end', t: 8000, subagentId: 'bg', status: 'completed', summary: 'informe real', handback: true };
+    return noticeFirst ? [start, info, noticeEnd, result, handback] : [start, info, handback, result];
+  };
+
+  for (const noticeFirst of [true, false]) {
+    it(`${noticeFirst ? 'aviso' : 'informe'} primero: un solo fin en el log y el mismo estado final`, () => {
+      const director = new Director();
+      let now = 0;
+      director.ingest({ kind: 'events', events: events(noticeFirst), historical: false }, now);
+      for (let guard = 0; guard < 10_000 && !director.settled; guard += 1) {
+        director.update(now);
+        now += 16;
+      }
+      expect(director.settled).toBe(true);
+      expect(director.shown).toEqual(director.truth);
+      expect(director.shown.subagents[0]).toMatchObject({ running: false, summary: 'informe real', durationMs: 8000, toolCount: 3, finalized: true });
+      expect(director.view(now).log.filter((entry) => entry.text === 'summary sent back to lead')).toHaveLength(1);
+    });
+  }
+
+  it('el estado visible no depende del orden', () => {
+    const final = (noticeFirst: boolean): unknown => {
+      const director = new Director();
+      director.ingest({ kind: 'events', events: events(noticeFirst), historical: true }, 0);
+      return director.shown.subagents;
+    };
+    expect(final(true)).toEqual(final(false));
+  });
+});
+
 describe('sesión real con un error a propósito', () => {
   const MAIN = join(FIXTURES, 'sesion-haiku-con-error.jsonl');
 
@@ -279,5 +315,63 @@ describe('restauración de la terminal', () => {
     await app.done;
     expect(text()).toContain('Agranda la ventana'[0]);
     expect(text()).toContain('60x20'[0]);
+  });
+});
+
+describe('consulta abandonada en el director', () => {
+  const consult: SinapsisEvent = { type: 'advisor_consult', t: 1, id: 'x', reason: 'check-in' };
+  const abandoned: SinapsisEvent = { type: 'advisor_abandoned', t: 3, id: 'x' };
+  const retry: SinapsisEvent = { type: 'advisor_consult', t: 4, id: 'y', reason: 'check-in' };
+  const reply: SinapsisEvent = { type: 'advisor_reply', t: 5, id: 'y', durationMs: 20_000, tokensRead: 100, tokensWritten: 10, isError: false };
+  const events = [consult, abandoned, retry, reply];
+
+  function play(director: Director, until: number): void {
+    for (let now = 0; now <= until; now += 16) director.update(now);
+  }
+
+  it('el evento no se pierde ni bloquea: al vaciarse la cola, lo visible coincide con lo real', () => {
+    const director = new Director();
+    director.ingest({ kind: 'events', events, historical: false }, 0);
+    play(director, 20_000);
+    expect(director.settled).toBe(true);
+    expect(director.shown).toEqual(director.truth);
+    expect(director.shown).toEqual(reduce(events));
+    expect(director.shown.advisor.calls).toBe(1);
+    expect(director.shown.advisor.consults.map((c) => c.id)).toEqual(['y']);
+    expect(director.shown.advisor.consults.some((c) => c.open)).toBe(false);
+  });
+
+  it('con la consulta aún en la cola, no se anima ni deja el advisor en replaying', () => {
+    const director = new Director();
+    director.ingest({ kind: 'events', events: [consult, abandoned], historical: false }, 0);
+    director.update(0);
+    expect(director.settled).toBe(true);
+    expect(director.shown.advisor.consults).toEqual([]);
+    expect(director.shown.advisor.calls).toBe(0);
+    expect(director.view(0).anim?.advisorPulse).toBeUndefined();
+  });
+
+  it('con la consulta ya en curso, termina de forma normal y queda cerrada', () => {
+    const director = new Director();
+    director.ingest({ kind: 'events', events: [consult], historical: false }, 0);
+    director.update(0);
+    expect(director.shown.advisor.consults[0]?.open).toBe(true);
+    director.ingest({ kind: 'events', events: [abandoned], historical: false }, 100);
+    director.update(500);
+    expect(director.shown.advisor.consults.length).toBe(1);
+    director.update(1100);
+    expect(director.shown.advisor.consults).toEqual([]);
+    expect(director.settled).toBe(true);
+    expect(director.shown).toEqual(director.truth);
+  });
+
+  it('en el historial se aplica de inmediato y el log conserva la consulta y avisa del reintento', () => {
+    const director = new Director();
+    director.ingest({ kind: 'events', events, historical: true }, 0);
+    expect(director.settled).toBe(true);
+    expect(director.shown).toEqual(director.truth);
+    const texts = director.view(0).log.map((l) => l.text);
+    expect(texts.filter((t) => t.startsWith('consulted'))).toHaveLength(2);
+    expect(texts).toContain('consult dropped · no reply (inferred)');
   });
 });

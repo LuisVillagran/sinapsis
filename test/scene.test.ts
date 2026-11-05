@@ -9,7 +9,8 @@ import { theme } from '../src/scene/theme.js';
 import { encodeFrame } from '../src/tui/ansi.js';
 import { CellBuffer, charWidth, fit, toCells } from '../src/tui/buffer.js';
 import { detectColorMode, mix, rgb, to256 } from '../src/tui/color.js';
-import { createState } from '../src/core/state.js';
+import { applyEvent, createState } from '../src/core/state.js';
+import type { SceneView } from '../src/scene/view.js';
 import { MID_SESSION_MS, fixtureView, idleView } from '../tools/lib/fixture-view.js';
 
 function render(cols = FULL_COLS, rows = FULL_ROWS, view = fixtureView(MID_SESSION_MS)): CellBuffer {
@@ -49,7 +50,7 @@ describe('geometría medida sobre el buffer', () => {
   it('filas de texto', () => {
     expect(textRow(buf, 'CLAUDE CODE ADVISOR')).toBe(L.rows.header);
     expect(buf.rowText(L.rows.separator as number)).toContain('━━━━');
-    expect(textRow(buf, '· lead')).toBe(L.rows.legend);
+    expect(textRow(buf, 'lead · Haiku 5.5')).toBe(L.rows.legend);
     expect(textRow(buf, 'delegate to subagents')).toBe(L.rows.delegate);
     expect(textRow(buf, '--advisor opus')).toBe(L.rows.prompt);
     expect(textRow(buf, 'queued')).toBe(L.rows.status);
@@ -126,10 +127,12 @@ describe('contenido', () => {
     expect(view.state.memory.touches.map((t) => t.file)).toContain('CLAUDE.md');
     const buf = render(FULL_COLS, FULL_ROWS, view);
     expect(rectText(buf, L.project)).toContain('CLAUDE.md');
+    // Las tres ejecuciones del fixture son del mismo rol (`explore`): una sola fila, con el rol que tocó memoria.
+    expect(new Set(view.state.subagents.map((s) => s.agentType)).size).toBe(1);
     expect(rectText(buf, L.memory)).toContain('recall');
-    expect(rectText(buf, L.memory)).toContain('no memory');
+    expect(rectText(buf, L.memory)).not.toContain('no memory');
     expect(rectText(buf, L.memory)).toContain('real tool calls');
-    expect(rectText(buf, L.memory)).toContain('1 / 3');
+    expect(rectText(buf, L.memory)).toContain('1 / 1');
   });
 
   it('los patrones de herramientas se muestran literales', () => {
@@ -445,5 +448,158 @@ describe('color y texto', () => {
     expect(describeEvent({ type: 'message_usage', t: 1, messageId: 'm', input: 0, output: 0, cacheRead: 0, cacheCreation: 0, hasAdvisor: false }, state)).toBeUndefined();
     expect(describeEvent({ type: 'tool_result', t: 1, id: 'x', isError: true }, state)?.kind).toBe('error');
     expect(describeEvent({ type: 'tool_result', t: 1, id: 'x', isError: false }, state)).toBeUndefined();
+  });
+});
+
+describe('AGENT MEMORY por rol y rótulos de rol', () => {
+  /** Sesión sintética: cada ejecución es `[agentType, ¿toca memoria?, ¿sigue corriendo?]`. */
+  function roleView(runs: Array<[string | undefined, boolean, boolean]>, extra: Partial<SceneView> = {}): SceneView {
+    const state = createState();
+    applyEvent(state, { type: 'session_info', t: 1, mainModel: 'claude-opus-5-5', advisorModel: 'claude-opus-5-5', cwd: '/p' });
+    applyEvent(state, { type: 'user_prompt', t: 2, text: 'trabaja' });
+    runs.forEach(([agentType, touches, running], i) => {
+      const id = `ag${i}`;
+      const t = 1000 * (i + 1);
+      applyEvent(state, { type: 'subagent_start', t, subagentId: id, model: 'claude-sonnet-5-5' });
+      applyEvent(state, { type: 'subagent_info', t, subagentId: id, description: `tarea ${i}`, ...(agentType ? { agentType } : {}) });
+      if (touches) applyEvent(state, { type: 'tool_call', t: t + 10, id: `m${i}`, name: 'Read', agentId: id, memory: { file: 'CLAUDE.md', scope: 'project', op: 'read' } });
+      if (!running) applyEvent(state, { type: 'subagent_end', t: t + 500, subagentId: id, status: 'completed' });
+    });
+    return { state, log: [], now: 1100, queue: { pending: [] }, connected: true, ...extra };
+  }
+
+  const memoryText = (view: SceneView, cols = FULL_COLS, rows = FULL_ROWS): string => {
+    const layout = layoutFor(cols, rows) as SceneLayout;
+    const buf = render(cols, rows, view);
+    return Array.from({ length: layout.memory.h }, (_, i) => buf.rowText(layout.memory.y + layout.originY + i, layout.memory.x + layout.originX, layout.memory.x + layout.originX + layout.memory.w)).join('\n');
+  };
+  const rowsNamed = (text: string, name: string): number => text.split('\n').filter((line) => line.includes(`│ ${name} `)).length;
+
+  it('siete ejecuciones de tres roles que tocaron memoria: roles 3 / 3 y una fila por rol', () => {
+    const runs: Array<[string, boolean, boolean]> = [
+      ['builder', true, false],
+      ['builder', true, false],
+      ['builder', false, false],
+      ['reviewer', true, false],
+      ['reviewer', true, false],
+      ['debugger', true, false],
+      ['debugger', true, false],
+    ];
+    const view = roleView(runs);
+    expect(view.state.subagents).toHaveLength(7);
+    const text = memoryText(view);
+    expect(text).toContain('3 / 3');
+    for (const role of ['builder', 'reviewer', 'debugger']) expect(rowsNamed(text, role), role).toBe(1);
+    expect(text).not.toContain('no memory');
+  });
+
+  it('un rol sin memoria cuenta en el total pero no en el numerador', () => {
+    const text = memoryText(roleView([['builder', true, false], ['builder', true, false], ['reviewer', false, false]]));
+    expect(text).toContain('1 / 2');
+    expect(text).toContain('no memory');
+  });
+
+  it('la barra suma las operaciones de todas las ejecuciones del rol', () => {
+    const view = roleView([['builder', true, false], ['builder', true, false], ['reviewer', true, false]]);
+    const lines = memoryText(view).split('\n');
+    const full = lines.find((line) => line.includes('builder')) as string;
+    const half = lines.find((line) => line.includes('reviewer')) as string;
+    expect(full).toContain('██████████');
+    expect(half).toContain('█████░░░░░');
+  });
+
+  it('un subagente sin tipo es su propio rol', () => {
+    const text = memoryText(roleView([[undefined, true, false], [undefined, true, false]]));
+    expect(text).toContain('2 / 2');
+    expect(text.split('\n').filter((line) => line.includes('tarea')).length).toBe(2);
+  });
+
+  it('con más roles que filas, primero los que corren y luego la memoria más reciente, en orden estable', () => {
+    const runs: Array<[string, boolean, boolean]> = [
+      ['alfa', true, false],
+      ['beta', true, false],
+      ['gamma', true, false],
+      ['delta', false, true],
+      ['epsilon', false, false],
+    ];
+    const text = memoryText(roleView(runs));
+    // Corre `delta`; entre los demás, las memorias más recientes son las de `gamma` y `beta`.
+    expect(rowsNamed(text, 'delta')).toBe(1);
+    expect(rowsNamed(text, 'gamma')).toBe(1);
+    expect(rowsNamed(text, 'beta')).toBe(1);
+    expect(rowsNamed(text, 'alfa')).toBe(0);
+    expect(rowsNamed(text, 'epsilon')).toBe(0);
+    expect(text).toContain('3 / 5');
+    // Las filas salen en el orden en que aparecieron los roles.
+    const order = ['beta', 'gamma', 'delta'].map((name) => text.indexOf(name));
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+  });
+
+  it('la demo no cambia: una fila por tarjeta, aunque repitan rol', () => {
+    const base = roleView([['builder', false, true], ['builder', false, true], ['builder', false, true]]);
+    const illustrative = { percents: [10, 20, 30], memory: [{ fraction: 0.7, label: 'recall' as const }, { fraction: 0.8, label: 'check' as const }, { fraction: 0.9, label: 'recall' as const }] };
+    const view: SceneView = {
+      ...base,
+      illustrativeDemo: true,
+      anim: { cards: base.state.subagents.map((s) => ({ id: s.id, grow: 1, fade: 0 })), illustrative },
+    };
+    const text = memoryText(view);
+    expect(rowsNamed(text, 'builder')).toBe(3);
+    expect(text).toContain('3 / 3');
+    expect(text).toContain('illustrative activity');
+    expect(text).toContain('check');
+  });
+
+  it('leyenda con el rol primero y línea de estado con el rol y su estado entre corchetes', () => {
+    const view = roleView([['builder', true, true]]);
+    const buf = render(FULL_COLS, FULL_ROWS, view);
+    const legend = buf.rowText(L.rows.legend);
+    for (const part of ['lead · Opus 5.5', 'build · Sonnet 5.5', 'memories', 'notes', 'advisor · Opus 5.5']) expect(legend).toContain(part);
+    const status = buf.rowText(L.rows.status);
+    for (const part of ['lead [working]', 'subagents [0/1]', 'memories [project]', 'build [building]']) expect(status).toContain(part);
+    // Con todo en reposo caben los cinco grupos en 90 columnas.
+    const idle = roleView([['builder', true, false]]);
+    idle.state.status = 'idle';
+    const idleStatus = render(FULL_COLS, FULL_ROWS, idle).rowText(L.rows.status);
+    for (const part of ['lead [idle]', 'subagents [1/1]', 'memories [project]', 'build [idle]', 'advisor [silent]']) expect(idleStatus).toContain(part);
+    // El encabezado y la tarjeta de regreso conservan el modelo.
+    expect(buf.rowText(L.rows.header)).toContain('OPUS 5.5 LEADS');
+    expect(rectText(buf, L.lead)).toContain('back to Opus 5.5 · lead');
+  });
+
+  it('back to lead: sin resumen no inventa texto, y sin subagentes cerrados queda atenuado', () => {
+    const row = L.lead.y + 2;
+    const rowAndColor = (view: SceneView): { text: string; fg: unknown } => {
+      const buf = render(FULL_COLS, FULL_ROWS, view);
+      const text = buf.rowText(row, L.lead.x + 1, L.lead.x + L.lead.w - 1);
+      const letter = text.search(/\S/);
+      return { text, fg: buf.fgAt(L.lead.x + 1 + letter, row) };
+    };
+    const closed = rowAndColor(roleView([['builder', true, false]]));
+    expect(closed.text).toContain('1 back');
+    expect(closed.text).not.toContain('integrate');
+    expect(closed.fg).toEqual(theme.text);
+    const none = rowAndColor(roleView([['builder', true, true]]));
+    expect(none.text).toContain('integrate + verify');
+    expect(none.fg).toEqual(theme.dim);
+  });
+
+  it('sin sesión activa, el corchete del lead dice idle, y al terminar, ended', () => {
+    const view = roleView([['builder', true, false]]);
+    view.state.status = 'idle';
+    expect(render(FULL_COLS, FULL_ROWS, view).rowText(L.rows.status)).toContain('lead [idle]');
+    view.state.ended = true;
+    expect(render(FULL_COLS, FULL_ROWS, view).rowText(L.rows.status)).toContain('lead [ended]');
+  });
+
+  it('la línea de estado cabe en todos los tamaños con el rol primero', () => {
+    for (const [cols, rows] of [[FULL_COLS, FULL_ROWS], [80, 30], [120, 30], [100, 35], [120, 45]] as const) {
+      const layout = layoutFor(cols, rows) as SceneLayout;
+      const buf = render(cols, rows, roleView([['builder', true, true]]));
+      const status = buf.rowText(layout.rows.status + layout.originY);
+      expect(status, `${cols}x${rows}`).toContain('lead [working]');
+      expect(status, `${cols}x${rows}`).toContain('queued');
+      expect([...status].length).toBe(cols);
+    }
   });
 });

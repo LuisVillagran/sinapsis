@@ -254,12 +254,12 @@ Medida sobre las imágenes, a 8 px por columna y 18,36 px por fila, contando des
 | Project memory | Alcance real, hitos `before work`, `repeat failure` y `before sign-off` con flechas a la sesión, a la primera tarjeta y al lead, último agente y archivo, y totales de agentes, memorias, herramientas y errores |
 | Sesión principal | Modelo, tarea (`ai-title` o último prompt), medidor de effort y actividad con spinner, o `--model` en reposo |
 | Advisor | Modelo, estado (`silent` o `replaying`), consultas y tokens leídos |
-| Agent memory | `roles` con memoria sobre el total, y una fila por agente: nombre, barra según sus operaciones y `recall`, `check` o `save`. Pie `memory · real tool calls`, o `illustrative activity` en la demo |
+| Agent memory | `roles` con memoria sobre el total, y una fila por rol: nombre, barra según sus operaciones y `recall`, `check` o `save`. Pie `memory · real tool calls`, o `illustrative activity` en la demo |
 | Tarjetas | Nombre, modelo, `read-only` si corresponde, barra con contador de herramientas, descripción y estado. **Sin porcentaje inventado:** barra indeterminada en vivo |
 | Back to lead | `back to <modelo> · lead` y resúmenes recibidos |
 | Session log | Tiempo desde el inicio, agente, evento |
 | Prompt | Comando reconstruido desde los modelos reales, con cursor parpadeante. No se presenta como literal |
-| Línea de estado | Principal, subagentes, memoria, subagente y advisor con su estado entre corchetes, y eventos en cola con cuadros de color |
+| Línea de estado | Cada rol con su estado entre corchetes (`lead`, `subagents`, `memories`, `build` y `advisor`), y eventos en cola con cuadros de color |
 
 **No copiar** valores de ejemplo de las imágenes: `~/app`, `SUBAGENT TIP`, `builder`, `Sonnet 5.5`, `integrate + verify`
 como dato, tiempos del log. Los nombres de agentes y modelos salen de cada sesión.

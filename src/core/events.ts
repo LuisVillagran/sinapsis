@@ -103,6 +103,15 @@ export interface AdvisorReply extends EventBase {
   isError: boolean;
 }
 
+/**
+ * Una consulta que nunca recibió respuesta: su misma fuente siguió con otro mensaje de la API. Se observó una vez, con
+ * un reintento en un mensaje posterior (ver docs/eventos.md).
+ */
+export interface AdvisorAbandoned extends EventBase {
+  type: 'advisor_abandoned';
+  id: string;
+}
+
 export interface AssistantText extends EventBase {
   type: 'assistant_text';
   text: string;
@@ -128,6 +137,11 @@ export interface SubagentEnd extends EventBase {
   subagentId: string;
   status: string;
   summary?: string;
+  /**
+   * El resumen es el mensaje de `SubagentHandback`, el informe real de un subagente en segundo plano. Prevalece sobre
+   * cualquier otro resumen y puede llegar después de que el subagente ya estuviera cerrado.
+   */
+  handback?: boolean;
 }
 
 /** Totales definitivos que el proceso principal recibe al volver un subagente. */
@@ -177,6 +191,7 @@ export type SinapsisEvent =
   | ToolResult
   | AdvisorConsult
   | AdvisorReply
+  | AdvisorAbandoned
   | AssistantText
   | SubagentStart
   | SubagentInfo

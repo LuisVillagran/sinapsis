@@ -114,7 +114,8 @@ Sinapsis no inventa lo que no sabe. Esto es lo que no puede mostrar:
 - **Solo caben tres tarjetas.** Con más subagentes, uno nuevo reemplaza a uno terminado o espera su turno, y la lista
   completa queda en el log.
 
-Sin observar en sesiones reales: subagentes en segundo plano o anidados, y otros formatos de respuesta del advisor.
+Sin observar en sesiones reales: subagentes anidados, y otros formatos de respuesta del advisor. Los subagentes en segundo
+plano sí se observaron.
 
 ### Verificado y sin verificar
 

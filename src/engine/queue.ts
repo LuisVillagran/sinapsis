@@ -70,7 +70,7 @@ export function loadScale(pending: number): number {
 const GROUP_FROM = 8;
 const GROUP_MAX_EVENTS = 40;
 
-function classify(event: SinapsisEvent, known: Set<string>): ItemKind {
+function classify(event: SinapsisEvent, known: Set<string>, ended: Set<string>): ItemKind {
   switch (event.type) {
     case 'tool_call':
       return event.memory ? 'memory' : 'tool';
@@ -82,11 +82,17 @@ function classify(event: SinapsisEvent, known: Set<string>): ItemKind {
       return 'advisor';
     case 'advisor_reply':
       return 'advisor-reply';
+    case 'advisor_abandoned':
+      // Retira la consulta sin animación: el estado se corrige, pero no hay viaje que mostrar.
+      return 'instant';
     case 'subagent_start':
       if (known.has(event.subagentId)) return 'instant';
       known.add(event.subagentId);
       return 'subagent-start';
     case 'subagent_end':
+      // Un segundo fin (el informe llega por otro archivo que el aviso) solo completa datos: no se anima otra vez.
+      if (ended.has(event.subagentId)) return 'instant';
+      ended.add(event.subagentId);
       return 'subagent-end';
     case 'api_error':
       return 'error';
@@ -123,6 +129,7 @@ export class AnimationQueue {
   private current: ActiveItem | undefined;
   private clockEnd: number | undefined;
   private readonly knownSubagents = new Set<string>();
+  private readonly endedSubagents = new Set<string>();
 
   get active(): ActiveItem | undefined {
     return this.current;
@@ -146,12 +153,27 @@ export class AnimationQueue {
     this.knownSubagents.add(subagentId);
   }
 
+  /** Registra un fin ya visto, para que un segundo fin del mismo subagente no se anime. */
+  markEnded(subagentId: string): void {
+    this.endedSubagents.add(subagentId);
+  }
+
   push(events: SinapsisEvent[]): void {
     for (const event of events) {
-      const kind = classify(event, this.knownSubagents);
+      const kind = classify(event, this.knownSubagents, this.endedSubagents);
+      if (event.type === 'advisor_abandoned') this.skipPendingConsult(event.id);
       if (kind === 'advisor-reply' && event.type === 'advisor_reply' && this.attachReply(event)) continue;
       this.items.push({ kind, events: [event], endEvents: [] });
     }
+  }
+
+  /**
+   * Una consulta que nunca tuvo respuesta y aún no empieza no se anima: no hay viaje de vuelta que mostrar. Sus eventos
+   * se aplican igual, en su lugar. Si ya está en curso, termina de forma normal.
+   */
+  private skipPendingConsult(id: string): void {
+    const item = this.items.find((i) => i.kind === 'advisor' && i.endEvents.length === 0 && i.events[0]?.type === 'advisor_consult' && i.events[0].id === id);
+    if (item) item.kind = 'instant';
   }
 
   /** Une la respuesta a su consulta si sigue en espera y no hay nada relevante entre ambas. */
@@ -218,5 +240,6 @@ export class AnimationQueue {
     this.current = undefined;
     this.clockEnd = undefined;
     this.knownSubagents.clear();
+    this.endedSubagents.clear();
   }
 }

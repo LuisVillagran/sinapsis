@@ -164,6 +164,8 @@ interface Internals {
   /** Herramientas abiertas del proceso principal, en orden de llamada. */
   openMain: string[];
   awaitingFollowUp?: ConsultState;
+  /** Subagentes cuyo resumen viene de `SubagentHandback`: ningún otro lo reemplaza, llegue antes o después. */
+  handbacks: Set<string>;
 }
 
 const internals = new WeakMap<SessionState, Internals>();
@@ -188,7 +190,7 @@ export function createState(): SessionState {
     errorTimes: [],
     promptTimes: [],
   };
-  internals.set(state, { usage: new Map(), calls: new Map(), openMain: [] });
+  internals.set(state, { usage: new Map(), calls: new Map(), openMain: [], handbacks: new Set() });
   return state;
 }
 
@@ -369,6 +371,14 @@ export function applyEvent(state: SessionState, event: SinapsisEvent): void {
       break;
     }
 
+    case 'advisor_abandoned': {
+      const at = state.advisor.consults.findIndex((c) => c.id === event.id);
+      if (at < 0) break;
+      state.advisor.consults.splice(at, 1);
+      state.advisor.calls = Math.max(0, state.advisor.calls - 1);
+      break;
+    }
+
     case 'assistant_text':
       if (!event.agentId && internal.awaitingFollowUp) {
         internal.awaitingFollowUp.followUp = event.text;
@@ -404,7 +414,12 @@ export function applyEvent(state: SessionState, event: SinapsisEvent): void {
       if (!sub.finalized) {
         sub.endedAt = event.t;
         sub.status = event.status;
-        sub.summary = event.summary;
+        if (!internal.handbacks.has(sub.id)) sub.summary = event.summary;
+      }
+      // El informe del subagente puede llegar con el aviso del principal ya aplicado: gana igual.
+      if (event.handback) {
+        internal.handbacks.add(sub.id);
+        if (event.summary !== undefined) sub.summary = event.summary;
       }
       break;
     }
@@ -416,7 +431,7 @@ export function applyEvent(state: SessionState, event: SinapsisEvent): void {
       sub.finalized = true;
       sub.status = event.status;
       sub.endedAt = event.t;
-      if (event.summary) sub.summary = event.summary;
+      if (event.summary && !internal.handbacks.has(sub.id)) sub.summary = event.summary;
       if (event.model) sub.model = event.model;
       if (event.durationMs !== undefined) sub.durationMs = event.durationMs;
       if (event.totalTokens !== undefined) sub.totalTokens = event.totalTokens;

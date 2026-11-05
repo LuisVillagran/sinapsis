@@ -68,6 +68,8 @@ function describeEvent(event, state) {
         kind: event.isError ? "error" : "advisor",
         text: `${event.isError ? "failed" : "sealed reply"} \xB7 ${formatDuration(event.durationMs)} \xB7 ${formatTokens(event.tokensRead)} read \xB7 ${formatTokens(event.tokensWritten)} written`
       };
+    case "advisor_abandoned":
+      return { t, who: advisor, kind: "advisor", text: "consult dropped \xB7 no reply (inferred)" };
     case "subagent_start":
       return { t, who: agentLabel(state, event.subagentId), kind: "sub", text: "subagent started" };
     case "subagent_info":
@@ -129,7 +131,7 @@ function createState() {
     errorTimes: [],
     promptTimes: []
   };
-  internals.set(state, { usage: /* @__PURE__ */ new Map(), calls: /* @__PURE__ */ new Map(), openMain: [] });
+  internals.set(state, { usage: /* @__PURE__ */ new Map(), calls: /* @__PURE__ */ new Map(), openMain: [], handbacks: /* @__PURE__ */ new Set() });
   return state;
 }
 var bySubagentStart = (a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id);
@@ -291,6 +293,13 @@ function applyEvent(state, event) {
       if (!event.agentId) internal.awaitingFollowUp = consult;
       break;
     }
+    case "advisor_abandoned": {
+      const at = state.advisor.consults.findIndex((c) => c.id === event.id);
+      if (at < 0) break;
+      state.advisor.consults.splice(at, 1);
+      state.advisor.calls = Math.max(0, state.advisor.calls - 1);
+      break;
+    }
     case "assistant_text":
       if (!event.agentId && internal.awaitingFollowUp) {
         internal.awaitingFollowUp.followUp = event.text;
@@ -323,7 +332,11 @@ function applyEvent(state, event) {
       if (!sub.finalized) {
         sub.endedAt = event.t;
         sub.status = event.status;
-        sub.summary = event.summary;
+        if (!internal.handbacks.has(sub.id)) sub.summary = event.summary;
+      }
+      if (event.handback) {
+        internal.handbacks.add(sub.id);
+        if (event.summary !== void 0) sub.summary = event.summary;
       }
       break;
     }
@@ -334,7 +347,7 @@ function applyEvent(state, event) {
       sub.finalized = true;
       sub.status = event.status;
       sub.endedAt = event.t;
-      if (event.summary) sub.summary = event.summary;
+      if (event.summary && !internal.handbacks.has(sub.id)) sub.summary = event.summary;
       if (event.model) sub.model = event.model;
       if (event.durationMs !== void 0) sub.durationMs = event.durationMs;
       if (event.totalTokens !== void 0) sub.totalTokens = event.totalTokens;
@@ -607,7 +620,7 @@ function loadScale(pending) {
 }
 var GROUP_FROM = 8;
 var GROUP_MAX_EVENTS = 40;
-function classify(event, known) {
+function classify(event, known, ended) {
   switch (event.type) {
     case "tool_call":
       return event.memory ? "memory" : "tool";
@@ -619,11 +632,15 @@ function classify(event, known) {
       return "advisor";
     case "advisor_reply":
       return "advisor-reply";
+    case "advisor_abandoned":
+      return "instant";
     case "subagent_start":
       if (known.has(event.subagentId)) return "instant";
       known.add(event.subagentId);
       return "subagent-start";
     case "subagent_end":
+      if (ended.has(event.subagentId)) return "instant";
+      ended.add(event.subagentId);
       return "subagent-end";
     case "api_error":
       return "error";
@@ -653,6 +670,7 @@ var AnimationQueue = class {
   current;
   clockEnd;
   knownSubagents = /* @__PURE__ */ new Set();
+  endedSubagents = /* @__PURE__ */ new Set();
   get active() {
     return this.current;
   }
@@ -670,12 +688,25 @@ var AnimationQueue = class {
   markKnown(subagentId) {
     this.knownSubagents.add(subagentId);
   }
+  /** Registra un fin ya visto, para que un segundo fin del mismo subagente no se anime. */
+  markEnded(subagentId) {
+    this.endedSubagents.add(subagentId);
+  }
   push(events) {
     for (const event of events) {
-      const kind = classify(event, this.knownSubagents);
+      const kind = classify(event, this.knownSubagents, this.endedSubagents);
+      if (event.type === "advisor_abandoned") this.skipPendingConsult(event.id);
       if (kind === "advisor-reply" && event.type === "advisor_reply" && this.attachReply(event)) continue;
       this.items.push({ kind, events: [event], endEvents: [] });
     }
+  }
+  /**
+   * Una consulta que nunca tuvo respuesta y aún no empieza no se anima: no hay viaje de vuelta que mostrar. Sus eventos
+   * se aplican igual, en su lugar. Si ya está en curso, termina de forma normal.
+   */
+  skipPendingConsult(id) {
+    const item = this.items.find((i) => i.kind === "advisor" && i.endEvents.length === 0 && i.events[0]?.type === "advisor_consult" && i.events[0].id === id);
+    if (item) item.kind = "instant";
   }
   /** Une la respuesta a su consulta si sigue en espera y no hay nada relevante entre ambas. */
   attachReply(reply) {
@@ -735,6 +766,7 @@ var AnimationQueue = class {
     this.current = void 0;
     this.clockEnd = void 0;
     this.knownSubagents.clear();
+    this.endedSubagents.clear();
   }
 };
 
@@ -865,6 +897,7 @@ var Director = class {
       for (const event of update.events) {
         const isNew = event.type === "subagent_start" && !this.shown.subagents.some((s) => s.id === event.subagentId);
         if (event.type === "subagent_start") this.queue.markKnown(event.subagentId);
+        if (event.type === "subagent_end") this.queue.markEnded(event.subagentId);
         this.show(event, void 0);
         if (isNew && event.type === "subagent_start") this.placeCard(event.subagentId, now, void 0);
       }
@@ -890,7 +923,7 @@ var Director = class {
     return slot;
   }
   show(event, bornAt) {
-    const repeated = event.type === "subagent_start" && this.shown.subagents.some((s) => s.id === event.subagentId);
+    const repeated = event.type === "subagent_start" && this.shown.subagents.some((s) => s.id === event.subagentId) || event.type === "subagent_end" && event.handback && this.shown.subagents.some((s) => s.id === event.subagentId && !s.running);
     applyEvent(this.shown, event);
     const entry = repeated ? void 0 : describeEvent(event, this.shown);
     if (entry) {
@@ -1653,11 +1686,11 @@ function headerSegments(view) {
 }
 function drawLegend(buf, view, L) {
   const items = [
-    [theme.main, `${mainName(view)} \xB7 lead`],
-    [theme.sub, `${builderName(view)} \xB7 build`],
+    [theme.main, `lead \xB7 ${mainName(view)}`],
+    [theme.sub, `build \xB7 ${builderName(view)}`],
     [theme.metrics, "memories"],
     [theme.notes, "notes"],
-    [theme.advisor, `${advisorName(view)} \xB7 advisor`]
+    [theme.advisor, `advisor \xB7 ${advisorName(view)}`]
   ];
   const used = items.reduce((sum, [, label]) => sum + cellLength(label) + 2, 0);
   const gap = Math.max(1, Math.floor((L.width - used) / (items.length + 1)));
@@ -1851,7 +1884,7 @@ function drawAdvisorBox(buf, view, r) {
     centerText(buf, left, inner, r.y + 2, shortStatus, statusColor, replaying);
   }
 }
-function memoryRows(view, count) {
+function slotMemoryRows(view, count) {
   const { state } = view;
   const slots = cardSlots(view, count);
   const shown = (id) => view.anim?.numbers?.memory[id] ?? state.memory.touches.filter((t) => t.agentId === id).length;
@@ -1879,16 +1912,65 @@ function memoryRows(view, count) {
   }
   return rows;
 }
+function roleGroups(view) {
+  const { state } = view;
+  const groups = /* @__PURE__ */ new Map();
+  const byAgent = /* @__PURE__ */ new Map();
+  state.subagents.forEach((sub, order) => {
+    const key = sub.agentType ? `type:${sub.agentType}` : `id:${sub.id}`;
+    let group = groups.get(key);
+    if (!group) {
+      const name = sub.agentType || sub.description ? agentLabel(state, sub.id) : "starting\u2026";
+      group = { name, members: [], running: false, order };
+      groups.set(key, group);
+    }
+    group.members.push(sub);
+    group.running ||= sub.running;
+    byAgent.set(sub.id, group);
+  });
+  for (const touch of state.memory.touches) {
+    const group = touch.agentId ? byAgent.get(touch.agentId) : void 0;
+    if (group) group.lastTouch = touch;
+  }
+  return [...groups.values()];
+}
+function memoryRows(view, count) {
+  if (view.illustrativeDemo) return slotMemoryRows(view, count);
+  const { state } = view;
+  let groups = roleGroups(view);
+  if (groups.length > count) {
+    const priority = (g) => (g.running ? 1e15 : 0) + (g.lastTouch?.t ?? 0);
+    groups = [...groups].sort((a, b) => priority(b) - priority(a) || a.order - b.order).slice(0, count).sort((a, b) => a.order - b.order);
+  }
+  const shown = (id) => view.anim?.numbers?.memory[id] ?? state.memory.touches.filter((t) => t.agentId === id).length;
+  const total = (g) => g.members.reduce((sum, m) => sum + shown(m.id), 0);
+  const max = Math.max(1, ...groups.map(total));
+  const rows = [];
+  for (let i = 0; i < count; i += 1) {
+    const group = groups[i];
+    if (!group) {
+      rows.push({ name: "\u2014", fraction: 0, label: "", labelColor: theme.faint, barColor: theme.barGood });
+      continue;
+    }
+    const last = group.lastTouch;
+    const label = last ? memoryLabel(state, last) : "no memory";
+    const check = label === "check";
+    rows.push({ name: group.name, fraction: total(group) / max, label, labelColor: last ? check ? theme.main : theme.metrics : theme.faint, barColor: check ? theme.main : theme.barGood });
+  }
+  return rows;
+}
 function drawAgentMemory(buf, view, r) {
   const { state } = view;
   box(buf, r, { color: panelBorder(theme.metrics, view), fill: theme.panel });
   const left = r.x + 2;
   const right = r.x + r.w - 3;
   const rows = memoryRows(view, 3);
-  const withMemory = view.illustrativeDemo ? state.subagents.length : new Set(state.memory.touches.map((t) => t.agentId).filter(Boolean)).size;
+  const allRoles = view.illustrativeDemo ? void 0 : roleGroups(view);
+  const rolesTotal = allRoles ? allRoles.length : state.subagents.length;
+  const rolesWithMemory = allRoles ? allRoles.filter((g) => g.lastTouch).length : state.subagents.length;
   const roles = [
     { text: "roles  ", color: theme.dim },
-    { text: `${Math.min(withMemory, state.subagents.length)} / ${state.subagents.length}`, color: theme.metrics }
+    { text: `${rolesWithMemory} / ${rolesTotal}`, color: theme.metrics }
   ];
   const footerText = view.illustrativeDemo ? "memory \xB7 illustrative activity" : "memory \xB7 real tool calls";
   let y = r.y + 1;
@@ -2048,7 +2130,7 @@ function drawLead(buf, view, r) {
   if (r.h >= 4) {
     centerSegments(buf, left, inner, r.y + 1, title);
     const latest = done[done.length - 1];
-    const summary = latest?.summary ? `${done.length} back \xB7 ${plainText(latest.summary)}` : "integrate + verify";
+    const summary = !latest ? "integrate + verify" : latest.summary ? `${done.length} back \xB7 ${plainText(latest.summary)}` : `${done.length} back`;
     centerText(buf, left + 1, inner - 2, r.y + 2, summary, latest ? theme.text : theme.dim);
   } else {
     centerSegments(buf, left, inner, r.y + 1, [...title, { text: subagents.length ? ` \xB7 ${done.length}/${subagents.length}` : "", color: theme.dim }]);
@@ -2112,11 +2194,11 @@ function drawStatus(buf, view, y, x, width) {
   const replaying = state.advisor.consults.some((c) => c.open);
   const hasMemory = memory.touches.length > 0 || memory.loaded.length > 0 || view.illustrativeDemo;
   const groups = [
-    bracket(mainName(view), state.ended ? "ended" : isMainActive(view) ? "lead" : "idle", theme.main),
+    bracket("lead", state.ended ? "ended" : isMainActive(view) ? "working" : "idle", theme.main),
     bracket("subagents", `${subagents.length - active}/${subagents.length}`, theme.sub),
     bracket("memories", hasMemory ? memoryScopeLabel(view) : "none", theme.metrics),
-    bracket(builderName(view), active ? "building" : "idle", theme.sub),
-    bracket(advisorName(view), replaying ? "replaying" : "silent", theme.advisor)
+    bracket("build", active ? "building" : "idle", theme.sub),
+    bracket("advisor", replaying ? "replaying" : "silent", theme.advisor)
   ];
   const pending = view.queue.pending.length;
   const queued = `${pending} queued`;
@@ -2649,6 +2731,18 @@ function resultText(content) {
   return text || void 0;
 }
 var isTerminalStatus = (status) => !/launch|running|started|pending/i.test(status);
+var HANDBACK_TOOL = "SubagentHandback";
+var NOTIFICATION_TAG = "<task-notification>";
+var REPORT_DELIVERED = /report was delivered to you as a message/i;
+var tagValue = (text, tag) => {
+  const value = new RegExp(`<${tag}>([^<]*)</${tag}>`).exec(text)?.[1]?.trim();
+  return value || void 0;
+};
+var tagNumber = (text, tag) => {
+  const raw = tagValue(text, tag);
+  const value = Number(raw);
+  return raw !== void 0 && Number.isFinite(value) ? value : void 0;
+};
 function createParser() {
   let invalidLines = 0;
   let mainStarted = false;
@@ -2657,12 +2751,16 @@ function createParser() {
   const toolNames = /* @__PURE__ */ new Map();
   const consultTimes = /* @__PURE__ */ new Map();
   const advisorSeenByMessage = /* @__PURE__ */ new Map();
+  const pendingConsults = /* @__PURE__ */ new Map();
+  const seenMessages = /* @__PURE__ */ new Set();
+  const abandonedConsults = /* @__PURE__ */ new Map();
   const usageSeen = /* @__PURE__ */ new Map();
   const turnEnded = /* @__PURE__ */ new Set();
   const launches = [];
   const subagents = /* @__PURE__ */ new Map();
   const info = {};
   const loadedMemory = /* @__PURE__ */ new Set();
+  const notified = /* @__PURE__ */ new Set();
   function memoryLoads(attachment, t) {
     const files = [];
     for (const entry of blocksOf(attachment.files)) {
@@ -2687,7 +2785,7 @@ function createParser() {
   function subagentRecord(id) {
     let record = subagents.get(id);
     if (!record) {
-      record = { id, linked: false, ended: false, started: false, fileSeen: false };
+      record = { id, linked: false, ended: false, started: false, fileSeen: false, handback: false };
       subagents.set(id, record);
     }
     return record;
@@ -2721,6 +2819,21 @@ function createParser() {
     }
     return events;
   }
+  function abandonStale(sourceKey, messageId, agentId, t) {
+    const pending = pendingConsults.get(sourceKey) ?? [];
+    const stale = pending.filter((c) => c.messageId !== messageId);
+    if (!stale.length) return [];
+    pendingConsults.set(sourceKey, pending.filter((c) => c.messageId === messageId));
+    return stale.map((c) => {
+      abandonedConsults.set(c.id, c);
+      if (c.turn === turn) {
+        turn.consults = Math.max(0, turn.consults - 1);
+        turn.errorsSinceConsult += c.errors;
+        turn.subagentResultsSinceConsult += c.subagentResults;
+      }
+      return { type: "advisor_abandoned", t, id: c.id, ...agentId ? { agentId } : {} };
+    });
+  }
   function parseAssistant(line, agentId, t) {
     const message = line.message;
     if (!isObject(message)) return [];
@@ -2734,6 +2847,10 @@ function createParser() {
         events.push({ type: "api_error", t, status: num(line.apiErrorStatus), message: text && firstLineShort(text, 120), ...agentId ? { agentId } : {} });
       }
       return events;
+    }
+    if (messageId && !seenMessages.has(`${agentId ?? "main"}|${messageId}`)) {
+      seenMessages.add(`${agentId ?? "main"}|${messageId}`);
+      events.push(...abandonStale(agentId ?? "main", messageId, agentId, t));
     }
     if (!agentId) {
       events.push(...sessionInfo(t, { mainModel: model, advisorModel: str(line.advisorModel), effort: str(line.effort), cwd: str(line.cwd), version: str(line.version) }));
@@ -2769,10 +2886,23 @@ function createParser() {
           launches.push({ toolUseId: id, prompt: str(block.input.prompt), description: str(block.input.description), agentType: str(block.input.subagent_type) });
           events.push(...linkSubagents(t));
         }
+        if (agentId && name === HANDBACK_TOOL && isObject(block.input) && str(block.input.message) !== void 0) {
+          const record = subagentRecord(agentId);
+          if (!record.handback) {
+            record.handback = true;
+            record.ended = true;
+            events.push({ type: "subagent_end", t, subagentId: agentId, status: "completed", summary: str(block.input.message), handback: true });
+          }
+        }
       } else if (block.type === "server_tool_use" && block.name === "advisor") {
         const id = str(block.id) ?? "";
         consultTimes.set(id, t);
         const reason = inferConsultReason(turn, stopReason);
+        if (messageId) {
+          const list = pendingConsults.get(agentId ?? "main") ?? [];
+          list.push({ id, messageId, t, reason, errors: turn.errorsSinceConsult, subagentResults: turn.subagentResultsSinceConsult, turn });
+          pendingConsults.set(agentId ?? "main", list);
+        }
         turn.consults += 1;
         turn.errorsSinceConsult = 0;
         turn.subagentResultsSinceConsult = 0;
@@ -2784,6 +2914,13 @@ function createParser() {
         const iteration = advisorIterations[seen];
         const id = str(block.tool_use_id) ?? "";
         const startedAt = consultTimes.get(id);
+        const pending = pendingConsults.get(agentId ?? "main");
+        if (pending) pendingConsults.set(agentId ?? "main", pending.filter((c) => c.id !== id));
+        const late = abandonedConsults.get(id);
+        if (late) {
+          abandonedConsults.delete(id);
+          events.push({ type: "advisor_consult", t: late.t, id, messageId: late.messageId, reason: late.reason, ...agentId ? { agentId } : {} });
+        }
         const resultType = isObject(block.content) ? str(block.content.type) : void 0;
         events.push({
           type: "advisor_reply",
@@ -2837,6 +2974,8 @@ function createParser() {
         events.push(...parseSubagentReturn(id, block, toolUseResult, t));
       }
     }
+    const fromHarness = isObject(line.origin) && line.origin.kind === "task-notification";
+    if (!agentId && fromHarness) events.push(...parseNotification(resultText(message.content), t));
     if (!agentId && !line.isSidechain) {
       const text = realPromptText(line, message);
       if (text) {
@@ -2855,15 +2994,27 @@ function createParser() {
     const subagentId = str(totals?.agentId);
     if (!subagentId) {
       if (block.is_error === true && launch?.subagentId) {
-        const record2 = subagentRecord(launch.subagentId);
-        if (!record2.ended) {
-          record2.ended = true;
-          events.push({ type: "subagent_end", t, subagentId: record2.id, status: "error", summary });
+        const record = subagentRecord(launch.subagentId);
+        if (!record.ended) {
+          record.ended = true;
+          events.push({ type: "subagent_end", t, subagentId: record.id, status: "error", summary });
         }
       }
       return events;
     }
     const status = str(totals?.status) ?? (block.is_error === true ? "error" : "completed");
+    events.push(
+      ...settleSubagent(t, subagentId, launch, status, summary, {
+        model: str(totals?.resolvedModel),
+        durationMs: num(totals?.totalDurationMs),
+        totalTokens: num(totals?.totalTokens),
+        toolCount: num(totals?.totalToolUseCount)
+      })
+    );
+    return events;
+  }
+  function settleSubagent(t, subagentId, launch, status, summary, totals) {
+    const events = [];
     const record = subagentRecord(subagentId);
     if (!record.started) {
       record.started = true;
@@ -2878,18 +3029,31 @@ function createParser() {
       record.ended = true;
       events.push({ type: "subagent_end", t, subagentId, status, summary });
     }
-    events.push({
-      type: "subagent_result",
-      t,
-      subagentId,
-      status,
-      summary,
-      model: str(totals?.resolvedModel),
-      durationMs: num(totals?.totalDurationMs),
-      totalTokens: num(totals?.totalTokens),
-      toolCount: num(totals?.totalToolUseCount)
-    });
+    events.push({ type: "subagent_result", t, subagentId, status, summary, ...totals });
     return events;
+  }
+  function parseNotification(text, t) {
+    const body = text?.trimStart();
+    if (!body?.startsWith(NOTIFICATION_TAG)) return [];
+    const resultStart = body.indexOf("<result>");
+    const resultEnd = body.lastIndexOf("</result>");
+    const head = resultStart >= 0 ? body.slice(0, resultStart) : body;
+    const tail = resultEnd >= 0 ? body.slice(resultEnd + "</result>".length) : resultStart >= 0 ? "" : body;
+    const report = resultStart >= 0 && resultEnd > resultStart ? body.slice(resultStart + "<result>".length, resultEnd).trim() : void 0;
+    const toolUseId = tagValue(head, "tool-use-id");
+    const launch = launches.find((l) => l.toolUseId === toolUseId);
+    if (!toolUseId || !launch && !SUBAGENT_TOOLS.has(toolNames.get(toolUseId) ?? "")) return [];
+    const subagentId = tagValue(head, "task-id") ?? launch?.subagentId;
+    if (!subagentId) return [];
+    const status = tagValue(head, "status") ?? "completed";
+    const key = `${subagentId}|${status}|${tail.trim()}`;
+    if (notified.has(key)) return [];
+    notified.add(key);
+    return settleSubagent(t, subagentId, launch, status, report && !REPORT_DELIVERED.test(report) ? report : void 0, {
+      durationMs: tagNumber(tail, "duration_ms"),
+      totalTokens: tagNumber(tail, "subagent_tokens"),
+      toolCount: tagNumber(tail, "tool_uses")
+    });
   }
   function parseLine(line, source) {
     const agentId = source.agentId ?? (line.isSidechain === true ? str(line.agentId) : void 0);
@@ -2932,6 +3096,9 @@ function createParser() {
         if (!agentId) events.push(...sessionInfo(t, { mainModel: model === SYNTHETIC_MODEL ? void 0 : model, effort }));
         break;
       }
+      case "queue-operation":
+        if (!agentId && line.operation === "enqueue") events.push(...parseNotification(str(line.content), t));
+        break;
       case "mode":
         events.push(...sessionInfo(t, { mode: str(line.mode) }));
         break;
@@ -2947,6 +3114,7 @@ function createParser() {
           events.push(...sessionInfo(t, { advisorEnabled: attachment.available === true, advisorModel: str(attachment.model) }));
         }
         if (!agentId && attachment?.type === "instructions") events.push(...memoryLoads(attachment, t));
+        if (!agentId && attachment?.type === "queued_command") events.push(...parseNotification(str(attachment.prompt), t));
         break;
       }
       case "system":
