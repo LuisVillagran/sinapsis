@@ -4,9 +4,14 @@ Bitácora para retomar el trabajo solo con este archivo. Ver `CLAUDE.md` para el
 
 ## Fase actual
 
-**Fase 6 — Publicación.** Fases 0 a 5 cerradas.
+**Proyecto terminado.** Fases 0 a 6 cerradas. Repositorio público: https://github.com/LuisVillagran/sinapsis (tag `v0.1.0`).
 
 ## Hecho
+
+- **Fase 6:** README, licencia MIT, GIF de demo y revisión de privacidad del historial. Verificado: clon limpio desde
+  GitHub con `npm ci`, `npm test` y build; instalación con `npm install -g --prefix <tmp> github:LuisVillagran/sinapsis`
+  en npm 11 y npm 10; el comando instalado responde a `--version` y su `demo` llega al estado real a través de un
+  emulador, y termina restaurando la terminal. Node 20.20 comprobado sin instalarlo en el sistema, con `npx -p node@20`.
 
 - **Fase 5:** `tools/live-run.ts` lanza la TUI, luego una sesión real de `claude -p` (`--max-budget-usd 2`), y compara
   la pantalla final con un conteo independiente del transcript. Última corrida: 5 herramientas, 2 consultas, 94,3k
