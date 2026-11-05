@@ -13,13 +13,13 @@ debe ignorar lo que no conozca.
 | ¿Se sabe cuánto duró y cuántos tokens usó? | **Sí** |
 | ¿Se conoce el motivo de la consulta? | **No**: `input` viene vacío. Solo se puede inferir |
 | ¿Se puede leer el consejo? | **No**: está cifrado y no se guarda en claro |
-| ¿Se ve la consulta mientras ocurre? | **Pendiente de medir** (ver [Tiempo real](#tiempo-real)) |
+| ¿Se ve la consulta mientras ocurre? | **No**: consulta y respuesta llegan juntas al terminar (ver [Tiempo real](#tiempo-real)) |
 | ¿Cómo aparecen los subagentes? | **No observado**: no hay ningún ejemplo en disco |
 | ¿Hay datos de una sesión Haiku + advisor Opus? | **No**: falta grabarla |
 
 ### Evidencia disponible
 
-- **Consultas al advisor:** hasta ahora, solo las de esta sesión de Fase 0
+- **Consultas al advisor:** solo las dos de esta sesión de Fase 0
   (Opus 5.5 principal + Opus 5.5 advisor). Ningún transcript anterior tiene una,
   aunque el modo estaba activo.
 - **Subagentes:** cero. No hay carpetas `subagents/`, ninguna línea con
@@ -54,8 +54,8 @@ Tipos que el visor puede ignorar: `permission-mode`, `session-owner`, `atis-latc
 | `session_start` | Archivo nuevo. Su primera línea es `mode`, sin `timestamp` | Observado |
 | `tool_call` | Bloque `tool_use` (`id`, `name`, `input`) en una línea `assistant` | Observado (~6.000) |
 | `tool_result` | Bloque `tool_result` (`tool_use_id`, `content`, `is_error`) en una línea `user` | Observado (~4.600) |
-| `advisor_consult` | Bloque `server_tool_use` con `name: "advisor"` en una línea `assistant` | Observado (pocas muestras) |
-| `advisor_reply` | Bloque `advisor_tool_result` en una línea `assistant` | Observado (pocas muestras) |
+| `advisor_consult` | Bloque `server_tool_use` con `name: "advisor"` en una línea `assistant` | Observado (2 muestras), siempre a posteriori |
+| `advisor_reply` | Bloque `advisor_tool_result` en una línea `assistant` | Observado (2 muestras), siempre a posteriori |
 | `subagent_start` | Sin datos | **No observado** |
 | `subagent_end` | Sin datos | **No observado** |
 | `session_end` | `cost-state` es la última línea en 30 de 33 archivos | **Inferido**: una sesión puede reanudarse |
@@ -92,7 +92,7 @@ Los tokens están en `message.usage.iterations`:
 
 De ahí salen tres datos reales:
 
-- **Duración:** diferencia de `timestamp` entre ambos bloques (42,5 s en la muestra).
+- **Duración:** diferencia de `timestamp` entre ambos bloques (42,5 s y 171,6 s en las muestras).
 - **Tokens leídos y escritos:** iteraciones con `type: "advisor_message"`.
 - **Modelo del advisor:** el campo `model` de esa iteración.
 
@@ -142,21 +142,47 @@ se ve en un adjunto:
 Medido con un proceso que sigue el archivo cada 100 ms, comparando el momento de
 detección con el `timestamp` de cada línea:
 
-| Caso | Retraso observado |
+| Línea | Retraso observado |
 | --- | --- |
-| `tool_use` de una herramienta lenta (25 s) | 166 ms, antes de que el comando terminara |
-| `tool_use` y `tool_result` de herramientas rápidas | hasta 5,2 s, en lotes |
-| Bloques `thinking` | hasta 9,5 s |
+| `api-request` (inicio de cada petición) | 67 a 175 ms |
+| `tool_result` | 90 a 220 ms |
+| `tool_use` | Depende del mensaje: 166 ms a unos pocos segundos |
+| `thinking` de un mensaje largo | 47,5 s |
+| **`server_tool_use` del advisor** | **174,4 s** |
+| `advisor_tool_result` | 2,8 s |
 
-Conclusiones:
+### La consulta al advisor solo se ve después
 
-- Las líneas llegan **en lotes**, con momentos de detección alineados cada ~5 s. Esto
-  podría deberse a cómo Claude Code escribe o a que Windows actualiza tarde el tamaño
-  del archivo. Hay que aclararlo en la Fase 2, leyendo el archivo sin depender de `stat`.
-- Una línea aparece solo cuando termina el mensaje de la API. Eso sugiere que
-  una consulta al advisor no sería visible hasta después de responderse: la línea con
-  `timestamp` 23:58:11 ya traía tokens generados después de la respuesta.
-  **Esto falta medirlo de forma directa.**
+Medición directa de la segunda consulta:
+
+| Momento | Hora |
+| --- | --- |
+| `timestamp` de `server_tool_use` | 00:05:28,698 |
+| `timestamp` de `advisor_tool_result` | 00:08:20,336 |
+| **Ambas líneas aparecen en disco** | **00:08:23,130** |
+
+Durante esos 171,6 s no llegó ninguna línea nueva al archivo. La primera consulta
+coincide: su línea con `timestamp` 23:58:11 ya traía tokens generados después de la
+respuesta, lo que es imposible si se hubiera escrito en ese momento.
+
+La causa probable es que los bloques se escriben al terminar el mensaje de la API, y la
+consulta ocurre dentro de ese mismo mensaje porque es una herramienta de servidor.
+
+### Qué implica para el visor
+
+- **En vivo:** `api-request` avisa unos 100 ms después de que empieza cada petición.
+  Eso permite mostrar "el modelo está trabajando", pero no distingue si está
+  generando texto o consultando al advisor.
+- **A posteriori:** consulta y respuesta llegan juntas, con sus `timestamp` reales. La
+  animación de ida y vuelta se puede reproducir con la duración real, pero siempre
+  después de ocurrida.
+- **Herramientas:** una herramienta lenta sí se ve mientras corre, porque su `tool_use`
+  llega al terminar el mensaje y antes de ejecutarse el comando (166 ms en la prueba
+  de 25 s).
+- **Mensajes largos:** todos sus bloques llegan juntos, con retrasos de decenas de
+  segundos. La cola de animación debe absorber esos lotes.
+
+Los hooks quedan por probar en la Fase 2. No se sabe si ven esta herramienta de servidor.
 
 ## Elementos de la imagen frente a datos reales
 
@@ -168,15 +194,16 @@ Referencia: `referencia/diseño.png`.
 | Leyenda main / subagents / advisor | Modelos anteriores | Real, subagentes sin confirmar |
 | `jev · forks` y panel "fork layer" | No existe | **Reemplazar** por distribución de herramientas (`tool_use.name`) |
 | Caja principal: modelo y effort | `message.model`, `assistant.effort` | Real |
+| Medidor de effort `▮▮▮▮` | `assistant.effort` | Real, con niveles sin confirmar: solo se observó `high` |
 | Caja principal: tarea | `ai-title` o `last-prompt` | Real |
-| "waiting on advisor" | Bloque `server_tool_use` | Real, posiblemente con retraso |
+| "waiting on advisor" | Bloque `server_tool_use` | **Solo a posteriori**: en vivo solo se sabe "working" |
 | Línea de tiempo: motivos | No existe | **Inferir** (ver abajo) |
 | "last advice" | Cifrado | **Reemplazar** (ver abajo) |
 | calls | Bloques `server_tool_use` de advisor | Real |
 | tokens read | `advisor_message.input_tokens` | Real |
 | routine turns | Mensajes sin iteración de advisor | Real |
 | Caja model / mode | `advisorModel`, adjunto `advisor_tool` | Real |
-| Caja state | Derivado de consulta abierta o cerrada | Real, posiblemente con retraso |
+| Caja state | Derivado de consulta abierta o cerrada | **Solo a posteriori** |
 | Tarjetas de subagente | Sin datos | **No observado** |
 | Barra de avance con % | Probablemente no exista | **No inventar**: decidir al ver datos reales |
 | "files: 156", "call sites: 15" | Sin fuente conocida | **No inventar** |
@@ -184,6 +211,7 @@ Referencia: `referencia/diseño.png`.
 | Session log | `timestamp`, modelo y evento | Real |
 | Línea de prompt `claude --model…` | Los flags no se registran | **Reconstruir** desde los modelos y `cwd`, sin presentarlo como literal |
 | Barra `~/app — zsh` | `cwd` | Real, decorativa |
+| Línea inferior `# [07/07] …` y cuadros de pasos | No hay total de pasos | **Reemplazar** por último evento y eventos en cola |
 | `X: @skunzu` | Crédito del autor de la imagen | **No copiar** |
 
 ### Alternativas honestas propuestas
@@ -206,7 +234,7 @@ nombre para no presentarlo como el consejo del advisor. En la muestra, ese texto
 
 | Archivo | Contenido | Limitaciones |
 | --- | --- | --- |
-| `fixtures/sesion-opus-advisor-opus.jsonl` | Esta sesión de Fase 0, con consultas reales | Opus + Opus, sin subagentes |
+| `fixtures/sesion-opus-advisor-opus.jsonl` | Esta sesión de Fase 0, con 2 consultas reales | Opus + Opus, sin subagentes |
 
 Se generan con `scripts/sanitize-fixture.mjs`, que conserva la estructura y quita
 prompts de sistema, contenido largo, rutas, correos, identificadores de cuenta y
@@ -221,12 +249,23 @@ Grabar una sesión real con el escenario objetivo:
 claude --model haiku --advisor opus
 ```
 
-`--advisor` no aparece en `claude --help` (2.1.318), pero el CLI lo acepta. Dentro de
-la sesión, pedir una tarea que obligue a usar un subagente y a consultar al advisor.
+`--advisor` no aparece en `claude --help` (2.1.318), pero el CLI lo acepta. El prompt
+debe pedir subagentes y consultas de forma explícita, porque el modelo no suele
+usarlos por iniciativa propia:
+
+```text
+Analiza este repositorio sin modificar ningún archivo. Antes de planificar, consulta
+al advisor. Después lanza 3 subagentes en paralelo, todos de solo lectura: uno que
+describa la estructura del repositorio, otro que busque los usos de "advisor" en
+scripts/ y docs/, y otro que resuma docs/eventos.md. Reúne sus resúmenes, consulta
+al advisor otra vez antes de terminar y dame un informe de 5 líneas.
+```
+
+Al terminar, salir con `/exit` para registrar también el cierre de la sesión.
+
 Esa sesión debe confirmar:
 
 - cómo aparecen los subagentes (archivos, `isSidechain`, herramienta usada);
 - si Haiku consulta al advisor igual que Opus;
-- si hay algo parecido a un avance dentro de un subagente.
-- si los hooks de Claude Code ven las consultas al advisor. Es dudoso porque son una
-  herramienta de servidor, y no se ha probado.
+- si hay algo parecido a un avance dentro de un subagente;
+- si `cost-state` marca de verdad el cierre de la sesión.
