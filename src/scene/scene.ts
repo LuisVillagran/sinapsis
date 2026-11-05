@@ -511,6 +511,9 @@ interface RoleGroup {
 /** Alguna ejecución del rol recibió un índice de memoria con notas. */
 const isIndexed = (group: RoleGroup): boolean => group.members.some((m) => m.memoryIndexed === true);
 
+/** Se sabe si el rol tiene memoria: la usó, o el transcript dice si recibió notas. */
+const hasKnownMemory = (group: RoleGroup): boolean => Boolean(group.lastTouch) || group.members.some((m) => m.memoryIndexed !== undefined);
+
 /** Sin operaciones, distingue tener notas, no tenerlas y no poder saberlo. */
 function idleMemoryLabel(group: RoleGroup): string {
   if (isIndexed(group)) return 'indexed';
@@ -574,7 +577,8 @@ function drawAgentMemory(buf: CellBuffer, view: SceneView, r: Rect): void {
   const right = r.x + r.w - 2;
   const rows = memoryRows(view, 3);
   const allRoles = view.illustrativeDemo ? undefined : roleGroups(view);
-  const rolesTotal = allRoles ? allRoles.length : state.subagents.length;
+  // Un rol con `no data` no entra en la cuenta: sumarlo afirmaría un "sin memoria" que no se sabe.
+  const rolesTotal = allRoles ? allRoles.filter(hasKnownMemory).length : state.subagents.length;
   const rolesWithMemory = allRoles ? allRoles.filter((g) => g.lastTouch || isIndexed(g)).length : state.subagents.length;
   const rolesFull: Segment[] = [
     { text: 'roles  ', color: theme.dim },

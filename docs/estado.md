@@ -23,7 +23,7 @@ Corrida de solo lectura con `builder`, `debugger` y `reviewer` en segundo plano,
 
 **Decisiones del usuario, ya implementadas:**
 
-- **Memoria sin operaciones:** `indexed` si el subagente recibió un índice `MEMORY.md` con notas, `no memory` si no tiene y `no data` si el transcript no lo dice. Se pactó `index loaded`, pero no cabe en las 9 celdas de esa columna. El parser guarda solo sí o no. Comprobado contra una lectura independiente del prompt en los 23 subagentes reales de este proyecto, sin diferencias. `roles` cuenta `indexed` como memoria. El pie pasó a `bars · real tool calls`, porque `indexed` no es una herramienta.
+- **Memoria sin operaciones:** `indexed` si el subagente recibió un índice `MEMORY.md` con notas, `no memory` si no tiene y `no data` si el transcript no lo dice. Se pactó `index loaded`, pero no cabe en las 9 celdas de esa columna. El parser guarda solo sí o no. Comprobado contra una lectura independiente del prompt en los 23 subagentes reales de este proyecto, sin diferencias. `roles` cuenta `indexed` como memoria y deja fuera a los `no data`, porque sumarlos afirmaría un 0 que no se sabe. Si ningún rol tiene dato, dice `0 / 0`. El pie pasó a `bars · real tool calls`, porque `indexed` no es una herramienta.
 - **Barra de tarjetas:** se reinicia antes de llenarse, y llena solo significa `done`.
 
 **También corregido, sin decisión pendiente:**
@@ -38,7 +38,6 @@ Una revisión acotada de `reviewer` sobre estas correcciones (`336e292`) no enco
 
 - Nombres de rol largos en `AGENT MEMORY` (`general-…`), con 9 celdas a 90x46.
 - `memories` cuenta nombres de archivo: varios `MEMORY.md` de roles distintos suman 1. La lista tampoco dice de qué rol es cada uno, salvo en la línea de detalle.
-- `roles 0 / 1` con `no data` afirma un 0 que no se sabe. Solo pasa con un transcript sin `systemPrompt`, como un fixture sanitizado.
 - Barras de tarjetas de anchos distintos según `1 tool` o `3 tools`, `LIVE` en gris sin conexión y `elapsed` congelado entre eventos, porque es la hora del último evento y no el reloj.
 - A 120x30 o 80x30, con alias que no caben, el modelo del advisor no aparece en ninguna parte.
 

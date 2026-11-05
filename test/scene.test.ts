@@ -531,9 +531,18 @@ describe('AGENT MEMORY por rol y rótulos de rol', () => {
   });
 
   it('un rol sin memoria cuenta en el total pero no en el numerador', () => {
-    const text = memoryText(roleView([['builder', true, false], ['builder', true, false], ['reviewer', false, false]]));
+    const view = roleView([['builder', true, false], ['builder', true, false], ['reviewer', false, false]]);
+    applyEvent(view.state, { type: 'subagent_info', t: 5000, subagentId: 'ag2', memoryIndexed: false });
+    const text = memoryText(view);
     expect(text).toContain('1 / 2');
+    expect(text).toContain('no memory');
+  });
+
+  it('un rol con no data se muestra, pero queda fuera de la cuenta', () => {
+    const text = memoryText(roleView([['builder', true, false], ['reviewer', false, false]]));
+    expect(text).toContain('1 / 1');
     expect(text).toContain('no data');
+    expect(memoryText(roleView([['reviewer', false, false]]))).toContain('0 / 0');
   });
 
   it('sin operaciones, distingue índice con notas, sin notas y sin dato', () => {
@@ -545,7 +554,7 @@ describe('AGENT MEMORY por rol y rótulos de rol', () => {
     expect(lines.find((line) => line.includes('debugger'))).toContain('no memory');
     expect(lines.find((line) => line.includes('reviewer'))).toContain('no data');
     // Tener notas cuenta como memoria, sin dibujar operaciones que no ocurrieron.
-    expect(lines.join('\n')).toContain('1 / 3');
+    expect(lines.join('\n')).toContain('1 / 2');
     expect(lines.find((line) => line.includes('builder'))).not.toContain('█');
     for (const [cols, rows] of [[80, 30], [120, 30]] as const) expect(memoryText(view, cols, rows)).toContain('indexed');
   });
@@ -590,7 +599,7 @@ describe('AGENT MEMORY por rol y rótulos de rol', () => {
     expect(rowsNamed(text, 'beta')).toBe(1);
     expect(rowsNamed(text, 'alfa')).toBe(0);
     expect(rowsNamed(text, 'epsilon')).toBe(0);
-    expect(text).toContain('3 / 5');
+    expect(text).toContain('3 / 3');
     // Las filas salen en el orden en que aparecieron los roles.
     const order = ['beta', 'gamma', 'delta'].map((name) => text.indexOf(name));
     expect(order).toEqual([...order].sort((a, b) => a - b));

@@ -1977,6 +1977,7 @@ function slotMemoryRows(view, count) {
   return rows;
 }
 var isIndexed = (group) => group.members.some((m) => m.memoryIndexed === true);
+var hasKnownMemory = (group) => Boolean(group.lastTouch) || group.members.some((m) => m.memoryIndexed !== void 0);
 function idleMemoryLabel(group) {
   if (isIndexed(group)) return "indexed";
   return group.members.some((m) => m.memoryIndexed === false) ? "no memory" : "no data";
@@ -2033,7 +2034,7 @@ function drawAgentMemory(buf, view, r) {
   const right = r.x + r.w - 2;
   const rows = memoryRows(view, 3);
   const allRoles = view.illustrativeDemo ? void 0 : roleGroups(view);
-  const rolesTotal = allRoles ? allRoles.length : state.subagents.length;
+  const rolesTotal = allRoles ? allRoles.filter(hasKnownMemory).length : state.subagents.length;
   const rolesWithMemory = allRoles ? allRoles.filter((g) => g.lastTouch || isIndexed(g)).length : state.subagents.length;
   const rolesFull = [
     { text: "roles  ", color: theme.dim },
