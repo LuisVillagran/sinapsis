@@ -96,8 +96,11 @@ function classify(event: SinapsisEvent, known: Set<string>): ItemKind {
   }
 }
 
-/** Eventos que no dependen del orden frente a una respuesta del advisor. */
-const isNeutral = (item: QueueItem): boolean => item.kind === 'instant' && item.events.every((e) => e.type === 'message_usage' || e.type === 'session_info' || e.type === 'request_start');
+/**
+ * Eventos que no dependen del orden frente a una respuesta del advisor. Incluye el fin de turno: `end_turn` viene
+ * en todas las líneas del mensaje, así que aparece antes de la respuesta aunque el turno termine después de ella.
+ */
+const isNeutral = (item: QueueItem): boolean => item.events.every((e) => e.type === 'message_usage' || e.type === 'session_info' || e.type === 'request_start' || e.type === 'turn_end');
 
 const KIND_COLOR: Record<ItemKind, LogKind> = {
   instant: 'tool',

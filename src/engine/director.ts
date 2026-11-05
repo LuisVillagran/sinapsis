@@ -147,7 +147,9 @@ export class Director {
     const entry = repeated ? undefined : describeEvent(event, this.shown);
     if (entry) {
       if (bornAt !== undefined) this.lastLogBorn = bornAt;
-      this.log.push({ ...entry, bornAt });
+      // `end_turn` lleva la hora de la primera línea del mensaje, pero el turno termina después de todo lo anterior.
+      const t = event.type === 'turn_end' ? Math.max(entry.t, this.log[this.log.length - 1]?.t ?? 0) : entry.t;
+      this.log.push({ ...entry, t, bornAt });
       if (this.log.length > LOG_LIMIT) this.log.shift();
       this.last = `${entry.who} · ${entry.text}`;
     }

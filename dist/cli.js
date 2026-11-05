@@ -636,7 +636,7 @@ function classify(event, known) {
       return "instant";
   }
 }
-var isNeutral = (item) => item.kind === "instant" && item.events.every((e) => e.type === "message_usage" || e.type === "session_info" || e.type === "request_start");
+var isNeutral = (item) => item.events.every((e) => e.type === "message_usage" || e.type === "session_info" || e.type === "request_start" || e.type === "turn_end");
 var KIND_COLOR = {
   instant: "tool",
   tool: "tool",
@@ -878,7 +878,8 @@ var Director = class {
     const entry = repeated ? void 0 : describeEvent(event, this.shown);
     if (entry) {
       if (bornAt !== void 0) this.lastLogBorn = bornAt;
-      this.log.push({ ...entry, bornAt });
+      const t = event.type === "turn_end" ? Math.max(entry.t, this.log[this.log.length - 1]?.t ?? 0) : entry.t;
+      this.log.push({ ...entry, t, bornAt });
       if (this.log.length > LOG_LIMIT) this.log.shift();
       this.last = `${entry.who} \xB7 ${entry.text}`;
     }
@@ -1631,6 +1632,7 @@ function drawMetrics(buf, view, r) {
   const footer = rest.length ? `+ ${rest.map(([name, stat]) => `${name} ${stat.count}`).join(" \xB7 ")}` : state.toolErrors > 0 ? `${state.toolErrors} failed \xB7 orange = had errors` : "green = no errors \xB7 orange = had errors";
   buf.text(left, r.y + 5, fit(toCells(footer), r.w - 4), theme.dim);
 }
+var toolsLabel = (count) => `${count} ${count === 1 ? "tool" : "tools"}`;
 var GROW_SHARE = 0.6;
 var FILL_SHARE = 0.4;
 var DONE_DIM = 0.38;
@@ -1677,7 +1679,7 @@ function drawCard(buf, r, sub, index, view, card) {
   const barWidth = inner - 2;
   if (sub.running) indeterminateBar(buf, barX, r.y + 3, barWidth, view.now / 1800 + index * 0.27, theme.barSub);
   else bar(buf, barX, r.y + 3, barWidth, easeOutCubic(segment(fade, 0, FILL_SHARE)), failed ? theme.barAlert : theme.barSub);
-  const detail = sub.running ? `tools: ${sub.toolCount}${sub.currentTool ? ` \xB7 ${sub.currentTool}` : ""}` : `${sub.toolCount} tools${sub.durationMs !== void 0 ? ` \xB7 ${formatDuration(sub.durationMs)}` : ""}`;
+  const detail = sub.running ? `tools: ${sub.toolCount}${sub.currentTool ? ` \xB7 ${sub.currentTool}` : ""}` : `${toolsLabel(sub.toolCount)}${sub.durationMs !== void 0 ? ` \xB7 ${formatDuration(sub.durationMs)}` : ""}`;
   centerText(buf, left, inner, r.y + 4, detail, failed ? theme.alert : theme.sub);
   const status = sub.running ? ["\u25D0", "\u25D3", "\u25D1", "\u25D2"][Math.floor(view.now / 160 + index) % 4] : failed ? "\u2715" : "\u25CF";
   const tokens = !sub.running && sub.totalTokens !== void 0 ? ` ${formatTokens(sub.totalTokens)}` : "";
@@ -1889,7 +1891,7 @@ function renderReduced(buf, view) {
     centerText(buf, r.x + 1, r.w - 2, r.y + 1, plainText(subagentName(view.state, sub.id)), theme.text, true);
     if (sub.running) indeterminateBar(buf, r.x + 2, r.y + 2, r.w - 4, view.now / 1800 + index * 0.27, theme.barSub);
     else bar(buf, r.x + 2, r.y + 2, r.w - 4, 1, failed ? theme.barAlert : theme.barSub);
-    centerText(buf, r.x + 1, r.w - 2, r.y + 3, sub.running ? `tools: ${sub.toolCount}` : `${sub.toolCount} tools \xB7 ${formatDuration(sub.durationMs)}`, failed ? theme.alert : theme.sub);
+    centerText(buf, r.x + 1, r.w - 2, r.y + 3, sub.running ? `tools: ${sub.toolCount}` : `${toolsLabel(sub.toolCount)}${sub.durationMs !== void 0 ? ` \xB7 ${formatDuration(sub.durationMs)}` : ""}`, failed ? theme.alert : theme.sub);
   }
   const toolsY = 11;
   const sorted = Object.entries(view.state.tools).sort((a, b) => b[1].count - a[1].count);

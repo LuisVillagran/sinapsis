@@ -247,6 +247,14 @@ describe('cola', () => {
       expect(drain(queue).events).toEqual(events);
     });
 
+    it('un fin de turno del mismo mensaje no separa la consulta de su respuesta (caso de una sesión real)', () => {
+      const queue = new AnimationQueue();
+      queue.push([consult('c'), { type: 'turn_end', t: 1, messageId: 'm' }, reply('c', 13_000)]);
+      const out = drain(queue);
+      expect(out.started.map((s) => s.kind)).toEqual(['advisor', 'note']);
+      expect(out.events.map((e) => e.type)).toEqual(['advisor_consult', 'advisor_reply', 'turn_end']);
+    });
+
     it('la respuesta sigue a la consulta correcta', () => {
       const queue = new AnimationQueue();
       queue.push([consult('a'), reply('b', 1000)]);

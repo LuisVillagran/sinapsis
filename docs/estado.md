@@ -4,9 +4,19 @@ Bitácora para retomar el trabajo solo con este archivo. Ver `CLAUDE.md` para el
 
 ## Fase actual
 
-**Fase 5 — Integración en vivo.** Fases 0 a 4 cerradas.
+**Fase 6 — Publicación.** Fases 0 a 5 cerradas.
 
 ## Hecho
+
+- **Fase 5:** `tools/live-run.ts` lanza la TUI, luego una sesión real de `claude -p` (`--max-budget-usd 2`), y compara
+  la pantalla final con un conteo independiente del transcript. Última corrida: 5 herramientas, 2 consultas, 94,3k
+  tokens leídos, 1 error marcado, salida con código 0 y terminal restaurada. Capturas `docs/capturas/vivo-*.png`.
+  Se usaron tres sesiones reales de 2 USD de tope: la primera, de 0,59 USD, para la Fase 0, y dos de 0,63 y 0,45 USD en
+  esta fase. Encontró y corrigió: el proceso no terminaba con stdin en pausa; el fin de turno separaba la consulta
+  de su respuesta; y un error de la propia herramienta de medición, que contaba líneas `api-request-blob`.
+
+  **Sin verificar:** una ventana real de terminal. Claude no puede verla en este equipo, y todo se comprobó con
+  xterm.js. En Windows, además, no se probó la señal `SIGTERM`, porque ahí `kill()` no ejecuta manejadores.
 
 - **Fase 4:** las nueve animaciones, cola, director y bucle real. Tiras de frames con reloj falso en
   `docs/capturas/anim-*.png`. El director mantiene `truth` y `shown`; un test comprueba que al vaciarse la cola

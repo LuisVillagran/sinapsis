@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { describe, expect, it } from 'vitest';
 import { runApp } from '../src/app.js';
@@ -8,7 +9,7 @@ import { reduce } from '../src/core/state.js';
 import { Director } from '../src/engine/director.js';
 import { createReplay, loadTranscript } from '../src/sources/replay.js';
 import { RESTORE_SEQUENCE, TerminalSession } from '../src/tui/terminal.js';
-import { HAIKU_MAIN, OPUS_MAIN, haikuLines, readLines } from './helpers.js';
+import { FIXTURES, HAIKU_MAIN, OPUS_MAIN, haikuLines, readLines } from './helpers.js';
 
 function directEvents(): SinapsisEvent[] {
   const parser = createParser();
@@ -113,6 +114,33 @@ describe('director', () => {
     }).length;
     expect(director.view(0).log).toHaveLength(expected);
     expect(director.view(0).log.filter((entry) => entry.text === 'subagent started')).toHaveLength(3);
+  });
+});
+
+describe('sesión real con un error a propósito', () => {
+  const MAIN = join(FIXTURES, 'sesion-haiku-con-error.jsonl');
+
+  it('llega al mismo estado que el reductor y marca el error', () => {
+    const { director } = playToEnd(MAIN);
+    expect(director.shown).toEqual(director.truth);
+    expect(director.shown.toolErrors).toBe(1);
+    expect(director.shown.tools.Read?.errors).toBe(1);
+    expect(director.shown.subagents).toHaveLength(2);
+    expect(director.shown.advisor.calls).toBe(2);
+  });
+
+  it('en el log, el fin de turno va después de la respuesta del advisor, y con una hora coherente', () => {
+    const { director } = playToEnd(MAIN);
+    const log = director.view(0).log;
+    const finished = log.findIndex((entry) => entry.text === 'turn finished');
+    const lastReply = log.map((entry) => entry.text.startsWith('sealed reply')).lastIndexOf(true);
+    expect(finished).toBeGreaterThan(lastReply);
+    expect(log[finished]?.t).toBeGreaterThanOrEqual(log[lastReply]?.t ?? 0);
+  });
+
+  it('la consulta tras el error se rotula como tal', () => {
+    const { director } = playToEnd(MAIN);
+    expect(director.shown.advisor.consults.map((c) => c.reason)).toEqual(['before a plan', 'after errors']);
   });
 });
 
