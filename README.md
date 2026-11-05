@@ -108,10 +108,10 @@ Usar Sinapsis pide Node 20. Desarrollarlo pide Node 22.18 o superior, por `tsup`
 ```bash
 npm install
 npm test
-npm run build
+npm run bundle
 ```
 
-`dist/` está en el repositorio porque una instalación global desde git no puede compilar: `npm run build` debe
+`dist/` está en el repositorio porque una instalación global desde git no puede compilar: `npm run bundle` debe
 ejecutarse antes de cada commit que toque `src/`, y un test falla si se olvida.
 
 | Herramienta | Uso |

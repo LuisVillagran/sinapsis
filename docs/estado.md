@@ -94,9 +94,11 @@ Bitácora para retomar el trabajo solo con este archivo. Ver `CLAUDE.md` para el
 - **`dist/` versionado y sin `prepare` (desviación de `CLAUDE.md`, a revisar):** con `prepare`, `npm install -g`
   desde git falla: el npm interno que prepara la dependencia hereda el modo global y no instala `tsup`, y npm 11
   además bloquea esos scripts en instalaciones globales (`allow-scripts`). `test/dist.test.ts` falla si `dist/`
-  queda atrás: hay que ejecutar `npm run build` antes de cada commit que toque `src/`.
-  **Riesgo abierto:** instalar desde un tarball funciona (`--version` y `demo` verificados), pero `git+file://`
-  deja la carpeta vacía en este equipo. La prueba definitiva con `github:` real es de la Fase 6.
+  queda atrás: hay que ejecutar `npm run bundle` antes de cada commit que toque `src/`.
+  **También sin un script `build`:** npm trata `build`, `prepare`, `prepack` y los de instalación como señal de que una
+  dependencia de git necesita preparación. Con `build`, `npm install -g github:...` terminaba sin error, pero dejaba
+  la carpeta sin `dist/` ni `package.json`, tanto en npm 11 como en npm 10. Por eso el script se llama `bundle`, y
+  `test/dist.test.ts` falla si vuelve alguno de esos nombres.
 - **Animaciones 2 y 3 en un solo commit:** la consulta al advisor es el primer uso de los paquetes y comparten el
   mismo código en el director. El resto va con un commit por animación.
 - **Ritmo del bucle en Windows:** el temporizador avanza a saltos de unos 15,6 ms, así que `setTimeout(16,7)` daba
@@ -137,6 +139,8 @@ Bitácora para retomar el trabajo solo con este archivo. Ver `CLAUDE.md` para el
 - Fase 5, comprobación: `FALLA total de herramientas en pantalla: 10` y `FALLA consultas en pantalla: 3`. La pantalla
   estaba bien (5 y 2): la herramienta contaba también las líneas `api-request-blob`.
 - Fase 6, `tools/gif.ts`: `SyntaxError: The requested module 'gifenc' does not provide an export named 'GIFEncoder'`.
+- Fase 6, instalación real desde GitHub: `Error: Cannot find module '...\node_modules\sinapsis\dist\cli.js'`
+  (`MODULE_NOT_FOUND`), con npm terminando sin error. Era el script `build`. Ver Decisiones.
 - Durante el desarrollo, varios fallos de tests propios, citados en el momento en la salida de la sesión.
 
 ## Bloqueos
