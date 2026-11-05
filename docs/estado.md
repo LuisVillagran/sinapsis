@@ -13,6 +13,17 @@ antes de empezar la Fase B.
 
 **Corrección de lo que el usuario vio al probar (2026-11-05), en la misma rama.** Espera que lo confirme en su terminal.
 
+## Para retomar (2026-11-05)
+
+Todo lo hecho está en commits de `rediseno-referencia`, sin fusionar ni subir. Pendiente, en orden:
+
+1. El usuario prueba en su terminal, con `node dist/cli.js`, a 120x30 y a 90x46 o más. El comando `sinapsis` sigue en `v0.1.0`.
+2. Decisiones sin responder: limitar `reviewer` a cambios de código (recomendado), poner el rol primero también en las cajas, y
+   arreglar `advisor` a 90 columnas (recomendado).
+3. Fase B, sin aprobar: `SendMessage` real, dos rondas y sanitizador que conserve solo nombres de archivo.
+
+Este último registro no pasó por `reviewer`, a pedido del usuario, para ahorrar tokens.
+
 ## Costo del flujo con subagentes (2026-11-05)
 
 El usuario preguntó si usar subagentes con Opus 5.5 como principal hacía inútil el ahorro. Medido en una sesión real, a precios
