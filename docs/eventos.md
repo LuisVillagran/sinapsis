@@ -24,9 +24,9 @@ debe ignorar lo que no conozca.
 - **Consultas al advisor:** cuatro. Dos en Opus 5.5 + advisor Opus 5.5 y dos en
   Haiku 5.5 + advisor Opus 5.5. Ningún transcript anterior tiene una, aunque el modo
   estaba activo.
-- **Subagentes:** tres, todos `Explore` en primer plano y de una misma sesión
-  (`claude -p`, Claude Code 2.1.318). No se observaron subagentes en segundo plano,
-  anidados ni fallidos.
+- **Subagentes:** tres `Explore` en primer plano de una misma sesión (`claude -p`, Claude Code 2.1.318) y siete
+  en segundo plano de otra (ver [Subagentes en segundo plano](#subagentes-en-segundo-plano)). No se observaron
+  subagentes anidados ni fallidos.
 
 ## Estructura general
 
@@ -107,6 +107,33 @@ De ahí salen tres datos reales:
 - **Otras variantes de resultado:** solo se vio `advisor_redacted_result`. El parser
   debe tolerar otros `content.type`, por ejemplo errores.
 
+### Una consulta sin respuesta que se reintenta
+
+Observado **una sola vez**, en el archivo del proceso principal. La consulta normal comparte `message.id` con su
+resultado; esta vez no fue así:
+
+| Mensaje | Línea | Bloques | `usage.iterations` |
+| --- | --- | --- | --- |
+| A | `assistant`, `stop_reason: tool_use` | `server_tool_use` `advisor`, id X | solo `message`, sin `advisor_message` |
+| B (33 s después, otro `message.id`) | `assistant`, `stop_reason: tool_use` | `server_tool_use` `advisor`, id Y | `message`, `advisor_message`, `message` |
+| B (98 s después) | `assistant` | `advisor_tool_result` con `tool_use_id` Y | la misma |
+
+No hay ningún `advisor_tool_result` para X: la consulta se reintentó en otro mensaje, y los tokens del advisor son los de
+Y. El parser lo trata así, por fuente (el principal y cada subagente por separado):
+
+- Recuerda las consultas sin respuesta con su `message.id`. Cuando la misma fuente escribe una línea `assistant` real de
+  **otro** `message.id` nuevo (no `<synthetic>`), emite `advisor_abandoned` por cada consulta pendiente del mensaje
+  anterior. El mensaje nuevo se procesa después, así que un reintento dentro de él no se cancela a sí mismo.
+- El estado quita la consulta y baja `advisor.calls` en 1. El reintento infiere el mismo motivo, porque se devuelven los
+  errores y resultados de subagentes que la consulta abandonada había consumido.
+- Si el resultado de una consulta ya abandonada llegara después, la consulta vuelve a existir como respondida.
+  Esto último **no se observó**: es una defensa.
+- En el log queda la línea de la consulta ya mostrada y una nueva, `consult dropped · no reply (inferred)`.
+
+La regla es **más amplia que lo observado**: solo se vio un reintento, pero el parser abandona la consulta ante cualquier
+mensaje nuevo de la misma fuente, haya o no reintento (por ejemplo, una interrupción con Esc). Por eso el log no dice
+"reintentada" y rotula la línea como inferida.
+
 ### `advisorModel` no significa que hubo consulta
 
 Aparece en todas las líneas `assistant` con sesión normal (~9.200) aunque nunca
@@ -163,11 +190,63 @@ de la tarjeta (`description`) se obtiene emparejando el `input.prompt` del `tool
 del subagente. El enlace definitivo es `toolUseResult.agentId` con `tool_use_id`. **`.meta.json` no sirve
 en vivo**, porque solo existe al final.
 
+### Subagentes en segundo plano
+
+Observados en 7 subagentes de una sesión de Claude Code 2.1.318 (lanzados con `Agent`, en segundo plano). **No
+terminan con `stop_reason: end_turn`**, que es lo único que cierra a uno en primer plano. La forma se observó en una
+sesión real, pero **todavía no hay fixture** que la contenga: los tests usan líneas sintéticas. Hay dos señales reales:
+
+1. **`SubagentHandback`, en el archivo del subagente.** Su último mensaje de asistente es un `tool_use` con
+   `name: "SubagentHandback"`, `stop_reason: "tool_use"` e `input: { "message": "<informe>" }`, seguido de su
+   `tool_result`. El `message` es el informe real y es la señal más temprana del fin (7 de 7).
+2. **`<task-notification>`, en el proceso principal.** El `tool_result` del `Agent` solo trae el lanzamiento:
+
+   ```jsonc
+   { "isAsync": true, "status": "async_launched", "agentId": "…", "resolvedModel": "…" }
+   ```
+
+   El fin llega después como un aviso de texto, siempre con esta estructura:
+
+   ```text
+   <task-notification>
+   <task-id>…</task-id>                  Es el agentId
+   <tool-use-id>toolu_…</tool-use-id>    El tool_use del Agent (o de un Bash en segundo plano)
+   <output-file>…</output-file>
+   <status>completed</status>
+   <summary>Agent "…" finished</summary>
+   <note>…</note>                        Puede variar
+   <result>…</result>                    Con SubagentHandback: "…delivered to you as a message… not repeated here."
+   <usage><subagent_tokens>…</subagent_tokens><tool_uses>…</tool_uses><duration_ms>…</duration_ms></usage>
+   </task-notification>
+   ```
+
+   El mismo texto viaja por **tres portadores**, y un aviso aparece en varios: una línea
+   `{ "type": "queue-operation", "operation": "enqueue", "content": "<texto>" }` (la más temprana, 7 de 7), una
+   línea `user` con `origin: { "kind": "task-notification" }` (4 de 7) y un adjunto
+   `{ "type": "attachment", "attachment": { "type": "queued_command", "prompt": "<texto>" } }` (3 de 7). Las
+   líneas `queue-operation` con `operation: "remove"` repiten el texto y no cuentan.
+
+Lo que hace el parser (`src/core/parser.ts`):
+
+- `SubagentHandback` emite `subagent_end` con `summary` igual al `message` y la marca `handback`.
+- El aviso emite `subagent_end`, si faltaba, y `subagent_result` con `status`, `durationMs`, `totalTokens` y `toolCount`.
+  Solo cuenta si el texto empieza con `<task-notification>` (en la línea `user`, además, con `origin.kind` igual a
+  `task-notification`) y su `tool-use-id` es un lanzamiento de `Agent` o `Task`:
+  los `Bash` en segundo plano también avisan y se ignoran.
+- Estado e identificadores se leen antes de `<result>` y el uso después del último `</result>`, porque un informe
+  podría contener etiquetas parecidas. El texto de `<result>` solo es resumen si no dice que el informe se entregó aparte.
+- El mismo aviso por varios portadores produce un solo resultado.
+- El informe del subagente prevalece como resumen y el estado final es el mismo llegue antes el informe o el aviso.
+- Un estado distinto de `completed` se ve como fallido. Los de lanzamiento (`async_launched`, `running`…) no cierran nada.
+- Un subagente reanudado que vuelve a trabajar después de cerrarse **no se reabre**: se trata más adelante.
+- **Limitación conocida:** si un aviso con estado distinto de `completed` llega después de `SubagentHandback`, el estado
+  final queda como fallido, pero el log conserva la línea de entrega del informe.
+
 ### Avance
 
 No hay porcentaje ni total de pasos. Lo real para una tarjeta en vivo:
 
-- **Barra:** indeterminada.
+- **Barra:** una celda por herramienta, reiniciada antes de llenarse. No mide avance: llena solo significa `done`.
 - **Contador de herramientas:** sus `tool_use` llegan con 136 a 970 ms de retraso.
 - **Herramienta actual:** el último `tool_use` sin resultado.
 - **Al terminar:** duración, tokens y herramientas desde `toolUseResult`.
@@ -175,6 +254,37 @@ No hay porcentaje ni total de pasos. Lo real para una tarjeta en vivo:
 - **Resumen para "back to lead":** el texto del `tool_result` del `Agent`.
 
 Los subagentes llevan `advisorModel`, pero ninguno consultó al advisor (0 de 3). No se sabe si pueden hacerlo.
+
+## Memoria
+
+Reconocimiento del 2026-11-05 sobre 47 transcripts locales (42.862 líneas), contando solo tipos y nombres de archivo.
+
+| Señal | Fuente | Estado |
+| --- | --- | --- |
+| Archivos cargados al iniciar | Adjunto `instructions`, con `files: [{ path, type, content }]`. `CLAUDE.md` 46 veces y `MEMORY.md` 5 | **Observado**, pero el sanitizador lo borra de los fixtures. Probado con líneas de prueba |
+| Lectura de `CLAUDE.md` por el principal o un subagente | `tool_use` de `Read` o `Grep` | **Observado** (22 veces, una en un subagente y en el fixture) |
+| Escritura de `CLAUDE.md` | `tool_use` de `Edit` o `Write` | **Observado** (71 veces) |
+| Escritura de la memoria automática | `tool_use` de `Write` en `~/.claude/projects/<proyecto>/memory/` | **Observado** (6 veces) |
+| Memoria por agente | `tool_use` de `Read`, `Write`, `Edit` o `Glob` en `.claude/agent-memory/<agente>/` | **Observado** (18 veces en una sesión de 2026-11-05). Los comandos `Bash` sobre esa carpeta no se cuentan |
+| Índice de memoria de un subagente | Sección `## MEMORY.md` del adjunto `prompt_snapshot`, sin herramienta. `Your MEMORY.md is currently empty` si no hay notas, y sin la sección si el agente no tiene memoria, como `Explore` | **Observado** (22 de 22 subagentes). El sanitizador borra `systemPrompt`, así que en los fixtures no se sabe |
+
+Los subagentes tocaron archivos de memoria una sola vez en esos 47 transcripts, así que en una sesión normal el panel
+`AGENT MEMORY` estará casi siempre quieto.
+
+No se detecta: un archivo de memoria leído con un comando de `Bash`, ni la razón de una consulta.
+
+### Hitos inferidos
+
+El transcript no dice por qué se tocó la memoria. Cada operación se asigna a un hito mirando lo ocurrido antes en el
+mismo turno, y por eso el resultado no cambia con lo que llegue después ni con el orden de llegada:
+
+| Hito | Regla, en orden de prioridad | Etiqueta del agente |
+| --- | --- | --- |
+| `repeat failure` | Hubo un error de herramienta antes en el turno. Basta con uno: no se comprueba que el fallo se repita | `check`, si es una lectura |
+| `before sign-off` | Un subagente terminó antes en el turno | `recall` |
+| `before work` | Cualquier otro caso, y los archivos cargados al iniciar | `recall` |
+
+Una escritura siempre lleva la etiqueta `save`.
 
 ## Hooks
 
@@ -298,7 +408,7 @@ La sesión Haiku lo confirma con otros dos casos: las consultas de 19,4 s y 39,3
 
 ## Elementos de la imagen frente a datos reales
 
-Referencia: `referencia/diseño.png`.
+Esta tabla corresponde a la primera referencia, que ya no se usa. El diseño vigente está en la sección 6 de `CLAUDE.md`.
 
 | Elemento de la imagen | Fuente real | Estado |
 | --- | --- | --- |
@@ -317,7 +427,7 @@ Referencia: `referencia/diseño.png`.
 | Caja model / mode | `advisorModel`, adjunto `advisor_tool` | Real |
 | Caja state | Derivado de consulta abierta o cerrada | **Solo a posteriori** |
 | Tarjetas de subagente | `subagents/agent-*.jsonl`, `tool_use` de `Agent` | Real |
-| Barra de avance con % | No existe | **Reemplazar** por barra indeterminada y contador real de herramientas |
+| Barra de avance con % | No existe | **Reemplazar** por barra por conteo y contador real de herramientas |
 | "files: 156", "call sites: 15" | No existen | **Reemplazar** por `tools: N` y, al terminar, duración y tokens |
 | Caja "back to lead" | `tool_result` del `Agent` | Real |
 | Session log | `timestamp`, modelo y evento | Real |
@@ -382,7 +492,8 @@ no suele usarlos por iniciativa propia. Coste total: 0,59 USD.
 ## Sin observar todavía
 
 - Otras variantes de `advisor_tool_result`, como errores.
-- Subagentes en segundo plano (`run_in_background: true`), anidados, fallidos o con otro `agentType`.
+- Subagentes anidados, fallidos o con otro `agentType`, y un subagente en segundo plano reanudado que vuelve a trabajar
+  tras cerrarse (el aviso dice que puede notificar más de una vez).
 - Si un subagente puede consultar al advisor.
 - `cost-state` con una sesión reanudada, y `SessionEnd` con una salida interactiva (`/exit`).
 - Niveles de effort aparte de `high` y `medium`.

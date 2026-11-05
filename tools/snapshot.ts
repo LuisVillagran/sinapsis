@@ -21,8 +21,8 @@ if (!output || output.startsWith('--')) {
   process.exit(1);
 }
 
-const cols = Number(option('cols', '96'));
-const rows = Number(option('rows', '48'));
+const cols = Number(option('cols', '90'));
+const rows = Number(option('rows', '46'));
 const mode = option('mode', 'truecolor') as ColorMode;
 const scene = option('scene', 'mid');
 const lineHeight = Number(option('line-height', '1.15'));

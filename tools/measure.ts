@@ -62,7 +62,7 @@ async function measureActiveFps(): Promise<void> {
   const app = runApp({
     source: { tick: () => [], stop: async () => undefined },
     output: sink(),
-    size: () => ({ cols: 96, rows: 48 }),
+    size: () => ({ cols: 90, rows: 47 }),
     colorMode: 'truecolor',
     onFrame: () => stamps.push(performance.now()),
   });
@@ -80,7 +80,7 @@ async function measureIdle(label: string, source: EventSource, seconds: number):
   const app = runApp({
     source,
     output: sink(),
-    size: () => ({ cols: 96, rows: 48 }),
+    size: () => ({ cols: 90, rows: 47 }),
     colorMode: 'truecolor',
     onFrame: (stats) => {
       bytes += stats.bytes;
@@ -106,7 +106,7 @@ async function measureIdle(label: string, source: EventSource, seconds: number):
 
 const idleSeconds = Number(option('idle-seconds', '20'));
 await measureActiveFps();
-await measureReplay(96, 48);
+await measureReplay(90, 47);
 await measureReplay(140, 50);
 await measureReplay(80, 24);
 // Sin sesión: descubre sesiones sobre la carpeta real de transcripts, el peor caso del sondeo.

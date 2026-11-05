@@ -24,12 +24,12 @@ function option(name: string, fallback: string): string {
 const output = process.argv[2] as string;
 const speed = Number(option('speed', '3'));
 const fps = Number(option('fps', '12'));
-const COLS = 96;
-const ROWS = 48;
+const COLS = 90;
+const ROWS = 47;
 const TAIL_MS = 1500;
 const MAX_MS = 60_000;
 
-const director = new Director({ boot: true });
+const director = new Director({ boot: true, illustrative: true });
 const replay = createReplay(loadTranscript(join(import.meta.dirname, '..', 'fixtures', 'sesion-haiku-advisor-opus.jsonl')), { speed });
 const capture = await XtermCapture.open({ cols: COLS, rows: ROWS, fontSize: 13, lineHeight: 1 });
 await capture.write('\x1b[?7l');
@@ -51,7 +51,7 @@ for (let t = 0; t < MAX_MS; t += 1000 / fps) {
   previous = new CellBuffer(COLS, ROWS);
   previous.copyFrom(buffer);
   shots.push(await capture.frame());
-  if (replay.finished && director.settled && !director.isBusy(t)) doneAt ??= t;
+  if (replay.finished && director.settled && !director.isAnimating(t)) doneAt ??= t;
   if (doneAt !== undefined && t > doneAt + TAIL_MS) break;
 }
 await capture.close();

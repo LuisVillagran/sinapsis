@@ -1,33 +1,38 @@
-// Paleta muestreada de la imagen de referencia con tools/sample-colors.ts. Ver docs/colores.md.
+// Paleta muestreada de las imágenes de referencia. Ver docs/colores.md.
 
 import { rgb } from '../tui/color.js';
 
 export const theme = {
-  /** Fondo: viñeta de esquinas oscuras a un centro más claro. */
-  bgEdge: rgb('#13182d'),
-  bgCenter: rgb('#232b4e'),
-  /** Interior de los paneles, más oscuro que el fondo que los rodea. */
-  panel: rgb('#0f1225'),
-  chip: rgb('#161d32'),
-  windowBar: rgb('#0f1426'),
+  /** Fondo plano, sin viñeta: los paneles comparten el color del fondo. */
+  bg: rgb('#191e24'),
+  panel: rgb('#191e24'),
+  chip: rgb('#262c36'),
 
-  main: rgb('#7ec2ed'),
-  sub: rgb('#afd5ff'),
-  subBright: rgb('#e6ffff'),
-  advisor: rgb('#adacfa'),
-  metrics: rgb('#75c8a6'),
-  alert: rgb('#e08a4f'),
+  /** Modelo principal: sesión principal y "back to lead". */
+  main: rgb('#e38d63'),
+  /** Subagentes y sus barras. */
+  sub: rgb('#81b0f6'),
+  /** Paquetes de regreso y destellos. */
+  subBright: rgb('#f2f6ff'),
+  /** Memoria de agentes. */
+  metrics: rgb('#77ce9b'),
+  /** Memoria de proyecto. */
+  notes: rgb('#af9eec'),
+  /** El advisor no está en la referencia: lleva un tono propio para no confundirse con la memoria. */
+  advisor: rgb('#e59ad8'),
+  /** Errores: más rojo que el naranjo del modelo principal, para que se distingan. */
+  alert: rgb('#f0695a'),
+  /** Rótulos destacados como el aviso de actividad ilustrativa de la demo. */
+  caption: rgb('#e8b56e'),
 
-  text: rgb('#eaefff'),
-  dim: rgb('#7c88a8'),
-  faint: rgb('#4c5164'),
+  text: rgb('#dfe3ea'),
+  dim: rgb('#8b909b'),
+  faint: rgb('#50555f'),
+  /** Conectores en reposo y borde del log. */
+  line: rgb('#4a505c'),
 
-  barTrack: rgb('#253352'),
-  barGood: rgb('#34977a'),
-  barAlert: rgb('#bb763d'),
-  barSub: rgb('#5797c8'),
-
-  dotRed: rgb('#ff5f57'),
-  dotYellow: rgb('#febc2e'),
-  dotGreen: rgb('#28c840'),
+  barTrack: rgb('#3a404b'),
+  barGood: rgb('#76d099'),
+  barAlert: rgb('#c9574b'),
+  barSub: rgb('#8cc0ff'),
 };

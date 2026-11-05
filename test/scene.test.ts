@@ -3,12 +3,14 @@ import { describe, expect, it } from 'vitest';
 import { describeEvent, displayModel, formatDuration, formatTokens, modelAlias, plainText } from '../src/core/describe.js';
 import { BOOT_MS } from '../src/scene/boot.js';
 import { renderScene } from '../src/scene/scene.js';
-import { FULL_COLS, FULL_ROWS, layoutKind } from '../src/scene/layout.js';
+import { type Rect, countBar } from '../src/scene/draw.js';
+import { FULL_COLS, FULL_ROWS, type SceneLayout, layoutFor } from '../src/scene/layout.js';
 import { theme } from '../src/scene/theme.js';
 import { encodeFrame } from '../src/tui/ansi.js';
 import { CellBuffer, charWidth, fit, toCells } from '../src/tui/buffer.js';
 import { detectColorMode, mix, rgb, to256 } from '../src/tui/color.js';
-import { createState } from '../src/core/state.js';
+import { applyEvent, createState } from '../src/core/state.js';
+import type { SceneView } from '../src/scene/view.js';
 import { MID_SESSION_MS, fixtureView, idleView } from '../tools/lib/fixture-view.js';
 
 function render(cols = FULL_COLS, rows = FULL_ROWS, view = fixtureView(MID_SESSION_MS)): CellBuffer {
@@ -17,131 +19,202 @@ function render(cols = FULL_COLS, rows = FULL_ROWS, view = fixtureView(MID_SESSI
   return buf;
 }
 
-/** Busca en el buffer dibujado una caja de trazo grueso cuya esquina superior izquierda esté cerca de lo pedido. */
-function findBox(buf: CellBuffer, expected: { x0: number; x1: number; y0: number; y1: number }): { x0: number; x1: number; y0: number; y1: number } {
-  const TOLERANCE = 1;
-  for (let y = expected.y0 - TOLERANCE; y <= expected.y0 + TOLERANCE; y += 1) {
-    for (let x = expected.x0 - TOLERANCE; x <= expected.x0 + TOLERANCE; x += 1) {
-      if (x < 0 || y < 0 || buf.charAt(x, y) !== '┏') continue;
-      let right = x + 1;
-      while (right < buf.width && buf.charAt(right, y) !== '┓') right += 1;
-      let bottom = y + 1;
-      while (bottom < buf.height && buf.charAt(x, bottom) !== '┗') bottom += 1;
-      if (right < buf.width && bottom < buf.height && buf.charAt(right, bottom) === '┛') return { x0: x, x1: right, y0: y, y1: bottom };
-    }
-  }
-  throw new Error(`Sin caja cerca de columna ${expected.x0}, fila ${expected.y0}`);
-}
-
-const expectWithin = (actual: number, expected: number): void => {
-  expect(Math.abs(actual - expected), `${actual} frente a ${expected}`).toBeLessThanOrEqual(1);
-};
+const L = layoutFor(FULL_COLS, FULL_ROWS) as SceneLayout;
+const screenText = (buf: CellBuffer): string => Array.from({ length: buf.height }, (_, y) => buf.rowText(y)).join('\n');
+const rectText = (buf: CellBuffer, r: Rect): string => Array.from({ length: r.h }, (_, i) => buf.rowText(r.y + i, r.x, r.x + r.w)).join('\n');
 
 function textRow(buf: CellBuffer, text: string): number {
   for (let y = 0; y < buf.height; y += 1) if (buf.rowText(y).includes(text)) return y;
   return -1;
 }
 
-describe('geometría del layout completo, medida sobre el buffer', () => {
+/** El borde de una caja, dibujado de verdad en el buffer. */
+function expectBox(buf: CellBuffer, r: Rect, ox = 0, oy = 0): void {
+  const right = r.x + r.w - 1 + ox;
+  const bottom = r.y + r.h - 1 + oy;
+  const x = r.x + ox;
+  const y = r.y + oy;
+  expect(buf.charAt(x, y), 'esquina superior izquierda').toBe('┌');
+  expect(buf.charAt(right, y), 'esquina superior derecha').toBe('┐');
+  expect(buf.charAt(x, bottom), 'esquina inferior izquierda').toBe('└');
+  expect(buf.charAt(right, bottom), 'esquina inferior derecha').toBe('┘');
+}
+
+describe('geometría medida sobre el buffer', () => {
   const buf = render();
-  const boxes: Array<[string, { x0: number; x1: number; y0: number; y1: number }]> = [
-    ['advisor', { x0: 2, x1: 23, y0: 5, y1: 38 }],
-    ['sesión principal', { x0: 39, x1: 76, y0: 5, y1: 11 }],
-    ['estado del advisor', { x0: 78, x1: 94, y0: 5, y1: 11 }],
-    ['métricas', { x0: 38, x1: 83, y0: 13, y1: 19 }],
-    ['tarjeta 1', { x0: 28, x1: 48, y0: 24, y1: 30 }],
-    ['tarjeta 2', { x0: 50, x1: 71, y0: 24, y1: 30 }],
-    ['tarjeta 3', { x0: 73, x1: 94, y0: 24, y1: 30 }],
-    ['back to lead', { x0: 43, x1: 78, y0: 35, y1: 38 }],
-    ['session log', { x0: 2, x1: 94, y0: 39, y1: 44 }],
-  ];
 
-  for (const [name, expected] of boxes) {
-    it(name, () => {
-      const found = findBox(buf, expected);
-      expectWithin(found.x0, expected.x0);
-      expectWithin(found.x1, expected.x1);
-      expectWithin(found.y0, expected.y0);
-      expectWithin(found.y1, expected.y1);
-    });
-  }
-
-  it('filas de texto', () => {
-    expect(textRow(buf, '●')).toBe(0);
-    expectWithin(textRow(buf, 'CLAUDE CODE ADVISOR'), 2);
-    expectWithin(textRow(buf, '─────'), 3);
-    expectWithin(textRow(buf, '· subagents'), 4);
-    expectWithin(textRow(buf, 'delegate to subagents'), 21);
-    expect([45, 46]).toContain(textRow(buf, '--advisor opus █'));
-    const status = textRow(buf, 'queued');
-    expect([46, 47]).toContain(status);
+  it('todos los paneles están dibujados donde dice el layout', () => {
+    for (const r of [L.project, L.main, L.advisor, L.memory, ...L.cards, L.lead, L.log]) expectBox(buf, r);
   });
 
-  it('encabezado y texto de delegación centrados', () => {
-    const header = buf.rowText(2);
-    const start = header.indexOf('CLAUDE');
-    const end = header.lastIndexOf('THINKS') + 6;
-    expectWithin(start, FULL_COLS - end);
+  it('filas de texto', () => {
+    expect(textRow(buf, 'SINAPSIS')).toBe(L.rows.header);
+    expect(textRow(buf, 'lead · haiku')).toBe(L.rows.legend);
+    expect(textRow(buf, 'delegated')).toBe(L.rows.delegate);
+    expect(textRow(buf, 'q quit')).toBe(L.rows.prompt);
+    expect(textRow(buf, 'queued')).toBe(L.rows.status);
+  });
+
+  it('encabezado centrado', () => {
+    const header = buf.rowText(L.rows.header);
+    const start = header.indexOf('SINAPSIS');
+    const end = header.lastIndexOf('LIVE') + 4;
+    expect(Math.abs(start - (FULL_COLS - end))).toBeLessThanOrEqual(1);
+  });
+
+  it('conectores: tronco continuo hasta el bus, del bus a cada tarjeta y de vuelta al lead', () => {
+    const { rows, spine, cardCenters, main } = L;
+    for (let y = main.y + main.h; y < rows.bus; y += 1) expect(buf.charAt(spine, y), `fila ${y}`).toBe('│');
+    expect(buf.charAt(cardCenters[0], rows.bus)).toBe('┌');
+    expect(buf.charAt(spine, rows.bus)).toBe('┼');
+    expect(buf.charAt(cardCenters[2], rows.bus)).toBe('┐');
+    for (const center of cardCenters) expect(buf.charAt(center, L.cardArrowRow as number)).toBe('▼');
+    expect(buf.charAt(cardCenters[0], rows.merge)).toBe('└');
+    expect(buf.charAt(cardCenters[2], rows.merge)).toBe('┘');
+    expect(buf.charAt(spine, L.leadArrowRow as number)).toBe('▼');
+  });
+
+  it('flechas punteadas desde la memoria de proyecto hasta sus tres destinos', () => {
+    const edge = L.project.x + L.project.w;
+    const targets = [L.main.x, L.cards[0].x, L.lead.x];
+    L.milestones.forEach((row, i) => {
+      expect(buf.charAt(edge, row)).toBe('┄');
+      expect(buf.charAt((targets[i] as number) - 1, row)).toBe('▸');
+    });
   });
 
   it('una terminal mayor centra el layout y sigue usando la misma geometría', () => {
     const big = render(120, 60);
-    const found = findBox(big, { x0: 2 + 12, x1: 23 + 12, y0: 5 + 6, y1: 38 + 6 });
-    expect(found).toEqual({ x0: 14, x1: 35, y0: 11, y1: 44 });
-    expect(big.rowText(8)).toContain('CLAUDE CODE ADVISOR');
+    const layout = layoutFor(120, 60) as SceneLayout;
+    expectBox(big, layout.project, layout.originX, layout.originY);
+    expectBox(big, layout.log, layout.originX, layout.originY);
+    expect(big.rowText(layout.rows.header + layout.originY)).toContain('SINAPSIS');
   });
 });
 
 describe('contenido', () => {
-  it('modelos reales en el encabezado, sin valores de ejemplo de la imagen', () => {
-    const all = Array.from({ length: FULL_ROWS }, (_, y) => render().rowText(y)).join('\n');
-    expect(all).toContain('HAIKU 5.5 BUILDS');
-    expect(all).toContain('OPUS 5.5 THINKS');
-    for (const banned of ['skunzu', 'jev', 'forks', '2,625', 'files: 156', 'call sites', '%']) expect(all).not.toContain(banned);
+  it('identidad de sesión en el encabezado y sin valores de ejemplo ni textos fijos de las imágenes', () => {
+    const all = screenText(render(FULL_COLS, FULL_ROWS, fixtureView()));
+    expect(all).toContain('SINAPSIS');
+    expect(all).toContain('LIVE');
+    for (const banned of [
+      'CLAUDE CODE ADVISOR',
+      'skunzu',
+      'jev',
+      'forks',
+      '2,625',
+      'files: 156',
+      'call sites',
+      '%',
+      'SUBAGENT TIP',
+      '~/app',
+      'builder',
+      'debugger',
+      'reviewer',
+      'Sonnet',
+      'illustrative',
+      'saved findings',
+      'loaded next time',
+      'per-agent notes',
+      'build then debug',
+      'review the diff',
+      'read so far',
+      'persistent',
+      'integrate + verify',
+      'delegate to subagents',
+      'claude --model',
+      'reconstructed, not literal',
+    ]) {
+      expect(all).not.toContain(banned);
+    }
   });
 
-  it('los datos del advisor son los del reductor', () => {
-    const buf = render(FULL_COLS, FULL_ROWS, fixtureView());
-    const panel = Array.from({ length: 34 }, (_, i) => buf.rowText(5 + i, 2, 24)).join('\n');
-    expect(panel).toContain('sealed · 39 s');
-    expect(panel).toContain('77.5k read');
-    expect(panel).toContain('3.7k written');
-    expect(panel).toContain('97.9k');
-    expect(panel).toContain('after subagents');
-    expect(panel).toContain('before a plan');
+  it('están todos los apartados funcionales', () => {
+    const all = screenText(render(FULL_COLS, FULL_ROWS, fixtureView()));
+    for (const part of ['PROJECT MEMORY', 'before work', 'repeat failure', 'before sign-off', 'totals', 'errors', 'main session', 'AGENT MEMORY', 'roles', 'delegated ·', 'back to', '· lead', 'session log', 'q quit', 'elapsed', 'ADVISOR']) expect(all).toContain(part);
+  });
+
+  it('los datos del advisor y de las tarjetas son los del reductor', () => {
+    const view = fixtureView();
+    const buf = render(FULL_COLS, FULL_ROWS, view);
+    const advisorBox = rectText(buf, L.advisor);
+    expect(advisorBox).toContain('Opus 5.5');
+    expect(advisorBox).toContain('97.9k tok');
+    const cards = L.cards.map((r) => rectText(buf, r)).join('\n');
+    expect(cards).toContain('explore');
+    expect(cards).toContain('Haiku 5.5');
+    expect(cards).toContain('read-only');
+    expect(cards).toContain('3 tools');
+    expect(cards).toContain('done · 10 s');
+    expect(rectText(buf, L.lead)).toContain('3 back');
+  });
+
+  it('la lectura real de un archivo de memoria aparece en ambos paneles', () => {
+    const view = fixtureView();
+    expect(view.state.memory.touches.map((t) => t.file)).toContain('CLAUDE.md');
+    const buf = render(FULL_COLS, FULL_ROWS, view);
+    expect(rectText(buf, L.project)).toContain('CLAUDE.md');
+    // Las tres ejecuciones del fixture son del mismo rol (`explore`): una sola fila, con el rol que tocó memoria.
+    expect(new Set(view.state.subagents.map((s) => s.agentType)).size).toBe(1);
+    expect(rectText(buf, L.memory)).toContain('recall');
+    expect(rectText(buf, L.memory)).not.toContain('no memory');
+    expect(rectText(buf, L.memory)).toContain('real tool calls');
+    expect(rectText(buf, L.memory)).toContain('1 / 1');
   });
 
   it('los patrones de herramientas se muestran literales', () => {
+    expect(rectText(render(FULL_COLS, FULL_ROWS, fixtureView()), L.log)).toContain('fixtures/*.jsonl');
+  });
+
+  it('una tarjeta terminada tiene la barra llena, también sin animación', () => {
     const buf = render(FULL_COLS, FULL_ROWS, fixtureView());
-    const log = Array.from({ length: 6 }, (_, i) => buf.rowText(39 + i)).join('\n');
-    expect(log).toContain('fixtures/*.jsonl');
+    const card = L.cards[0];
+    expect(buf.charAt(card.x + 2, card.y + 3)).toBe('█');
+    expect(buf.rowText(card.y + 3, card.x, card.x + card.w)).not.toContain('░');
   });
 
   it('una tarjeta en curso no muestra porcentaje y sí su contador real', () => {
     const view = fixtureView(MID_SESSION_MS);
     expect(view.state.subagents.some((s) => s.running)).toBe(true);
-    const cards = Array.from({ length: 7 }, (_, i) => render(FULL_COLS, FULL_ROWS, view).rowText(24 + i, 28, 95)).join('\n');
-    expect(cards).toContain('tools:');
+    const buf = render(FULL_COLS, FULL_ROWS, view);
+    const cards = L.cards.map((r) => rectText(buf, r)).join('\n');
+    expect(cards).toMatch(/\d+ tools?/);
+    expect(cards).toContain('running');
     expect(cards).not.toContain('%');
   });
 
   it('ningún texto se sale de un panel: los bordes quedan intactos', () => {
-    for (const view of [fixtureView(MID_SESSION_MS), fixtureView(), idleView()]) {
-      const buf = render(FULL_COLS, FULL_ROWS, view);
-      const borders: Array<[number, number, number]> = [
-        [2, 6, 37], [23, 6, 37], [39, 6, 10], [76, 6, 10], [38, 14, 18], [83, 14, 18],
-        [28, 25, 29], [48, 25, 29], [50, 25, 29], [71, 25, 29], [73, 25, 29], [94, 25, 29],
-      ];
-      for (const [x, from, to] of borders) {
-        for (let y = from; y <= to; y += 1) expect('┃╏').toContain(buf.charAt(x, y));
+    for (const [cols, rows] of [[FULL_COLS, FULL_ROWS], [80, 30], [120, 30], [80, 38], [120, 45]] as const) {
+      const layout = layoutFor(cols, rows) as SceneLayout;
+      for (const view of [fixtureView(MID_SESSION_MS), fixtureView(), idleView()]) {
+        const buf = render(cols, rows, view);
+        for (const r of [layout.project, layout.main, layout.advisor, layout.memory, ...layout.cards, layout.lead, layout.log]) {
+          const left = r.x + layout.originX;
+          const right = left + r.w - 1;
+          for (let y = r.y + 1 + layout.originY; y < r.y + r.h - 1 + layout.originY; y += 1) {
+            expect('│╎', `${cols}x${rows} columna ${left}, fila ${y}`).toContain(buf.charAt(left, y));
+            expect('│╎', `${cols}x${rows} columna ${right}, fila ${y}`).toContain(buf.charAt(right, y));
+          }
+        }
       }
     }
   });
 
   it('panel en reposo sin sesión', () => {
     const buf = render(FULL_COLS, FULL_ROWS, idleView());
-    expect(buf.rowText(9)).toContain('waiting for a session');
-    expect(buf.rowText(2)).toContain('CLAUDE CODE ADVISOR');
+    expect(rectText(buf, L.main)).toContain('waiting for a session');
+    expect(buf.rowText(L.rows.header)).toContain('SINAPSIS');
+    expect(buf.rowText(L.rows.header)).toContain('WAITING FOR A SESSION');
+    expect(rectText(buf, L.project)).toContain('no memory files');
+    expect(rectText(buf, L.memory)).toContain('no subagents yet');
+    expect(buf.rowText(L.rows.delegate)).toContain('no subagents yet');
+    expect(rectText(buf, L.lead)).toContain('no summaries yet');
+  });
+
+  it('los modelos que la cola aún no deja ver evitan el encabezado en espera', () => {
+    const buf = render(FULL_COLS, FULL_ROWS, { ...idleView(), preview: { main: 'claude-haiku-5-5', advisor: 'claude-opus-5-5' } });
+    expect(buf.rowText(L.rows.header)).not.toContain('WAITING FOR A SESSION');
+    expect(buf.rowText(L.rows.legend)).toContain('lead · Haiku 5.5');
   });
 
   it('un texto ancho o con controles no desarma las filas', () => {
@@ -149,54 +222,87 @@ describe('contenido', () => {
     state.title = '日本語のタイトル 🚀\tcon\ncontrol';
     state.mainModel = 'claude-haiku-5-5';
     const buf = render(FULL_COLS, FULL_ROWS, { state, log: [], now: 0, queue: { pending: [] }, connected: true });
-    expect([...buf.rowText(7)].length).toBe(FULL_COLS);
-    for (let x = 0; x < FULL_COLS; x += 1) expect(charWidth(buf.charAt(x, 7).codePointAt(0) as number)).toBe(1);
+    const y = L.main.y + 2;
+    expect([...buf.rowText(y)].length).toBe(FULL_COLS);
+    for (let x = 0; x < FULL_COLS; x += 1) expect(charWidth(buf.charAt(x, y).codePointAt(0) as number)).toBe(1);
   });
 
-  it('color: los paneles usan los tokens del tema', () => {
+  it('color: los paneles usan los tokens del tema, sobre un fondo plano', () => {
     const buf = render();
-    expect(buf.fgAt(2, 5)).toBe(mix(theme.advisor, theme.panel, 0.2));
-    expect(buf.fgAt(39, 5)).toBe(mix(theme.main, theme.panel, 0.2));
-    expect(buf.fgAt(38, 13)).toBe(mix(theme.metrics, theme.panel, 0.2));
-    expect(buf.bgAt(10, 20)).toBe(theme.panel);
-    // Viñeta: el centro del fondo es más claro que una esquina.
-    const luma = (c: number): number => ((c >> 16) & 255) + ((c >> 8) & 255) + (c & 255);
-    expect(luma(buf.bgAt(32, 33))).toBeGreaterThan(luma(buf.bgAt(0, 47)));
+    expect(buf.fgAt(L.project.x, L.project.y)).toBe(mix(theme.notes, theme.panel, 0.12));
+    expect(buf.fgAt(L.main.x, L.main.y)).toBe(mix(theme.main, theme.panel, 0.12));
+    expect(buf.fgAt(L.memory.x, L.memory.y)).toBe(mix(theme.metrics, theme.panel, 0.12));
+    expect(buf.bgAt(0, 0)).toBe(theme.bg);
+    expect(buf.bgAt(45, 20)).toBe(theme.bg);
+    expect(buf.bgAt(FULL_COLS - 1, FULL_ROWS - 1)).toBe(theme.bg);
+  });
+});
+
+describe('layout compacto', () => {
+  const sizes = [[80, 30], [120, 30], [100, 35], [120, 40], [89, 46]] as const;
+
+  it('una ventana normal conserva todos los apartados y sus conexiones', () => {
+    for (const [cols, rows] of sizes) {
+      const layout = layoutFor(cols, rows) as SceneLayout;
+      expect(layout.kind).toBe('compact');
+      const buf = render(cols, rows, fixtureView());
+      const all = screenText(buf);
+      for (const part of ['PROJECT MEMORY', 'before work', 'repeat failure', 'before sign-off', 'main session', 'ADVISOR', 'AGENT MEMORY', 'delegated ·', 'explore', 'back to', 'session log', 'q quit', 'queued']) {
+        expect(all, `${cols}x${rows}: ${part}`).toContain(part);
+      }
+      for (const r of [layout.project, layout.main, layout.memory, ...layout.cards, layout.lead, layout.log]) {
+        expect(buf.charAt(r.x + layout.originX, r.y + layout.originY)).toBe('┌');
+        expect(buf.charAt(r.x + r.w - 1 + layout.originX, r.y + layout.originY)).toBe('┐');
+        expect(buf.charAt(r.x + layout.originX, r.y + r.h - 1 + layout.originY)).toBe('└');
+        expect(buf.charAt(r.x + r.w - 1 + layout.originX, r.y + r.h - 1 + layout.originY)).toBe('┘');
+      }
+      expect(buf.charAt(layout.spine + layout.originX, layout.rows.bus + layout.originY)).toBe('┼');
+      expect(buf.charAt(layout.spine + layout.originX, layout.rows.merge + layout.originY)).toBe('┼');
+    }
+  });
+
+  it('el rótulo de la memoria se ve también sin fila propia', () => {
+    const all = screenText(render(80, 30, fixtureView()));
+    expect(all).toContain('bars · real tool calls');
+  });
+
+  it('el nombre del agente no se corta para mostrar el modelo', () => {
+    const all = screenText(render(80, 30, fixtureView()));
+    expect(all).toContain('explore · haiku');
+  });
+
+  it('la flecha va sobre el borde de la tarjeta cuando no tiene fila propia', () => {
+    const layout = layoutFor(80, 30) as SceneLayout;
+    const buf = render(80, 30, fixtureView());
+    expect(layout.cardArrowRow).toBeUndefined();
+    for (const center of layout.cardCenters) expect(buf.charAt(center, layout.cards[0].y)).toBe('▼');
+    expect(buf.charAt(layout.spine, layout.lead.y)).toBe('▼');
   });
 });
 
 describe('layouts según el tamaño', () => {
-  it('elige por tamaño', () => {
-    expect(layoutKind(96, 48)).toBe('full');
-    expect(layoutKind(200, 100)).toBe('full');
-    expect(layoutKind(95, 48)).toBe('reduced');
-    expect(layoutKind(96, 47)).toBe('reduced');
-    expect(layoutKind(80, 24)).toBe('reduced');
-    expect(layoutKind(79, 24)).toBe('too-small');
-    expect(layoutKind(80, 23)).toBe('too-small');
-  });
-
-  it('el reducido a 80x24 conserva advisor, principal, subagentes y log', () => {
+  it('el reducido a 80x24 conserva advisor, principal, subagentes y log, y avisa cómo ver todo', () => {
     const buf = render(80, 24, fixtureView());
-    const all = Array.from({ length: 24 }, (_, y) => buf.rowText(y)).join('\n');
+    const all = screenText(buf);
     expect(all).toContain('OPUS 5.5 · on call');
     expect(all).toContain('main');
     expect(all).toContain('Estructura');
     expect(all).toContain('session log');
     expect(all).toContain('after subagents');
     expect(all).toContain('calls');
+    expect(all).toContain('30+ rows: full view');
   });
 
   it('el mensaje de ventana pequeña dice el tamaño real', () => {
     const buf = render(60, 20);
-    const all = Array.from({ length: 20 }, (_, y) => buf.rowText(y)).join('\n');
+    const all = screenText(buf);
     expect(all).toContain('Agranda la ventana');
     expect(all).toContain('80x24');
     expect(all).toContain('60x20');
   });
 
   it('ningún tamaño intermedio falla', () => {
-    for (const [cols, rows] of [[80, 24], [81, 25], [95, 47], [96, 24], [80, 47], [120, 30], [79, 23], [1, 1], [10, 2]] as const) {
+    for (const [cols, rows] of [[80, 24], [81, 25], [89, 45], [90, 24], [80, 45], [120, 30], [80, 29], [79, 23], [1, 1], [10, 2]] as const) {
       for (const view of [fixtureView(MID_SESSION_MS), fixtureView(), idleView()]) {
         expect(() => render(cols, rows, view)).not.toThrow();
       }
@@ -225,9 +331,9 @@ describe('diff ANSI', () => {
     const term = new Terminal({ cols: FULL_COLS, rows: FULL_ROWS, allowProposedApi: true });
     await feed(term, `\x1b[?7l${encodeFrame(null, buf, 'truecolor')}`);
     expectMatch(term, buf);
-    const cell = term.buffer.active.getLine(5)?.getCell(2);
+    const cell = term.buffer.active.getLine(L.project.y)?.getCell(L.project.x);
     expect(cell?.isFgRGB()).toBe(true);
-    expect(cell?.getFgColor()).toBe(mix(theme.advisor, theme.panel, 0.2));
+    expect(cell?.getFgColor()).toBe(mix(theme.notes, theme.panel, 0.12));
     term.dispose();
   });
 
@@ -255,7 +361,7 @@ describe('diff ANSI', () => {
 
   it('un cambio de tamaño redibuja todo', () => {
     const a = render(80, 24);
-    const b = render(96, 48);
+    const b = render(90, 46);
     expect(encodeFrame(a, b, 'truecolor').length).toBeGreaterThan(encodeFrame(null, a, 'truecolor').length);
   });
 
@@ -289,40 +395,41 @@ describe('animación 1: arranque', () => {
 
   it('al empezar no hay paneles ni encabezado completo', () => {
     const buf = frame(0);
-    expect(buf.rowText(2)).not.toContain('CLAUDE');
-    expect(buf.charAt(2, 5)).toBe(' ');
-    expect(buf.charAt(39, 5)).toBe(' ');
-    expect(buf.rowText(0)).toContain('sinapsis');
+    expect(buf.rowText(L.rows.header)).not.toContain('SINAPSIS');
+    expect(buf.charAt(L.project.x, L.project.y)).toBe(' ');
+    expect(buf.charAt(L.main.x, L.main.y)).toBe(' ');
   });
 
   it('el encabezado se escribe de izquierda a derecha', () => {
-    const lengths = [100, 300, 500, 700, 900].map((ms) => frame(ms).rowText(2).trim().length);
+    const lengths = [100, 300, 500, 700, 900].map((ms) => frame(ms).rowText(L.rows.header).trim().length);
     for (let i = 1; i < lengths.length; i += 1) expect(lengths[i]).toBeGreaterThanOrEqual(lengths[i - 1] as number);
     expect(lengths[0]).toBeLessThan(lengths[4] as number);
   });
 
   it('un borde se dibuja recorriendo el panel: arriba antes que abajo', () => {
+    const r = L.project;
     const early = frame(400);
-    expect(early.charAt(2, 5)).toBe('┏');
-    expect(early.charAt(2, 38)).toBe(' ');
+    expect(early.charAt(r.x, r.y)).toBe('┌');
+    expect(early.charAt(r.x, r.y + r.h - 1)).toBe(' ');
     const later = frame(800);
-    expect(later.charAt(23, 5)).toBe('┓');
-    expect(later.charAt(23, 30)).toBe('┃');
+    expect(later.charAt(r.x + r.w - 1, r.y)).toBe('┐');
   });
 
-  it('los paneles entran en cascada: el advisor antes que el log', () => {
+  it('los paneles entran en cascada: la memoria de proyecto antes que el log', () => {
     const buf = frame(700);
-    expect(buf.charAt(2, 5)).toBe('┏');
-    expect(buf.charAt(2, 39)).toBe(' ');
-    expect(frame(2000).charAt(2, 39)).toBe('┏');
+    expect(buf.charAt(L.project.x, L.project.y)).toBe('┌');
+    expect(buf.charAt(L.log.x, L.log.y)).toBe(' ');
+    expect(frame(2000).charAt(L.log.x, L.log.y)).toBe('┌');
   });
 
-  it('funciona en una terminal mayor y en el layout reducido', () => {
+  it('funciona en una terminal mayor, en el compacto y en el reducido', () => {
     const big = new CellBuffer(120, 60);
     renderScene(big, { ...fixtureView(), anim: { bootMs: 500 } });
     expect(big.originX).toBe(0);
-    const small = new CellBuffer(80, 24);
-    expect(() => renderScene(small, { ...fixtureView(), anim: { bootMs: 100 } })).not.toThrow();
+    for (const [cols, rows] of [[120, 30], [80, 30], [80, 24]] as const) {
+      const buf = new CellBuffer(cols, rows);
+      expect(() => renderScene(buf, { ...fixtureView(), anim: { bootMs: 100 } })).not.toThrow();
+    }
   });
 });
 
@@ -378,5 +485,366 @@ describe('color y texto', () => {
     expect(describeEvent({ type: 'message_usage', t: 1, messageId: 'm', input: 0, output: 0, cacheRead: 0, cacheCreation: 0, hasAdvisor: false }, state)).toBeUndefined();
     expect(describeEvent({ type: 'tool_result', t: 1, id: 'x', isError: true }, state)?.kind).toBe('error');
     expect(describeEvent({ type: 'tool_result', t: 1, id: 'x', isError: false }, state)).toBeUndefined();
+  });
+});
+
+describe('AGENT MEMORY por rol y rótulos de rol', () => {
+  /** Sesión sintética: cada ejecución es `[agentType, ¿toca memoria?, ¿sigue corriendo?]`. */
+  function roleView(runs: Array<[string | undefined, boolean, boolean]>, extra: Partial<SceneView> = {}): SceneView {
+    const state = createState();
+    applyEvent(state, { type: 'session_info', t: 1, mainModel: 'claude-opus-5-5', advisorModel: 'claude-opus-5-5', cwd: '/p' });
+    applyEvent(state, { type: 'user_prompt', t: 2, text: 'trabaja' });
+    runs.forEach(([agentType, touches, running], i) => {
+      const id = `ag${i}`;
+      const t = 1000 * (i + 1);
+      applyEvent(state, { type: 'subagent_start', t, subagentId: id, model: 'claude-sonnet-5-5' });
+      applyEvent(state, { type: 'subagent_info', t, subagentId: id, description: `tarea ${i}`, ...(agentType ? { agentType } : {}) });
+      if (touches) applyEvent(state, { type: 'tool_call', t: t + 10, id: `m${i}`, name: 'Read', agentId: id, memory: { file: 'CLAUDE.md', scope: 'project', op: 'read' } });
+      if (!running) applyEvent(state, { type: 'subagent_end', t: t + 500, subagentId: id, status: 'completed' });
+    });
+    return { state, log: [], now: 1100, queue: { pending: [] }, connected: true, ...extra };
+  }
+
+  const memoryText = (view: SceneView, cols = FULL_COLS, rows = FULL_ROWS): string => {
+    const layout = layoutFor(cols, rows) as SceneLayout;
+    const buf = render(cols, rows, view);
+    return Array.from({ length: layout.memory.h }, (_, i) => buf.rowText(layout.memory.y + layout.originY + i, layout.memory.x + layout.originX, layout.memory.x + layout.originX + layout.memory.w)).join('\n');
+  };
+  const rowsNamed = (text: string, name: string): number => text.split('\n').filter((line) => line.includes(`│ ${name} `)).length;
+
+  it('siete ejecuciones de tres roles que tocaron memoria: roles 3 / 3 y una fila por rol', () => {
+    const runs: Array<[string, boolean, boolean]> = [
+      ['builder', true, false],
+      ['builder', true, false],
+      ['builder', false, false],
+      ['reviewer', true, false],
+      ['reviewer', true, false],
+      ['debugger', true, false],
+      ['debugger', true, false],
+    ];
+    const view = roleView(runs);
+    expect(view.state.subagents).toHaveLength(7);
+    const text = memoryText(view);
+    expect(text).toContain('3 / 3');
+    for (const role of ['builder', 'reviewer', 'debugger']) expect(rowsNamed(text, role), role).toBe(1);
+    expect(text).not.toContain('no memory');
+  });
+
+  it('un rol sin memoria cuenta en el total pero no en el numerador', () => {
+    const view = roleView([['builder', true, false], ['builder', true, false], ['reviewer', false, false]]);
+    applyEvent(view.state, { type: 'subagent_info', t: 5000, subagentId: 'ag2', memoryIndexed: false });
+    const text = memoryText(view);
+    expect(text).toContain('1 / 2');
+    expect(text).toContain('no memory');
+  });
+
+  it('un rol con no data se muestra, pero queda fuera de la cuenta', () => {
+    const text = memoryText(roleView([['builder', true, false], ['reviewer', false, false]]));
+    expect(text).toContain('1 / 1');
+    expect(text).toContain('no data');
+    expect(memoryText(roleView([['reviewer', false, false]]))).toContain('0 / 0');
+  });
+
+  it('sin operaciones, distingue índice con notas, sin notas y sin dato', () => {
+    const view = roleView([['builder', false, false], ['debugger', false, false], ['reviewer', false, false]]);
+    applyEvent(view.state, { type: 'subagent_info', t: 5000, subagentId: 'ag0', memoryIndexed: true });
+    applyEvent(view.state, { type: 'subagent_info', t: 5000, subagentId: 'ag1', memoryIndexed: false });
+    const lines = memoryText(view).split('\n');
+    expect(lines.find((line) => line.includes('builder'))).toContain('indexed');
+    expect(lines.find((line) => line.includes('debugger'))).toContain('no memory');
+    expect(lines.find((line) => line.includes('reviewer'))).toContain('no data');
+    // Tener notas cuenta como memoria, sin dibujar operaciones que no ocurrieron.
+    expect(lines.join('\n')).toContain('1 / 2');
+    expect(lines.find((line) => line.includes('builder'))).not.toContain('█');
+    for (const [cols, rows] of [[80, 30], [120, 30]] as const) expect(memoryText(view, cols, rows)).toContain('indexed');
+  });
+
+  it('una operación real tiene prioridad sobre el índice', () => {
+    const view = roleView([['builder', true, false]]);
+    applyEvent(view.state, { type: 'subagent_info', t: 5000, subagentId: 'ag0', memoryIndexed: true });
+    const text = memoryText(view);
+    expect(text).toContain('recall');
+    expect(text).not.toContain('indexed');
+    expect(text).toContain('1 / 1');
+  });
+
+  it('la barra suma las operaciones de todas las ejecuciones del rol', () => {
+    const view = roleView([['builder', true, false], ['builder', true, false], ['reviewer', true, false]]);
+    const lines = memoryText(view).split('\n');
+    const full = lines.find((line) => line.includes('builder')) as string;
+    const half = lines.find((line) => line.includes('reviewer')) as string;
+    expect(full).toContain('███████');
+    expect(full).not.toContain('░');
+    expect(half).toContain('███▌░░░');
+  });
+
+  it('un subagente sin tipo es su propio rol', () => {
+    const text = memoryText(roleView([[undefined, true, false], [undefined, true, false]]));
+    expect(text).toContain('2 / 2');
+    expect(text.split('\n').filter((line) => line.includes('tarea')).length).toBe(2);
+  });
+
+  it('con más roles que filas, primero los que corren y luego la memoria más reciente, en orden estable', () => {
+    const runs: Array<[string, boolean, boolean]> = [
+      ['alfa', true, false],
+      ['beta', true, false],
+      ['gamma', true, false],
+      ['delta', false, true],
+      ['epsilon', false, false],
+    ];
+    const text = memoryText(roleView(runs));
+    // Corre `delta`; entre los demás, las memorias más recientes son las de `gamma` y `beta`.
+    expect(rowsNamed(text, 'delta')).toBe(1);
+    expect(rowsNamed(text, 'gamma')).toBe(1);
+    expect(rowsNamed(text, 'beta')).toBe(1);
+    expect(rowsNamed(text, 'alfa')).toBe(0);
+    expect(rowsNamed(text, 'epsilon')).toBe(0);
+    expect(text).toContain('3 / 3');
+    // Las filas salen en el orden en que aparecieron los roles.
+    const order = ['beta', 'gamma', 'delta'].map((name) => text.indexOf(name));
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+  });
+
+  it('la demo no cambia: una fila por tarjeta activa, aunque repitan rol, y sin filas — para slots vacíos', () => {
+    const base = roleView([['builder', false, true], ['builder', false, true], ['builder', false, true]]);
+    const illustrative = { percents: [10, 20, 30], memory: [{ fraction: 0.7, label: 'recall' as const }, { fraction: 0.8, label: 'check' as const }, { fraction: 0.9, label: 'recall' as const }] };
+    const view: SceneView = {
+      ...base,
+      illustrativeDemo: true,
+      anim: { cards: base.state.subagents.map((s) => ({ id: s.id, grow: 1, fade: 0 })), illustrative },
+    };
+    const text = memoryText(view);
+    expect(rowsNamed(text, 'builder')).toBe(3);
+    expect(text).toContain('3 / 3');
+    expect(text).toContain('illustrative activity');
+    expect(text).toContain('check');
+    const oneSlot = roleView([['builder', false, true]]);
+    const oneSlotDemo: SceneView = {
+      ...oneSlot,
+      illustrativeDemo: true,
+      anim: { cards: [{ id: 'ag0', grow: 1, fade: 0 }, undefined, undefined], illustrative },
+    };
+    expect(memoryText(oneSlotDemo)).not.toContain('│ —');
+  });
+
+  it('leyenda con agent memory / project memory y línea de estado con elapsed, cost y cola', () => {
+    const view = roleView([['builder', true, true]]);
+    view.state.costUSD = 0.42;
+    view.queue = { last: 'builder · Read · CLAUDE.md', pending: ['tool'] };
+    const buf = render(FULL_COLS, FULL_ROWS, view);
+    const legend = buf.rowText(L.rows.legend);
+    // Todos en alias o todos con su nombre completo, sin mezclar.
+    for (const part of ['lead · opus', 'build · sonnet', 'agent memory', 'project memory', 'advisor · opus']) expect(legend).toContain(part);
+    const wideLegend = render(120, 30, view).rowText((layoutFor(120, 30) as SceneLayout).rows.legend);
+    for (const part of ['lead · Opus 5.5', 'build · Sonnet 5.5', 'agent memory', 'project memory', 'advisor · Opus 5.5']) expect(wideLegend).toContain(part);
+    const status = buf.rowText(L.rows.status);
+    for (const part of ['elapsed 00:00:01', 'cost $0.42', 'builder · Read', '■', '1 queued']) expect(status).toContain(part);
+    for (const old of ['lead [', 'subagents [', 'memories [', 'build [', 'advisor [']) expect(status).not.toContain(old);
+    expect(buf.rowText(L.rows.header)).toContain('SINAPSIS · p · LIVE');
+    expect(rectText(buf, L.lead)).toContain('back to Opus 5.5 · lead');
+  });
+
+  it('leyenda sin subagentes: no atribuye un modelo a build', () => {
+    for (const [cols, rows] of [[FULL_COLS, FULL_ROWS], [84, 46], [80, 30], [120, 30]] as const) {
+      const legend = render(cols, rows, roleView([])).rowText((layoutFor(cols, rows) as SceneLayout).rows.legend);
+      expect(legend, `${cols}x${rows}`).toContain('lead · Opus 5.5');
+      expect(legend, `${cols}x${rows}`).toContain('advisor · Opus 5.5');
+      expect(legend, `${cols}x${rows}`).toMatch(/build\s+■/);
+    }
+  });
+
+  it('caja del advisor: estado sobre el borde, y consultas y tokens completos en su fila', () => {
+    const view = roleView([]);
+    applyEvent(view.state, { type: 'advisor_consult', t: 5000, id: 'c1', reason: 'before a plan' });
+    applyEvent(view.state, { type: 'advisor_reply', t: 6000, id: 'c1', durationMs: 1000, tokensRead: 87_460, tokensWritten: 10, isError: false });
+    const row = (buf: CellBuffer, y: number): string => buf.rowText(L.advisor.y + y, L.advisor.x, L.advisor.x + L.advisor.w);
+    const one = render(FULL_COLS, FULL_ROWS, view);
+    expect(row(one, 0)).toContain(' silent ');
+    expect(row(one, 3)).toContain('1 consult');
+    expect(row(one, 3)).not.toContain('consults');
+    expect(row(one, 4)).toContain('87.5k tok');
+    expect(one.charAt(L.advisor.x, L.advisor.y)).toBe('┌');
+    expect(one.charAt(L.advisor.x + L.advisor.w - 1, L.advisor.y)).toBe('┐');
+    applyEvent(view.state, { type: 'advisor_consult', t: 7000, id: 'c2', reason: 'before a plan' });
+    const open = render(FULL_COLS, FULL_ROWS, view);
+    expect(row(open, 0)).toContain(' replaying ');
+    expect(row(open, 3)).toContain('2 consults');
+    expect(open.charAt(L.advisor.x, L.advisor.y)).toBe('┌');
+    expect(open.charAt(L.advisor.x + L.advisor.w - 1, L.advisor.y)).toBe('┐');
+  });
+
+  it('back to lead: sin resumen no inventa texto, y sin subagentes cerrados muestra waiting for N summaries', () => {
+    const row = L.lead.y + 2;
+    const rowAndColor = (view: SceneView): { text: string; fg: unknown } => {
+      const buf = render(FULL_COLS, FULL_ROWS, view);
+      const text = buf.rowText(row, L.lead.x + 1, L.lead.x + L.lead.w - 1);
+      const letter = text.search(/\S/);
+      return { text, fg: buf.fgAt(L.lead.x + 1 + letter, row) };
+    };
+    const closed = rowAndColor(roleView([['builder', true, false]]));
+    expect(closed.text).toContain('1 back');
+    expect(closed.text).not.toContain('integrate');
+    expect(closed.fg).toEqual(theme.text);
+    const running = rowAndColor(roleView([['builder', true, true], ['reviewer', false, true]]));
+    expect(running.text).toContain('waiting for 2 summaries');
+    expect(running.fg).toEqual(theme.dim);
+  });
+
+  it('borde del advisor: punteado en silent y sólido en replaying', () => {
+    const silent = render(FULL_COLS, FULL_ROWS, roleView([]));
+    expect(silent.charAt(L.advisor.x + 1, L.advisor.y)).toBe('╌');
+    const view = roleView([]);
+    applyEvent(view.state, { type: 'advisor_consult', t: 5000, id: 'c1', reason: 'before a plan' });
+    const replaying = render(FULL_COLS, FULL_ROWS, view);
+    expect(replaying.charAt(L.advisor.x + 1, L.advisor.y + L.advisor.h - 1)).toBe('─');
+  });
+
+  it('barra de tarjeta en curso representa toolCount real (1 celda por herramienta) y nunca barra indeterminada', () => {
+    const view = roleView([['builder', false, true]]);
+    const sub = view.state.subagents[0]!;
+    sub.toolCount = 3;
+    const buf = render(FULL_COLS, FULL_ROWS, view);
+    const card = L.cards[0];
+    const barRow = buf.rowText(card.y + 3, card.x + 2, card.x + 10);
+    expect(barRow.startsWith('███░')).toBe(true);
+    // La celda más reciente brilla más que las anteriores.
+    expect(buf.fgAt(card.x + 4, card.y + 3)).not.toBe(buf.fgAt(card.x + 2, card.y + 3));
+  });
+
+  it('barra de tarjeta en curso: nunca se ve llena, y sigue avanzando con más herramientas que celdas', () => {
+    const buf = new CellBuffer(12, 1);
+    const cells = (count: number): string => {
+      countBar(buf, 0, 0, 7, count, theme.barSub);
+      return buf.rowText(0, 0, 7);
+    };
+    expect(cells(0)).toBe('░░░░░░░');
+    expect(cells(1)).toBe('█░░░░░░');
+    expect(cells(6)).toBe('██████░');
+    expect(cells(7)).toBe('█░░░░░░');
+    expect(cells(12)).toBe('██████░');
+    expect(cells(13)).toBe('█░░░░░░');
+    for (let count = 0; count < 100; count += 1) expect(cells(count)).toContain('░');
+  });
+
+  it('barra de tarjeta: llena solo al terminar, también con muchas herramientas', () => {
+    const running = roleView([['builder', false, true]]);
+    running.state.subagents[0]!.toolCount = 12;
+    const done = roleView([['builder', false, false]]);
+    done.state.subagents[0]!.toolCount = 12;
+    const card = L.cards[0];
+    const barOf = (view: SceneView): string => render(FULL_COLS, FULL_ROWS, view).rowText(card.y + 3, card.x + 2, card.x + 9);
+    expect(barOf(running)).toContain('░');
+    expect(barOf(done)).toBe('███████');
+  });
+
+  it('hora de los hitos en compacto: nunca pisa un total ni se pierde, también con horas de sesión', () => {
+    for (const rows of [30, 32, 34, 36, 38]) {
+      const view = roleView([['builder', false, false]]);
+      view.state.startedAt = 0;
+      view.state.promptTimes = [0, 7_200_000];
+      view.state.subagents[0]!.endedAt = 7_205_000;
+      view.state.errorTimes = [7_211_000];
+      // A las 2 h (`2h00`): tras cerrar el subagente es `before sign-off`, y tras el error, `repeat failure`.
+      view.state.memory.touches.push({ t: 7_210_000, file: 'MEMORY.md', op: 'read', scope: 'project' });
+      view.state.memory.touches.push({ t: 7_215_000, file: 'MEMORY.md', op: 'read', scope: 'project' });
+      const layout = layoutFor(80, rows) as SceneLayout;
+      const buf = render(80, rows, view);
+      const panel = rectText(buf, { ...layout.project, x: layout.project.x + layout.originX, y: layout.project.y + layout.originY });
+      expect(panel, `80x${rows}`).toMatch(/agents\s+1/);
+      expect(panel, `80x${rows}`).toMatch(/tools\s+0/);
+      expect(panel.match(/2h00|02:00:\d\d/g)?.length ?? 0, `80x${rows}`).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it('lista de archivos de memoria: con horas de sesión, el nombre del archivo cabe', () => {
+    const view = roleView([['builder', false, false]]);
+    view.state.startedAt = 0;
+    view.state.memory.touches.push({ t: 10_686_000, file: 'CLAUDE.md', op: 'read', scope: 'project' });
+    const panel = rectText(render(FULL_COLS, FULL_ROWS, view), L.project);
+    expect(panel).toContain('2h58 CLAUDE.md');
+  });
+
+  it('leyenda: si los alias tampoco caben, ningún modelo queda a medias', () => {
+    const view = roleView([['builder', false, true]]);
+    view.state.mainModel = 'modelo-muy-largo-del-lead';
+    const legend = render(80, 30, view).rowText((layoutFor(80, 30) as SceneLayout).rows.legend);
+    expect(legend).not.toContain('modelo-muy-largo');
+    expect(legend).not.toContain(' · ');
+    for (const part of ['lead', 'build', 'agent memory', 'project memory', 'advisor']) expect(legend).toContain(part);
+  });
+
+  it('caja del advisor en compacto: consultas y tokens con su unidad, y estado sobre el borde', () => {
+    const view = roleView([]);
+    applyEvent(view.state, { type: 'advisor_consult', t: 5000, id: 'c1', reason: 'before a plan' });
+    applyEvent(view.state, { type: 'advisor_reply', t: 6000, id: 'c1', durationMs: 1000, tokensRead: 87_460, tokensWritten: 10, isError: false });
+    for (const [cols, rows] of [[80, 30], [120, 30], [84, 34]] as const) {
+      const layout = layoutFor(cols, rows) as SceneLayout;
+      const text = rectText(render(cols, rows, view), { ...layout.advisor, x: layout.advisor.x + layout.originX, y: layout.advisor.y + layout.originY });
+      for (const part of ['ADVISOR', 'silent', '1 consult', '87.5k tok']) expect(text, `${cols}x${rows}: ${part}`).toContain(part);
+    }
+  });
+
+  it('hitos de memoria de proyecto muestran la hora del primer disparo (incluso en compact y en repeat failure / before sign-off) o — si no ocurrió', () => {
+    const view = roleView([['builder', true, false]]);
+    const buf = render(FULL_COLS, FULL_ROWS, view);
+    const m0Row = buf.rowText(L.milestones[0], L.project.x + 1, L.project.x + L.project.w - 1);
+    const m1Row = buf.rowText(L.milestones[1], L.project.x + 1, L.project.x + L.project.w - 1);
+    expect(m0Row).toContain('before work');
+    expect(m0Row).toMatch(/\d+:\d{2}/);
+    expect(m1Row).toContain('repeat failure');
+    expect(m1Row).toContain('—');
+
+    // En compacto (80x30) before work también muestra su hora.
+    const compactL = layoutFor(80, 30) as SceneLayout;
+    const compactBuf = render(80, 30, view);
+    const cm0Row = compactBuf.rowText(compactL.milestones[0] + compactL.originY, compactL.project.x + 1 + compactL.originX, compactL.project.x + compactL.project.w - 1 + compactL.originX);
+    expect(cm0Row).toContain('before work');
+    expect(cm0Row).toMatch(/\d+:\d{2}/);
+
+    // Cuando se disparan repeat failure y before sign-off, su hora aparece en la fila inferior del hito.
+    // after subagent_end (en t=1500), un toque antes de un error (en t=10_000) es before sign-off (slot 2).
+    view.state.memory.touches.push({ t: 5_001, file: 'MEMORY.md', op: 'write', scope: 'project' });
+    // Con un error registrado en t=10_000, un toque posterior (en t=15_001) es repeat failure (slot 1).
+    view.state.errorTimes.push(10_000);
+    view.state.memory.touches.push({ t: 15_001, file: 'MEMORY.md', op: 'read', scope: 'project', agentId: 'ag0' });
+    const firedBuf = render(FULL_COLS, FULL_ROWS, view);
+    const m1Next = firedBuf.rowText(L.milestones[1] + 1, L.project.x + 1, L.project.x + L.project.w - 1);
+    const m2Next = firedBuf.rowText(L.milestones[2] + 1, L.project.x + 1, L.project.x + L.project.w - 1);
+    expect(m1Next).toContain('00:14');
+    expect(m2Next).toContain('00:04');
+  });
+
+  it('drawStatus reserva espacio para los cuadros de cola aunque last sea largo y no duplica el costo', () => {
+    const view = roleView([['builder', true, false]]);
+    view.state.costUSD = 0.59;
+    view.queue = {
+      last: 'session · ended (inferred) · texto muy largo de resumen que ocupa todo el espacio · $0.59',
+      pending: ['tool', 'advisor', 'sub'],
+    };
+    const buf = render(FULL_COLS, FULL_ROWS, view);
+    const status = buf.rowText(L.rows.status);
+    expect(status).toContain('■■■');
+    expect(status).toContain('3 queued');
+    expect(status.match(/\$0\.59/g)?.length).toBe(1);
+  });
+
+  it('línea de teclas muestra q quit siempre y controles de replay/demo cuando corresponde', () => {
+    const live = render(FULL_COLS, FULL_ROWS, roleView([]));
+    expect(live.rowText(L.rows.prompt)).toContain('q quit');
+    expect(live.rowText(L.rows.prompt)).not.toContain('space pause');
+    const replay = render(FULL_COLS, FULL_ROWS, { ...roleView([]), replay: { speed: 2, paused: false, finished: false } });
+    expect(replay.rowText(L.rows.prompt)).toContain('q quit · space pause · +/- speed');
+    expect(replay.rowText(L.rows.header)).toContain('REPLAY x2');
+  });
+
+  it('la línea de estado cabe en todos los tamaños sin cortar grupos', () => {
+    for (const [cols, rows] of [[FULL_COLS, FULL_ROWS], [80, 30], [120, 30], [100, 35], [120, 45]] as const) {
+      const layout = layoutFor(cols, rows) as SceneLayout;
+      const buf = render(cols, rows, roleView([['builder', true, true]]));
+      const status = buf.rowText(layout.rows.status + layout.originY);
+      expect(status, `${cols}x${rows}`).toContain('elapsed');
+      expect(status, `${cols}x${rows}`).toContain('queued');
+      expect([...status].length).toBe(cols);
+    }
   });
 });

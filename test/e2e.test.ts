@@ -95,7 +95,7 @@ describe('comando empaquetado', () => {
 describe('restauración de la terminal', () => {
   it('al salir con q: entra a la pantalla alternativa y restaura todo al final', async () => {
     const demo = run(['demo'], FORCED);
-    await waitUntil(() => demo.output().includes('sinapsis'));
+    await waitUntil(() => demo.output().includes('\x1b[?2026l'));
     demo.child.stdin?.write('q');
     expect(await demo.exit).toBe(0);
     const bytes = demo.output();
@@ -105,7 +105,7 @@ describe('restauración de la terminal', () => {
 
   it('con Ctrl+C igual', async () => {
     const demo = run(['demo'], FORCED);
-    await waitUntil(() => demo.output().includes('sinapsis'));
+    await waitUntil(() => demo.output().includes('\x1b[?2026l'));
     demo.child.stdin?.write('\x03');
     expect(await demo.exit).toBe(0);
     expect(demo.output().endsWith(RESTORE_SEQUENCE)).toBe(true);
@@ -120,7 +120,7 @@ describe('restauración de la terminal', () => {
 
   it('una terminal real vuelve a su estado: un emulador termina en la pantalla normal con cursor visible', async () => {
     const demo = run(['demo'], FORCED);
-    await waitUntil(() => demo.output().includes('sinapsis'));
+    await waitUntil(() => demo.output().includes('\x1b[?2026l'));
     demo.child.stdin?.write('q');
     await demo.exit;
     const term = new Terminal({ cols: 96, rows: 48, allowProposedApi: true });
@@ -133,7 +133,7 @@ describe('restauración de la terminal', () => {
   it('señal de terminación, donde el sistema la entrega a los manejadores', async () => {
     if (process.platform === 'win32') return; // En Windows, kill() termina el proceso sin ejecutar manejadores.
     const demo = run(['demo'], FORCED);
-    await waitUntil(() => demo.output().includes('sinapsis'));
+    await waitUntil(() => demo.output().includes('\x1b[?2026l'));
     demo.child.kill('SIGTERM');
     await demo.exit;
     expect(demo.output().endsWith(RESTORE_SEQUENCE)).toBe(true);
@@ -147,11 +147,16 @@ describe('demo de principio a fin', () => {
     const bytes = demo.output();
     // La última pantalla es la anterior a salir de la pantalla alternativa.
     const screen = (await screenOf(bytes.slice(0, bytes.lastIndexOf(RESTORE_SEQUENCE)))).join('\n');
-    expect(screen).toContain('HAIKU 5.5 BUILDS');
-    expect(screen).toContain('OPUS 5.5 THINKS');
-    expect(screen).toContain('97.9k');
-    expect(screen).toContain('calls 11');
-    expect(screen).toContain('after subagents');
+    expect(screen).toContain('SINAPSIS');
+    expect(screen).toContain('DEMO');
+    expect(screen).toContain('Haiku 5.5');
+    expect(screen).toContain('Opus 5.5');
+    expect(screen).toContain('97.9k tok');
+    expect(screen).toMatch(/tools\s+11/);
+    expect(screen).toContain('PROJECT MEMORY');
+    expect(screen).toContain('AGENT MEMORY');
+    expect(screen).toContain('illustrative activity');
+    expect(screen).toContain('explore');
     expect(screen).toContain('session ended');
     expect(bytes).toContain('38;2;');
     expect(demo.stderr()).toBe('');
@@ -172,9 +177,15 @@ describe('demo de principio a fin', () => {
     expect(screen).toContain('session log');
     expect(screen).toContain('calls');
 
-    // La viñeta cambia el fondo en cada celda: el texto solo se puede leer a través del emulador.
-    const small = run(['demo'], { SINAPSIS_FORCE_TTY: '60x20' });
-    await waitUntil(() => small.output().length > 2000);
+    // Una ventana normal de Windows Terminal: es el tamaño en que antes desaparecía la parte de abajo.
+    const compact = run(['demo', '--speed', '32'], { SINAPSIS_FORCE_TTY: '120x30', SINAPSIS_EXIT_WHEN_DONE: '1' });
+    expect(await compact.exit).toBe(0);
+    const compactBytes = compact.output();
+    const compactScreen = (await screenOf(compactBytes.slice(0, compactBytes.lastIndexOf(RESTORE_SEQUENCE)), 120, 30)).join('\n');
+    for (const part of ['PROJECT MEMORY', 'main session', 'AGENT MEMORY', 'delegated ·', 'back to', 'session log']) expect(compactScreen).toContain(part);
+
+    const small =run(['demo'], { SINAPSIS_FORCE_TTY: '60x20' });
+    await waitUntil(() => small.output().includes('Agranda'));
     await new Promise((resolve) => setTimeout(resolve, 300));
     small.child.stdin?.write('q');
     expect(await small.exit).toBe(0);

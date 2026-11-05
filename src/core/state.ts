@@ -3,7 +3,20 @@
 // `applyEvent` modifica el estado recibido: se llama por cada evento y la escena lee el resultado.
 // El estado final no depende del orden en que se intercalen los archivos de una sesión.
 
-import type { ConsultReason, SinapsisEvent } from './events.js';
+import type { ConsultReason, MemoryScope, SinapsisEvent } from './events.js';
+
+/** Una lectura o escritura de un archivo de memoria, vista en una herramienta. */
+export interface MemoryTouchState {
+  t: number;
+  file: string;
+  scope: MemoryScope;
+  op: 'read' | 'write';
+  /** Subagente que la hizo. Sin esto, fue el proceso principal. */
+  agentId?: string;
+}
+
+/** Hito del panel de memoria de proyecto: 0 `before work`, 1 `repeat failure`, 2 `before sign-off`. */
+export type MemoryMilestone = 0 | 1 | 2;
 
 export interface ToolStat {
   count: number;
@@ -46,6 +59,8 @@ export interface SubagentState {
   totalTokens?: number;
   /** Ya llegaron los totales del proceso principal. */
   finalized: boolean;
+  /** Recibió un índice `MEMORY.md` con notas, sin usar herramientas. Sin esto, no se sabe. */
+  memoryIndexed?: boolean;
 }
 
 export type MainStatus = 'idle' | 'working' | 'tool';
@@ -86,6 +101,45 @@ export interface SessionState {
     consults: ConsultState[];
   };
   subagents: SubagentState[];
+  memory: {
+    /** Archivos que Claude Code cargó por su cuenta, sin herramienta. */
+    loaded: Array<{ t: number; file: string; scope: MemoryScope }>;
+    /** Ordenadas por hora, para que el resultado no dependa del orden de llegada. */
+    touches: MemoryTouchState[];
+  };
+  /** Horas de los errores de herramientas y de los prompts, ordenadas. Sirven para inferir el hito de memoria. */
+  errorTimes: number[];
+  promptTimes: number[];
+}
+
+function insertSorted(list: number[], value: number): void {
+  let i = list.length;
+  while (i > 0 && (list[i - 1] as number) > value) i -= 1;
+  list.splice(i, 0, value);
+}
+
+/** Último valor de una lista ordenada que no pasa de `t`. */
+function lastUpTo(list: number[], t: number): number | undefined {
+  for (let i = list.length - 1; i >= 0; i -= 1) if ((list[i] as number) <= t) return list[i];
+  return undefined;
+}
+
+/**
+ * Hito de una lectura o escritura de memoria. Es **inferido**: el transcript no dice por qué se tocó la memoria.
+ * Solo mira lo ocurrido antes dentro del mismo turno, así que la respuesta no cambia con lo que llegue después.
+ */
+export function memoryMilestone(state: SessionState, touch: Pick<MemoryTouchState, 't'>): MemoryMilestone {
+  const turnStart = lastUpTo(state.promptTimes, touch.t) ?? Number.NEGATIVE_INFINITY;
+  const inTurn = (t: number | undefined): boolean => t !== undefined && t >= turnStart && t < touch.t;
+  if (state.errorTimes.some(inTurn)) return 1;
+  if (state.subagents.some((s) => inTurn(s.endedAt))) return 2;
+  return 0;
+}
+
+/** Etiqueta real de una operación: se escribió, o se leyó, con o sin un error previo en el turno. */
+export function memoryLabel(state: SessionState, touch: MemoryTouchState): 'save' | 'check' | 'recall' {
+  if (touch.op === 'write') return 'save';
+  return memoryMilestone(state, touch) === 1 ? 'check' : 'recall';
 }
 
 interface CallRecord {
@@ -93,6 +147,7 @@ interface CallRecord {
   agentId?: string;
   summary?: string;
   error?: boolean;
+  errorAt?: number;
   counted?: boolean;
   done?: boolean;
 }
@@ -111,6 +166,8 @@ interface Internals {
   /** Herramientas abiertas del proceso principal, en orden de llamada. */
   openMain: string[];
   awaitingFollowUp?: ConsultState;
+  /** Subagentes cuyo resumen viene de `SubagentHandback`: ningún otro lo reemplaza, llegue antes o después. */
+  handbacks: Set<string>;
 }
 
 const internals = new WeakMap<SessionState, Internals>();
@@ -131,8 +188,11 @@ export function createState(): SessionState {
     messages: 0,
     advisor: { calls: 0, tokensRead: 0, tokensWritten: 0, routineTurns: 0, consults: [] },
     subagents: [],
+    memory: { loaded: [], touches: [] },
+    errorTimes: [],
+    promptTimes: [],
   };
-  internals.set(state, { usage: new Map(), calls: new Map(), openMain: [] });
+  internals.set(state, { usage: new Map(), calls: new Map(), openMain: [], handbacks: new Set() });
   return state;
 }
 
@@ -164,6 +224,7 @@ function countToolError(state: SessionState, internal: Internals, id: string): v
   call.counted = true;
   (state.tools[call.name] ??= { count: 0, errors: 0 }).errors += 1;
   state.toolErrors += 1;
+  if (call.errorAt !== undefined) insertSorted(state.errorTimes, call.errorAt);
   if (call.agentId) {
     const sub = state.subagents.find((s) => s.id === call.agentId);
     if (sub) sub.errors += 1;
@@ -204,6 +265,7 @@ export function applyEvent(state: SessionState, event: SinapsisEvent): void {
 
     case 'user_prompt':
       state.prompts += 1;
+      insertSorted(state.promptTimes, event.t);
       state.ended = false;
       state.status = 'working';
       break;
@@ -244,6 +306,13 @@ export function applyEvent(state: SessionState, event: SinapsisEvent): void {
       internal.calls.set(event.id, call);
       (state.tools[event.name] ??= { count: 0, errors: 0 }).count += 1;
       state.toolCalls += 1;
+      if (event.memory) {
+        const touch: MemoryTouchState = { t: event.t, ...event.memory, ...(event.agentId ? { agentId: event.agentId } : {}) };
+        const { touches } = state.memory;
+        let at = touches.length;
+        while (at > 0 && (touches[at - 1] as MemoryTouchState).t > touch.t) at -= 1;
+        touches.splice(at, 0, touch);
+      }
       if (event.agentId) {
         const sub = upsertSubagent(state, event.agentId, event.t);
         if (!sub.finalized) sub.toolCount += 1;
@@ -260,6 +329,7 @@ export function applyEvent(state: SessionState, event: SinapsisEvent): void {
       const call = internal.calls.get(event.id) ?? {};
       call.done = true;
       call.error = event.isError;
+      if (event.isError) call.errorAt = event.t;
       call.agentId = call.agentId ?? event.agentId;
       internal.calls.set(event.id, call);
       countToolError(state, internal, event.id);
@@ -273,6 +343,14 @@ export function applyEvent(state: SessionState, event: SinapsisEvent): void {
       }
       break;
     }
+
+    case 'memory_load':
+      for (const file of event.files) {
+        const known = state.memory.loaded.find((item) => item.file === file.file && item.scope === file.scope);
+        if (!known) state.memory.loaded.push({ t: event.t, ...file });
+        else if (event.t > 0 && (known.t <= 0 || event.t < known.t)) known.t = event.t;
+      }
+      break;
 
     case 'advisor_consult': {
       const consult = upsertConsult(state, event.id, event.t);
@@ -297,6 +375,14 @@ export function applyEvent(state: SessionState, event: SinapsisEvent): void {
       break;
     }
 
+    case 'advisor_abandoned': {
+      const at = state.advisor.consults.findIndex((c) => c.id === event.id);
+      if (at < 0) break;
+      state.advisor.consults.splice(at, 1);
+      state.advisor.calls = Math.max(0, state.advisor.calls - 1);
+      break;
+    }
+
     case 'assistant_text':
       if (!event.agentId && internal.awaitingFollowUp) {
         internal.awaitingFollowUp.followUp = event.text;
@@ -318,6 +404,7 @@ export function applyEvent(state: SessionState, event: SinapsisEvent): void {
       const sub = upsertSubagent(state, event.subagentId, event.t);
       if (event.description) sub.description = event.description;
       if (event.toolUseId) sub.toolUseId = event.toolUseId;
+      if (event.memoryIndexed !== undefined) sub.memoryIndexed = event.memoryIndexed;
       if (event.agentType) {
         sub.agentType = event.agentType;
         sub.readOnly = event.agentType === 'Explore' || event.agentType === 'Plan';
@@ -332,7 +419,12 @@ export function applyEvent(state: SessionState, event: SinapsisEvent): void {
       if (!sub.finalized) {
         sub.endedAt = event.t;
         sub.status = event.status;
-        sub.summary = event.summary;
+        if (!internal.handbacks.has(sub.id)) sub.summary = event.summary;
+      }
+      // El informe del subagente puede llegar con el aviso del principal ya aplicado: gana igual.
+      if (event.handback) {
+        internal.handbacks.add(sub.id);
+        if (event.summary !== undefined) sub.summary = event.summary;
       }
       break;
     }
@@ -344,7 +436,7 @@ export function applyEvent(state: SessionState, event: SinapsisEvent): void {
       sub.finalized = true;
       sub.status = event.status;
       sub.endedAt = event.t;
-      if (event.summary) sub.summary = event.summary;
+      if (event.summary && !internal.handbacks.has(sub.id)) sub.summary = event.summary;
       if (event.model) sub.model = event.model;
       if (event.durationMs !== undefined) sub.durationMs = event.durationMs;
       if (event.totalTokens !== undefined) sub.totalTokens = event.totalTokens;

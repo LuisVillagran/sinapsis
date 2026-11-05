@@ -72,6 +72,8 @@ export interface ReplayOptions {
   speed?: number;
   /** Tiempo muerto máximo entre dos líneas, medido en tiempo de la sesión. */
   maxGapMs?: number;
+  /** Vuelve a empezar tras esta pausa, en ms reales. Sin esto, el replay termina. */
+  loopDelayMs?: number;
 }
 
 export interface ReplaySource extends EventSource {
@@ -112,6 +114,8 @@ export function createReplay(lines: TimedLine[], options: ReplayOptions = {}): R
   let cursor = 0;
   let position = 0;
   let lastTick: number | undefined;
+  let finishedAt: number | undefined;
+  let stopped = false;
 
   return {
     get speed() {
@@ -137,9 +141,19 @@ export function createReplay(lines: TimedLine[], options: ReplayOptions = {}): R
         updates.push({ kind: 'events', events: (steps[cursor] as Step).events, historical: false });
         cursor += 1;
       }
+      if (options.loopDelayMs !== undefined && !stopped && !paused && cursor >= steps.length) {
+        finishedAt ??= now;
+        if (now - finishedAt >= options.loopDelayMs) {
+          updates.push({ kind: 'reset', sessionId: 'replay' });
+          cursor = 0;
+          position = 0;
+          finishedAt = undefined;
+        }
+      }
       return updates;
     },
     async stop() {
+      stopped = true;
       cursor = steps.length;
     },
   };

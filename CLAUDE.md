@@ -12,6 +12,9 @@ importan más que agregar funciones.
 
 ## 1. Modo de trabajo: autónomo
 
+> **Aviso:** esta sección describe el desarrollo inicial, ya terminado. Antes de aplicarla, leer
+> [Vigencia de la sección 1](#vigencia-de-la-sección-1), al final de este documento.
+
 El usuario no estará disponible durante el desarrollo y no podrá aceptar permisos ni
 responder preguntas. Este documento es el acuerdo completo y reemplaza a cualquier
 versión anterior.
@@ -28,8 +31,8 @@ versión anterior.
   debe revisar el usuario al volver.
 - **Si algo bloquea una parte:** intentar una alternativa razonable, registrarlo y seguir
   con lo demás. Nunca fingir que algo funciona: lo no verificado se declara como tal.
-- **Consultar al advisor** al empezar cada fase con decisiones de diseño, cuando un
-  problema no converge y antes de declarar terminado el proyecto.
+- **Consultar al advisor** solo para decisiones de diseño, cuando un problema no converge y
+  antes de cerrar una fase o una tarea larga. No como rutina ni en tareas cortas.
 
 ### Qué está autorizado sin preguntar
 
@@ -67,7 +70,9 @@ versión anterior.
 | Datos sin fuente real | No se inventan. Se reemplazan o se omiten |
 | Sesiones reales | Las lanza Claude de forma autónoma con `claude -p` |
 | Identidad de git | Configurada solo en este repositorio, con el correo personal del usuario |
-| Imagen de referencia | `referencia/diseño.png` es de un tercero: no se sube al repositorio. El README da crédito a su autor (`@skunzu` en X) como inspiración |
+| Imágenes de referencia | `referencia/Referencia (1..4).jpeg` son frames de una misma animación, de autoría sin confirmar: no se suben al repositorio. El README da crédito a `@skunzu` en X por la primera inspiración |
+| Advisor frente a la referencia | La referencia no lo incluye. Se conserva en una caja junto a la sesión principal, decidido por el usuario |
+| Datos sin fuente en la referencia | `%` de las tarjetas y actividad de `AGENT MEMORY`: reales en vivo y en replay. Solo `sinapsis demo` muestra valores de ejemplo, rotulados como ilustrativos, decidido por el usuario |
 | Licencia | MIT |
 | Rama principal | `main`, con una rama por fase fusionada al cerrarla |
 
@@ -121,8 +126,10 @@ Teclas: `q` o `Ctrl+C` para salir; en replay, `espacio` pausa y `+` / `-` cambia
 - Usa la pantalla alternativa, oculta el cursor y **siempre restaura la terminal** al salir,
   también ante errores y señales.
 - Se adapta al redimensionar.
-- **Layout completo desde 96x48.** Entre 80x24 y ese tamaño, un layout reducido
-  que conserva advisor, sesión principal, subagentes y log. Por debajo, un mensaje pidiendo
+- **Layout completo desde 90x46.**
+- **Layout compacto desde 80x30:** los mismos apartados, conexiones y paquetes, en menos filas. Es el que se ve en una
+  ventana normal, de unas 120x30.
+- Entre 80x24 y 80x30, un resumen en texto que avisa cómo ver la escena completa. Por debajo, un mensaje pidiendo
   agrandar la ventana.
 - Color truecolor con caída a 256 colores. Si la salida no es una TTY, termina con un mensaje claro.
 - Sin sesión activa, muestra el panel en reposo y espera, sin fallar.
@@ -181,76 +188,78 @@ docs/
 
 ## 6. Diseño visual
 
-`referencia/diseño.png` es la referencia: una terminal de **96x48**. Consultarla y compararla
-en cada iteración de la Fase 3.
+`referencia/Referencia (1..4).jpeg` es la referencia: frames de una animación en una terminal de **90x46**, con la barra
+de ventana aparte. Consultarla y compararla en cada iteración.
 
 ### Limitaciones de una terminal
 
 No se puede imponer la fuente ni crear un glow real, y la unidad mínima es la celda.
-Traducción acordada:
 
 | En la imagen | En la terminal |
 | --- | --- |
-| Glow de bordes | Borde brillante más halo: celdas vecinas con fondo tintado tenue |
-| Trazos gruesos | `━ ┃ ┏ ┓ ┗ ┛ ┣ ┫ ┳ ┻` |
-| Línea punteada | `╌ ╎` o `┄ ┆` |
-| Fondo con viñeta | Fondo azul marino con degradado suave por celda (truecolor) |
+| Glow de un panel encendido | Borde brillante más halo: celdas vecinas con fondo tintado tenue |
+| Trazos finos | `─ │ ┌ ┐ └ ┘ ┼` |
+| Línea punteada | `┄ ╎ ╌` |
+| Fondo | Plano, sin viñeta |
 | Fade | Interpolar el color hacia el fondo |
 | Escala | Caja que crece desde su centro, celda a celda |
-| Movimiento fino | Caracteres de bloque y Braille para subcelda en barras y paquetes |
+| Riel de una barra | `░` tenue |
 | JetBrains Mono | Recomendada en el README, no se puede imponer |
 
 ### Colores
 
-Tomar los valores finales muestreando la imagen. Base aproximada:
+Valores en `docs/colores.md`, muestreados con `tools/sample-colors.ts`.
 
-| Token | Uso | Aproximado |
+| Token | Uso | Valor |
 | --- | --- | --- |
-| `bg` | Fondo | `#0b1026` |
-| `main` | Modelo principal, bordes | `#6fb8e8` |
-| `sub` | Subagentes, trazos brillantes | `#9fe8ff` |
-| `advisor` | Todo lo del advisor | `#b4a7ff` |
-| `metrics` | Panel de métricas, barras buenas | `#5fbf93` |
-| `alert` | Errores y reintentos | `#e08a4f` |
-| `text` / `dim` | Texto / secundario | `#e6ecff` / `#7c88a8` |
+| `bg` | Fondo y paneles | `#191e24` |
+| `main` | Modelo principal, sesión y lead | `#e38d63` |
+| `sub` | Subagentes y sus barras | `#81b0f6` |
+| `metrics` | Memoria de agentes | `#77ce9b` |
+| `notes` | Memoria de proyecto | `#af9eec` |
+| `advisor` | Advisor, que no está en la referencia | `#e59ad8` |
+| `alert` | Errores y reintentos | `#f0695a` |
+| `text` / `dim` | Texto / secundario | `#dfe3ea` / `#8b909b` |
 
-### Geometría objetivo (columna, fila; desde 0; tolerancia ±1)
+### Geometría del layout completo (columna, fila; desde 0)
+
+Medida sobre 90x46 (sin barra falsa de ventana ni separador decorativo, y con `AGENT MEMORY` fuera del camino de delegación). La verifica `test/layout.test.ts`.
 
 | Elemento | Columnas | Filas |
 | --- | --- | --- |
-| Barra falsa de ventana (`● ● ●`, carpeta real, tamaño real) | 0–95 | 0 |
-| Encabezado | centrado | 2 |
-| Separador | 2–93 | 3 |
-| Leyenda | 2–93 | 4 |
-| Panel del advisor | 2–23 | 5–38 |
-| Sesión principal | 39–76 | 5–11 |
-| Estado del advisor (punteado) | 78–94 | 5–11 |
-| Panel de métricas | 38–83 | 13–19 |
-| Texto "delegate to subagents" | centrado | 21 |
-| Tarjetas de subagente | 28–48, 50–71, 73–94 | 24–30 |
-| Caja "back to lead" | 43–78 | 35–38 |
-| Session log | 2–94 | 39–44 |
-| Línea de prompt | 0–95 | 45 o 46 |
-| Línea de estado | 0–95 | 46 o 47 |
+| Encabezado | centrado | 0 |
+| Leyenda | repartida | 1 |
+| Project memory | 3–23 | 2–35 |
+| Sesión principal | 44–70 | 2–7 |
+| Advisor (punteado en silent, sólido en replaying) | 74–87 | 2–7 |
+| Agent memory (a la izquierda del tronco) | 26–55 | 10–16 |
+| Texto `N delegated · M done` | desde 59 (`spine + 2`) | 18 |
+| Bus hacia las tarjetas, y flechas | 36–78 | 20 y 21 |
+| Tarjetas de subagente | 26–45, 47–66, 68–87 | 22–28 |
+| Bus de regreso, y flecha | 36–78 | 30 y 31 |
+| Back to lead | 41–73 | 32–35 |
+| Session log | 3–87 | 37–43 |
+| Línea de teclas | 0–89 | 44 |
+| Línea de estado | 0–89 | 45 |
 
 ### Contenido de cada elemento
 
 | Elemento | Contenido |
 | --- | --- |
-| Encabezado | `CLAUDE CODE ADVISOR · <PRINCIPAL> BUILDS · <ADVISOR> THINKS`, con modelos reales |
-| Leyenda | Cuadros de color: main, subagents, advisor, tools |
-| Panel del advisor | `OPUS 5.5` / `advisor · on call`, línea de tiempo de consultas con motivo inferido, última consulta (`sealed · 42 s · 64.7k read · 4.0k written`) y estadísticas: calls, tokens read, routine turns |
-| Sesión principal | Modelo, tarea (`ai-title` o último prompt), medidor de effort, herramienta o estado actual con spinner `[ \ ]` |
-| Estado del advisor | model, mode (`on call`), state (`silent` o `replaying`) |
-| Panel de métricas | **Reemplaza a "JEV · fork layer"**: distribución real de herramientas con barras horizontales y conteos, más total de llamadas. Naranjo para las que tuvieron errores |
-| Tarjetas | Nombre, modelo, `read-only` si corresponde, barra y resultado. **Sin porcentaje inventado:** barra indeterminada o basada en un dato real según lo que muestre la Fase 0 |
-| Back to lead | `back to <modelo> · lead`, y resúmenes recibidos |
-| Session log | Hora, modelo o subagente, evento |
-| Prompt | Comando reconstruido desde los modelos reales, con cursor parpadeante. No se presenta como literal |
-| Línea de estado | Último evento y eventos en cola, con cuadros de color |
+| Encabezado | `SINAPSIS · <carpeta> · <modo>` (`LIVE`, `REPLAY xN`, `PAUSED`, `REPLAY END`, `DEMO` o `WAITING FOR A SESSION`) |
+| Leyenda | Cuadros de color: `lead · <modelo>`, `build · <modelo>` (solo `build` sin subagentes), `agent memory`, `project memory`, `advisor · <modelo>`. Si los nombres completos no caben, todos pasan a su alias, y si tampoco, ninguno lleva modelo |
+| Project memory | Alcance real, hitos `before work`, `repeat failure` y `before sign-off` con su hora de disparo y flechas a la sesión, a la primera tarjeta y al lead, lista real de archivos de memoria tocados y totales (`totals`: `agents`, `memories`, `tools`, `errors`) |
+| Sesión principal | Modelo, tarea (`ai-title` o último prompt), medidor de effort y actividad con spinner, o `--model` en reposo |
+| Advisor | Modelo, estado (`silent`, `replaying` u `off`) sobre el borde superior, borde punteado salvo en `replaying`, y en filas separadas consultas (`N consults`) y tokens leídos (`Xk tok`). En compacto, título arriba y estado abajo sobre el borde; con 4 filas, el modelo queda solo en la leyenda |
+| Agent memory | `roles` con memoria sobre los roles de los que se sabe (sin contar los `no data`), y una fila por rol existente: nombre, barra según sus operaciones y `recall`, `check` o `save`. Sin operaciones: `indexed` si recibió un índice `MEMORY.md` con notas, `no memory` si no tiene notas y `no data` si el transcript no lo dice (o `no subagents yet` sin subagentes). Pie `bars · real tool calls`, o `illustrative activity` en la demo |
+| Tarjetas | Nombre, modelo, `read-only` si corresponde, barra por cantidad real de herramientas (`countBar`, 1 celda por herramienta en curso, reiniciada antes de llenarse, y llena solo al terminar), contador de herramientas, descripción y estado |
+| Back to lead | `back to <modelo> · lead`, y resúmenes recibidos (`N back · <resumen>`), `waiting for N summaries` o `no summaries yet` |
+| Session log | Tiempo desde el inicio, agente, evento |
+| Línea de teclas | Controles reales disponibles: `q quit` siempre, y `space pause · +/- speed` en replay/demo (más el rótulo `demo: illustrative activity` en la demo) |
+| Línea de estado | Tiempo transcurrido (`elapsed`), costo (`cost $X.XX` si existe), último evento mostrado y eventos en cola con cuadros de color (`N queued`) |
 
-**No copiar** `X: @skunzu`, `jev`, `forks`, `2,625`, `files: 156`, `call sites: 15` ni otros
-valores de ejemplo de la imagen.
+**No copiar** valores de ejemplo de las imágenes: `~/app`, `SUBAGENT TIP`, `builder`, `Sonnet 5.5`, `integrate + verify`
+como dato, tiempos del log. Los nombres de agentes y modelos salen de cada sesión.
 
 ---
 
@@ -262,8 +271,9 @@ Implementarlas una por una, en este orden:
    como máquina de escribir; los paneles entran en cascada.
 2. **Paquetes:** cada evento recorre su camino por los conectores. Un punto brillante con estela
    que se desvanece, avanzando con precisión de subcelda donde sea posible.
-3. **Consulta al advisor:** el panel se ilumina con pulso, un paquete de ida y otro de vuelta,
-   y el motivo se escribe en la línea de tiempo.
+3. **Consulta al advisor:** la caja se ilumina con pulso, un paquete de ida y otro de vuelta,
+   y el motivo inferido se escribe en el log. Una lectura de memoria dispara el paquete de su hito y enciende su fila,
+   y si fue un subagente, también su tarjeta.
 4. **Subagentes:** las tarjetas crecen desde su centro con fade, sus barras se llenan y al
    terminar se desvanecen enviando su resumen a "back to lead", con el conector encendido.
 5. **Contadores** que suben número a número; **barras** que crecen con easing.
@@ -285,7 +295,7 @@ Implementarlas una por una, en este orden:
 - El bucle apunta a **60 fps** y baja de forma adaptativa, hasta 30, si la terminal no da abasto
   (`stdout` con contrapresión). `--fps` permite fijarlo.
 - Se escriben solo las celdas que cambian, con actualización sincronizada (`CSI ? 2026`) para evitar parpadeo.
-- Presupuesto: calcular un frame en **menos de 8 ms (p95)** a 96x48.
+- Presupuesto: calcular un frame en **menos de 8 ms (p95)** a 90x46.
 - En reposo, consumir poca CPU: menos del 5 % de un núcleo como meta.
 
 ---
@@ -420,3 +430,21 @@ revisar el usuario.
 - **Formato de transcripts sin documentar:** ignorar tipos y campos desconocidos sin fallar.
 - **Alcance:** no agregar funciones fuera de este documento. Si una idea parece valiosa, anotarla en
   `docs/estado.md` como sugerencia.
+
+---
+
+## Flujo de trabajo con subagentes
+
+- Planifica y divide la tarea. Delega en builder solo las tareas grandes, las que requieren investigar o iterar con tests.
+  Un cambio pequeño y ya definido lo hace directamente el modelo principal.
+- Consulta al advisor según la sección 1: solo para decisiones de diseño, cuando un problema no converge y antes de cerrar
+  una fase o una tarea larga.
+- Si un error se repite o un test falla dos veces, delega en debugger.
+- Antes de dar una tarea por terminada, pide a reviewer que revise el diff.
+- Integra los resultados y verifica antes de cerrar.
+
+## Vigencia de la sección 1
+
+El modo autónomo de la sección 1 rigió el desarrollo inicial, ya terminado. Si el usuario está presente y pide trabajar
+por fases con su aprobación, se detiene al final de cada fase y se le pregunta lo que le corresponda decidir. Lo demás
+de la sección 1 sigue vigente: la bitácora, lo autorizado y lo prohibido.

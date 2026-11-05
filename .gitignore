@@ -9,5 +9,9 @@ fixtures/raw/
 # Permisos locales de Claude Code.
 .claude/settings.local.json
 
+# Notas de los subagentes: el repositorio es público y pueden traer datos de trabajo.
+.claude/agent-memory/
+.claude/agent-memory-local/
+
 # Imagen de referencia de un tercero: solo para uso local.
 referencia/

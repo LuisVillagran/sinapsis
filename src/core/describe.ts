@@ -3,7 +3,7 @@
 import type { SinapsisEvent } from './events.js';
 import type { SessionState } from './state.js';
 
-export type LogKind = 'main' | 'sub' | 'advisor' | 'tool' | 'error';
+export type LogKind = 'main' | 'sub' | 'advisor' | 'tool' | 'memory' | 'error';
 
 export interface LogEntry {
   t: number;
@@ -56,11 +56,15 @@ export function subagentName(state: SessionState, id: string): string {
   return sub?.description ?? sub?.agentType ?? id.slice(0, 7);
 }
 
+/** Nombre corto de un agente: su tipo real, como `builder` o `explore`. Sin tipo, la descripción o su id. */
+export function agentLabel(state: SessionState, id: string): string {
+  const sub = state.subagents.find((s) => s.id === id);
+  return (sub?.agentType ?? sub?.description?.split(/\s+/)[0] ?? id.slice(0, 7)).toLowerCase();
+}
+
 function who(state: SessionState, agentId: string | undefined): { who: string; kind: LogKind } {
-  if (!agentId) return { who: modelAlias(state.mainModel), kind: 'main' };
-  const sub = state.subagents.find((s) => s.id === agentId);
-  const short = (sub?.description ?? sub?.agentType ?? agentId.slice(0, 7)).split(/\s+/)[0]?.toLowerCase() ?? '';
-  return { who: `${modelAlias(sub?.model ?? state.mainModel)}:${short}`, kind: 'sub' };
+  if (!agentId) return { who: displayModel(state.mainModel), kind: 'main' };
+  return { who: agentLabel(state, agentId), kind: 'sub' };
 }
 
 /** Línea de log para un evento, o `undefined` si no merece una. El estado ya incluye el evento. */
@@ -70,7 +74,13 @@ export function describeEvent(event: SinapsisEvent, state: SessionState): LogEnt
   switch (event.type) {
     case 'user_prompt':
       return { t, who: 'you', kind: 'main', text: plainText(event.text) };
+    case 'memory_load':
+      return { t, who: 'memory', kind: 'memory', text: `loaded ${event.files.map((f) => f.file).join(', ')}` };
     case 'tool_call':
+      if (event.memory) {
+        const actor = event.agentId ? `${agentLabel(state, event.agentId)} · ` : '';
+        return { t, who: 'memory', kind: 'memory', text: `${actor}${event.memory.op === 'write' ? 'save' : 'recall'} ${event.memory.file}` };
+      }
       // El resumen es un dato literal, como un patrón `*.jsonl`: no pasa por `plainText`.
       return { t, ...who(state, event.agentId), text: event.summary ? `${event.name} · ${event.summary.replace(/\s+/g, ' ')}` : event.name };
     case 'tool_result':
@@ -85,8 +95,10 @@ export function describeEvent(event: SinapsisEvent, state: SessionState): LogEnt
         kind: event.isError ? 'error' : 'advisor',
         text: `${event.isError ? 'failed' : 'sealed reply'} · ${formatDuration(event.durationMs)} · ${formatTokens(event.tokensRead)} read · ${formatTokens(event.tokensWritten)} written`,
       };
+    case 'advisor_abandoned':
+      return { t, who: advisor, kind: 'advisor', text: 'consult dropped · no reply (inferred)' };
     case 'subagent_start':
-      return { t, who: `${modelAlias(event.model ?? state.mainModel)}:${event.subagentId.slice(0, 7)}`, kind: 'sub', text: 'subagent started' };
+      return { t, who: agentLabel(state, event.subagentId), kind: 'sub', text: 'subagent started' };
     case 'subagent_info':
       return event.description ? { t, ...who(state, event.subagentId), kind: 'sub', text: `delegated · ${plainText(event.description)}` } : undefined;
     case 'subagent_end':

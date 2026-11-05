@@ -10,6 +10,9 @@ import { detectColorMode } from './tui/color.js';
 
 const assetPath = (relative: string): string => fileURLToPath(new URL(relative, import.meta.url));
 
+/** Pausa con el estado final a la vista antes de que la demo vuelva a empezar. */
+const DEMO_LOOP_DELAY_MS = 9000;
+
 function version(): string {
   const pkg = JSON.parse(readFileSync(assetPath('../package.json'), 'utf8')) as { version: string };
   return pkg.version;
@@ -20,7 +23,9 @@ function createSource(args: ParsedArgs): EventSource {
   if (command.kind === 'follow') return createLiveSource({ sessionId: command.session, project: command.project });
   const file = command.kind === 'demo' ? assetPath('../fixtures/sesion-haiku-advisor-opus.jsonl') : (command as { file: string }).file;
   if (!existsSync(file)) throw new ArgsError(`No existe el archivo: ${file}`);
-  return createReplay(loadTranscript(file), { speed: args.speed });
+  // La demo vuelve a empezar para quedar a la vista. Las pruebas y --print-events necesitan que termine.
+  const loop = command.kind === 'demo' && !args.printEvents && process.env.SINAPSIS_EXIT_WHEN_DONE !== '1';
+  return createReplay(loadTranscript(file), { speed: args.speed, loopDelayMs: loop ? DEMO_LOOP_DELAY_MS : undefined });
 }
 
 /**
@@ -55,6 +60,7 @@ async function runInterface(args: ParsedArgs, source: EventSource): Promise<void
       return () => stdout.off('resize', listener);
     },
     colorMode: forced ? (env.SINAPSIS_COLOR === '256' ? '256' : 'truecolor') : detectColorMode(stdout.getColorDepth()),
+    illustrative: args.command.kind === 'demo',
     fps: args.fps,
     crashAtFrame: env.SINAPSIS_CRASH_AT_FRAME ? Number(env.SINAPSIS_CRASH_AT_FRAME) : undefined,
     exitWhenDone: env.SINAPSIS_EXIT_WHEN_DONE === '1',
