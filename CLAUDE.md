@@ -430,3 +430,18 @@ revisar el usuario.
 - **Formato de transcripts sin documentar:** ignorar tipos y campos desconocidos sin fallar.
 - **Alcance:** no agregar funciones fuera de este documento. Si una idea parece valiosa, anotarla en
   `docs/estado.md` como sugerencia.
+
+---
+
+## Flujo de trabajo con subagentes
+
+- Planifica y divide la tarea; delega la implementación en builder.
+- Si un error se repite o un test falla dos veces, delega en debugger.
+- Antes de dar una tarea por terminada, pide a reviewer que revise el diff.
+- Integra los resultados y verifica antes de cerrar.
+
+## Vigencia de la sección 1
+
+El modo autónomo de la sección 1 rigió el desarrollo inicial, ya terminado. Si el usuario está presente y pide trabajar
+por fases con su aprobación, se detiene al final de cada fase y se le pregunta lo que le corresponda decidir. Lo demás
+de la sección 1 sigue vigente: la bitácora, lo autorizado y lo prohibido.

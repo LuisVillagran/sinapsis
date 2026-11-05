@@ -8,6 +8,36 @@ Bitácora para retomar el trabajo solo con este archivo. Ver `CLAUDE.md` para el
 que el usuario lo revise en su terminal. Fases 0 a 6 cerradas antes. Repositorio público:
 https://github.com/LuisVillagran/sinapsis (tag `v0.1.0`, con el diseño anterior).
 
+**Equipo de subagentes: Fase A terminada, en la misma rama.** Espera que el usuario reinicie Claude Code y apruebe los
+ajustes de abajo antes de empezar la Fase B.
+
+## Equipo de subagentes (2026-11-05)
+
+El usuario pidió trabajar con `builder`, `debugger` y `reviewer`, y que Sinapsis los muestre por su rol, en tres fases con
+aprobación. Quiere **ver cómo se comunican**.
+
+**Fase A, hecha:** `.claude/agents/`, sección de flujo en `CLAUDE.md`. Sin verificar hasta reiniciar: que los tres
+carguen y que `disallowedTools: mcp__*` funcione en esta versión.
+
+Agregados al prompt original: `disallowedTools: mcp__*`, para que no hereden Gmail ni otros conectores;
+`.claude/agent-memory/` en `.gitignore`, porque el repositorio es público; la orden de completar la tarea antes de guardar
+memoria, por el problema reportado en anthropics/claude-code#55648; `npm run bundle` en builder y debugger; y una nota de
+que el modo autónomo de la sección 1 no impide detenerse por fases.
+
+**Ajustes propuestos para las fases B y C, sin aprobar:**
+
+- **Fase B, comunicación:** incluir un `SendMessage` real entre subagentes y documentar cómo queda en el transcript. Según
+  la documentación, se puede. Sin observarlo no se puede mostrar.
+- **Fase B, recuperar memoria:** hacer dos rondas. La primera no tiene notas que leer. Además, `MEMORY.md` se inyecta en
+  el prompt de sistema, así que un `recall` puede no aparecer como herramienta.
+- **Fase B, fixture:** el sanitizador borra el adjunto `instructions`. Decidir si conserva solo nombres de archivo.
+- **Fase C, ya hecho en esta rama:** nombres por rol y modelo real (C1), panel `AGENT MEMORY` (C3) y rol en el log (C4).
+  Falta probarlos con datos reales.
+- **Fase C, eventos:** hoy la memoria viaja como `tool_call.memory`. Emitir además `memory_recall` y `memory_save` duplicaría
+  animaciones si no se reemplaza ese campo.
+- **Fase C, faltante:** el prompt no pide mostrar la comunicación. Agregar paquetes entre agentes para `SendMessage`.
+- **Fase C, error falso:** leer un `MEMORY.md` que aún no existe da error y activaría `repeat failure`. Excluirlo.
+
 ## Rediseño (2026-11-05)
 
 El usuario entregó `referencia/Referencia (1..4).jpeg` y pidió apegarse a su estilo y tener todos los apartados
