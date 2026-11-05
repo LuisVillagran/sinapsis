@@ -8,16 +8,32 @@ Bitácora para retomar el trabajo solo con este archivo. Ver `CLAUDE.md` para el
 que el usuario lo revise en su terminal. Fases 0 a 6 cerradas antes. Repositorio público:
 https://github.com/LuisVillagran/sinapsis (tag `v0.1.0`, con el diseño anterior).
 
-**Equipo de subagentes: Fase A terminada, en la misma rama.** Espera que el usuario reinicie Claude Code y apruebe los
-ajustes de abajo antes de empezar la Fase B.
+**Equipo de subagentes: Fase A terminada, en la misma rama, con carga y memoria probadas.** Espera que el usuario apruebe los ajustes de abajo
+antes de empezar la Fase B.
 
 ## Equipo de subagentes (2026-11-05)
 
 El usuario pidió trabajar con `builder`, `debugger` y `reviewer`, y que Sinapsis los muestre por su rol, en tres fases con
 aprobación. Quiere **ver cómo se comunican**.
 
-**Fase A, hecha:** `.claude/agents/`, sección de flujo en `CLAUDE.md`. Sin verificar hasta reiniciar: que los tres
-carguen y que `disallowedTools: mcp__*` funcione en esta versión.
+**Orden real del trabajo:** primero el rediseño, que adelantó parte de la Fase C (C1, C3 y C4). Después la Fase A. Faltan la
+Fase B y el resto de la Fase C.
+
+**Fase A, hecha:** `.claude/agents/`, sección de flujo en `CLAUDE.md`.
+
+**Verificado tras reiniciar, en dos rondas de ejecuciones reales:**
+
+- Los tres cargan y completan una tarea corta de solo lectura. `reviewer` encontró hallazgos reales en el último commit.
+- Ninguno reporta herramientas `mcp__*`, y la lista de agentes tampoco las muestra.
+- Los tres guardan notas en `.claude/agent-memory/<rol>/`, que git ignora, y las recuperan en una ejecución nueva. El índice
+  `MEMORY.md` llega en el prompt de sistema, sin llamar a una herramienta. La nota se leyó con `Read`.
+- El rol queda en `subagents/agent-*.meta.json`, como `agentType`.
+- Las notas de prueba se borraron después. Las carpetas de memoria quedaron vacías.
+
+**Sin verificar:** implementación o corrección reales con `builder` y `debugger`, y `SendMessage` entre subagentes.
+
+**A tener en cuenta:** según sus reportes, los tres tienen `Bash`, `Edit`, `Write`, `Agent` y `Artifact`. En `reviewer`, no
+modificar código depende solo de sus instrucciones.
 
 Agregados al prompt original: `disallowedTools: mcp__*`, para que no hereden Gmail ni otros conectores;
 `.claude/agent-memory/` en `.gitignore`, porque el repositorio es público; la orden de completar la tarea antes de guardar
@@ -29,10 +45,10 @@ que el modo autónomo de la sección 1 no impide detenerse por fases.
 - **Fase B, comunicación:** incluir un `SendMessage` real entre subagentes y documentar cómo queda en el transcript. Según
   la documentación, se puede. Sin observarlo no se puede mostrar.
 - **Fase B, recuperar memoria:** hacer dos rondas. La primera no tiene notas que leer. Además, `MEMORY.md` se inyecta en
-  el prompt de sistema, así que un `recall` puede no aparecer como herramienta.
+  el prompt de sistema (ya observado), así que lo que un agente sepa solo por el índice no aparece como herramienta.
 - **Fase B, fixture:** el sanitizador borra el adjunto `instructions`. Decidir si conserva solo nombres de archivo.
-- **Fase C, ya hecho en esta rama:** nombres por rol y modelo real (C1), panel `AGENT MEMORY` (C3) y rol en el log (C4).
-  Falta probarlos con datos reales.
+- **Fase C, adelantado en el rediseño:** nombres por rol y modelo real (C1), panel `AGENT MEMORY` (C3) y rol en el log (C4).
+  Falta probarlos con datos reales, que recién entrega la Fase B.
 - **Fase C, eventos:** hoy la memoria viaja como `tool_call.memory`. Emitir además `memory_recall` y `memory_save` duplicaría
   animaciones si no se reemplaza ese campo.
 - **Fase C, faltante:** el prompt no pide mostrar la comunicación. Agregar paquetes entre agentes para `SendMessage`.
@@ -80,7 +96,8 @@ el panel del advisor, las métricas y la geometría.** La sección 6 de `CLAUDE.
 **Sin verificar:**
 
 - Una ventana real de terminal. Sigue pendiente, y es lo que el usuario debe confirmar.
-- `.claude/agent-memory/`: ningún transcript la usa. La regla se probó solo con líneas de prueba.
+- `.claude/agent-memory/`: ningún fixture la usa. La regla de Sinapsis se probó solo con líneas de prueba, aunque las
+  pruebas de la Fase A ya generaron transcripts reales que la usan.
 - El adjunto `instructions` no llega a los fixtures, porque el sanitizador lo borra: se probó con líneas de prueba y con
   la sesión real de arriba.
 - `tools/live-run.ts`: se adaptó a la pantalla nueva, pero no se ejecutó porque lanza `claude -p`, con costo. Por eso se

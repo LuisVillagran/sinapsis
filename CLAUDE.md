@@ -12,6 +12,9 @@ importan más que agregar funciones.
 
 ## 1. Modo de trabajo: autónomo
 
+> **Aviso:** esta sección describe el desarrollo inicial, ya terminado. Antes de aplicarla, leer
+> [Vigencia de la sección 1](#vigencia-de-la-sección-1), al final de este documento.
+
 El usuario no estará disponible durante el desarrollo y no podrá aceptar permisos ni
 responder preguntas. Este documento es el acuerdo completo y reemplaza a cualquier
 versión anterior.
