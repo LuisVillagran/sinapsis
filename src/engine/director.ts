@@ -9,10 +9,11 @@ import { type SessionState, applyEvent, createState } from '../core/state.js';
 import { BOOT_MS } from '../scene/boot.js';
 import { type RouteName, consultSlot } from '../scene/layout.js';
 import type { PacketView } from '../scene/packets.js';
-import type { AnimFrame, CardView, ReplayStatus, SceneView, ShownLogEntry } from '../scene/view.js';
+import type { AnimFrame, CardView, ReplayStatus, SceneView, ShownLogEntry, ShownNumbers } from '../scene/view.js';
 import type { SourceUpdate } from '../sources/types.js';
 import { easeOutCubic, progress } from './easing.js';
 import { type ActiveItem, AnimationQueue } from './queue.js';
+import { TweenSet } from './tweens.js';
 
 const LOG_LIMIT = 200;
 /** Parte de la consulta que ocupa cada viaje. El resto es la espera, con el panel latiendo. */
@@ -23,6 +24,8 @@ const TYPE_CHARS_PER_MS = 0.03;
 const QUEUE_AFTER_BOOT_MS = 1600;
 
 const LEAD_GLOW_MS = 900;
+const COUNT_MS = 500;
+const TOKENS_MS = 900;
 
 interface Span {
   start: number;
@@ -58,6 +61,7 @@ export class Director {
   /** Subagentes activos sin tarjeta libre. */
   private waitingCards: string[] = [];
   private leadGlowStart: number | undefined;
+  private readonly tweens = new TweenSet();
 
   constructor(options: DirectorOptions = {}) {
     this.animateBoot = options.boot ?? false;
@@ -80,6 +84,7 @@ export class Director {
       this.cards = [undefined, undefined, undefined];
       this.waitingCards = [];
       this.leadGlowStart = undefined;
+      this.tweens.clear();
       this.log = [];
       this.last = undefined;
       this.connected = true;
@@ -96,6 +101,7 @@ export class Director {
         this.show(event, undefined);
         if (isNew && event.type === 'subagent_start') this.placeCard(event.subagentId, now, undefined);
       }
+      this.settleNumbers();
     } else {
       this.queue.push(update.events);
     }
@@ -199,6 +205,29 @@ export class Director {
     });
   }
 
+  /** Valores que persiguen el estado visible, para que los números suban y las barras crezcan. */
+  private shownNumbers(now: number): ShownNumbers {
+    const { advisor, toolCalls, tools } = this.shown;
+    const follow = (key: string, target: number, duration = COUNT_MS): number => this.tweens.track(key, target, now, duration);
+    return {
+      toolCalls: follow('toolCalls', toolCalls),
+      calls: follow('calls', advisor.calls),
+      tokensRead: follow('tokensRead', advisor.tokensRead, TOKENS_MS),
+      routineTurns: follow('routineTurns', advisor.routineTurns),
+      tools: Object.fromEntries(Object.entries(tools).map(([name, stat]) => [name, follow(`tool:${name}`, stat.count)])),
+    };
+  }
+
+  /** Lleva los contadores a su valor sin animarlos: lo que ya había ocurrido no se cuenta otra vez. */
+  private settleNumbers(): void {
+    const { advisor, toolCalls, tools } = this.shown;
+    this.tweens.settle('toolCalls', toolCalls);
+    this.tweens.settle('calls', advisor.calls);
+    this.tweens.settle('tokensRead', advisor.tokensRead);
+    this.tweens.settle('routineTurns', advisor.routineTurns);
+    for (const [name, stat] of Object.entries(tools)) this.tweens.settle(`tool:${name}`, stat.count);
+  }
+
   private leadGlow(now: number): number | undefined {
     if (this.leadGlowStart === undefined || now < this.leadGlowStart) return undefined;
     const t = progress(now, this.leadGlowStart, LEAD_GLOW_MS);
@@ -238,7 +267,11 @@ export class Director {
       if (step.phase === 'start') this.onStart(step.active, now);
       else this.onEnd(step.active, now);
     }
-    if (steps.length) this.version += 1;
+    if (steps.length) {
+      this.version += 1;
+      // Los contadores parten cuando cambia el dato, no cuando se dibuja: así no dependen de los frames.
+      this.shownNumbers(now);
+    }
     return steps.length > 0;
   }
 
@@ -250,7 +283,7 @@ export class Director {
   /** Hay algo moviéndose que exige la frecuencia alta. */
   isBusy(now: number): boolean {
     const boot = this.bootElapsed(now);
-    return !this.queue.isEmpty || this.packets.length > 0 || this.cardsMoving(now) || (boot !== undefined && boot < BOOT_MS);
+    return !this.queue.isEmpty || this.packets.length > 0 || this.tweens.isActive(now) || this.cardsMoving(now) || (boot !== undefined && boot < BOOT_MS);
   }
 
   private animFrame(now: number): AnimFrame {
@@ -260,6 +293,7 @@ export class Director {
       packets: this.activePackets(now),
       cards: this.cardViews(now),
       leadGlow: this.leadGlow(now),
+      numbers: this.shownNumbers(now),
       ...this.advisorMotion(now),
     };
   }

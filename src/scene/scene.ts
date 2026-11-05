@@ -214,9 +214,10 @@ function drawAdvisorPanel(buf: CellBuffer, view: SceneView, r: Rect): void {
     buf.text(text, row, label, theme.dim);
     rightText(buf, r.x + r.w - 3, row, value, theme.text, true);
   };
-  stat(22, 'calls', String(advisor.calls));
-  stat(23, 'tokens read', formatTokens(advisor.tokensRead));
-  stat(24, 'routine turns', String(advisor.routineTurns));
+  const numbers = view.anim?.numbers;
+  stat(22, 'calls', String(Math.round(numbers?.calls ?? advisor.calls)));
+  stat(23, 'tokens read', formatTokens(Math.round(numbers?.tokensRead ?? advisor.tokensRead)));
+  stat(24, 'routine turns', String(Math.round(numbers?.routineTurns ?? advisor.routineTurns)));
 
   // Lo que siguió haciendo el principal: rotulado con su nombre porque el consejo está cifrado.
   const followUp = last?.followUp;
@@ -340,20 +341,25 @@ function drawMetrics(buf: CellBuffer, view: SceneView, r: Rect): void {
     { text: 'TOOLS', color: theme.metrics, bold: true },
     { text: ' · real distribution', color: theme.metrics },
   ]);
-  rightText(buf, right, r.y + 1, String(state.toolCalls), theme.metrics, true);
-  rightText(buf, right - cellLength(String(state.toolCalls)) - 1, r.y + 1, 'calls', theme.dim);
+  const numbers = view.anim?.numbers;
+  const totalCalls = String(Math.round(numbers?.toolCalls ?? state.toolCalls));
+  rightText(buf, right, r.y + 1, totalCalls, theme.metrics, true);
+  rightText(buf, right - cellLength(totalCalls) - 1, r.y + 1, 'calls', theme.dim);
 
   const sorted = Object.entries(state.tools).sort((a, b) => b[1].count - a[1].count || a[0].localeCompare(b[0]));
   const top = sorted.slice(0, 3);
-  const max = top[0]?.[1].count ?? 1;
+  const countOf = (name: string, real: number): number => numbers?.tools[name] ?? real;
+  // Las barras se miden contra la mayor de las que están creciendo, así que nunca se pasan del riel.
+  const max = Math.max(1, ...top.map(([name, stat]) => countOf(name, stat.count)));
   const barX = left + 15;
   const barWidth = 17;
   top.forEach(([name, stat], i) => {
     const y = r.y + 2 + i;
     const failed = stat.errors > 0;
+    const shown = countOf(name, stat.count);
     buf.text(left, y, fit(toCells(name), 14), failed ? theme.alert : theme.text);
-    thinBar(buf, barX, y, barWidth, stat.count / max, failed ? theme.barAlert : theme.barGood);
-    rightText(buf, barX + barWidth + 4, y, String(stat.count), theme.text);
+    thinBar(buf, barX, y, barWidth, shown / max, failed ? theme.barAlert : theme.barGood);
+    rightText(buf, barX + barWidth + 4, y, String(Math.round(shown)), theme.text);
     if (failed) rightText(buf, right, y, `${stat.errors} err`, theme.alert);
   });
   if (top.length === 0) buf.text(left, r.y + 2, 'no tool calls yet', theme.faint);

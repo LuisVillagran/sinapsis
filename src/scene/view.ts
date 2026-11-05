@@ -36,6 +36,17 @@ export interface AnimFrame {
   cards?: Array<CardView | undefined>;
   /** Brillo de "back to lead" al recibir un resumen, de 0 a 1. */
   leadGlow?: number;
+  /** Contadores en camino a su valor real. */
+  numbers?: ShownNumbers;
+}
+
+export interface ShownNumbers {
+  toolCalls: number;
+  calls: number;
+  tokensRead: number;
+  routineTurns: number;
+  /** Conteo mostrado por herramienta. También da el largo de su barra. */
+  tools: Record<string, number>;
 }
 
 export interface CardView {

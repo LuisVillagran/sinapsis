@@ -737,6 +737,45 @@ var AnimationQueue = class {
   }
 };
 
+// src/engine/tweens.ts
+var TweenSet = class {
+  tweens = /* @__PURE__ */ new Map();
+  /**
+   * Valor actual de `key`, que persigue `target`. Si el objetivo cambia, sigue desde donde iba.
+   * Un valor nuevo empieza en `initial`.
+   */
+  track(key, target, now, duration, initial = 0, ease = easeOutCubic) {
+    let tween = this.tweens.get(key);
+    if (!tween) {
+      tween = { from: initial, to: target, start: now, duration, ease };
+      this.tweens.set(key, tween);
+    } else if (tween.to !== target) {
+      tween.from = this.valueOf(tween, now);
+      tween.to = target;
+      tween.start = now;
+      tween.duration = duration;
+    }
+    return this.valueOf(tween, now);
+  }
+  valueOf(tween, now) {
+    return tween.from + (tween.to - tween.from) * tween.ease(progress(now, tween.start, tween.duration));
+  }
+  /** Lleva un valor a su objetivo sin animarlo. */
+  settle(key, target) {
+    this.tweens.set(key, { from: target, to: target, start: 0, duration: 0, ease: easeOutCubic });
+  }
+  /** Si algún valor sigue moviéndose. */
+  isActive(now) {
+    for (const tween of this.tweens.values()) {
+      if (tween.from !== tween.to && now < tween.start + tween.duration) return true;
+    }
+    return false;
+  }
+  clear() {
+    this.tweens.clear();
+  }
+};
+
 // src/engine/director.ts
 var LOG_LIMIT = 200;
 var PACKET_SHARE = 0.35;
@@ -744,6 +783,8 @@ var PULSE_PERIOD_MS = 170;
 var TYPE_CHARS_PER_MS = 0.03;
 var QUEUE_AFTER_BOOT_MS = 1600;
 var LEAD_GLOW_MS = 900;
+var COUNT_MS = 500;
+var TOKENS_MS = 900;
 var Director = class {
   truth = createState();
   shown = createState();
@@ -762,6 +803,7 @@ var Director = class {
   /** Subagentes activos sin tarjeta libre. */
   waitingCards = [];
   leadGlowStart;
+  tweens = new TweenSet();
   constructor(options = {}) {
     this.animateBoot = options.boot ?? false;
   }
@@ -781,6 +823,7 @@ var Director = class {
       this.cards = [void 0, void 0, void 0];
       this.waitingCards = [];
       this.leadGlowStart = void 0;
+      this.tweens.clear();
       this.log = [];
       this.last = void 0;
       this.connected = true;
@@ -796,6 +839,7 @@ var Director = class {
         this.show(event, void 0);
         if (isNew && event.type === "subagent_start") this.placeCard(event.subagentId, now, void 0);
       }
+      this.settleNumbers();
     } else {
       this.queue.push(update.events);
     }
@@ -886,6 +930,27 @@ var Director = class {
       return { id: card.id, grow, fade };
     });
   }
+  /** Valores que persiguen el estado visible, para que los números suban y las barras crezcan. */
+  shownNumbers(now) {
+    const { advisor, toolCalls, tools } = this.shown;
+    const follow = (key, target, duration = COUNT_MS) => this.tweens.track(key, target, now, duration);
+    return {
+      toolCalls: follow("toolCalls", toolCalls),
+      calls: follow("calls", advisor.calls),
+      tokensRead: follow("tokensRead", advisor.tokensRead, TOKENS_MS),
+      routineTurns: follow("routineTurns", advisor.routineTurns),
+      tools: Object.fromEntries(Object.entries(tools).map(([name, stat]) => [name, follow(`tool:${name}`, stat.count)]))
+    };
+  }
+  /** Lleva los contadores a su valor sin animarlos: lo que ya había ocurrido no se cuenta otra vez. */
+  settleNumbers() {
+    const { advisor, toolCalls, tools } = this.shown;
+    this.tweens.settle("toolCalls", toolCalls);
+    this.tweens.settle("calls", advisor.calls);
+    this.tweens.settle("tokensRead", advisor.tokensRead);
+    this.tweens.settle("routineTurns", advisor.routineTurns);
+    for (const [name, stat] of Object.entries(tools)) this.tweens.settle(`tool:${name}`, stat.count);
+  }
   leadGlow(now) {
     if (this.leadGlowStart === void 0 || now < this.leadGlowStart) return void 0;
     const t = progress(now, this.leadGlowStart, LEAD_GLOW_MS);
@@ -917,7 +982,10 @@ var Director = class {
       if (step.phase === "start") this.onStart(step.active, now);
       else this.onEnd(step.active, now);
     }
-    if (steps.length) this.version += 1;
+    if (steps.length) {
+      this.version += 1;
+      this.shownNumbers(now);
+    }
     return steps.length > 0;
   }
   /** La cola está vacía: lo visible ya es lo real. */
@@ -927,7 +995,7 @@ var Director = class {
   /** Hay algo moviéndose que exige la frecuencia alta. */
   isBusy(now) {
     const boot = this.bootElapsed(now);
-    return !this.queue.isEmpty || this.packets.length > 0 || this.cardsMoving(now) || boot !== void 0 && boot < BOOT_MS;
+    return !this.queue.isEmpty || this.packets.length > 0 || this.tweens.isActive(now) || this.cardsMoving(now) || boot !== void 0 && boot < BOOT_MS;
   }
   animFrame(now) {
     const boot = this.bootElapsed(now);
@@ -936,6 +1004,7 @@ var Director = class {
       packets: this.activePackets(now),
       cards: this.cardViews(now),
       leadGlow: this.leadGlow(now),
+      numbers: this.shownNumbers(now),
       ...this.advisorMotion(now)
     };
   }
@@ -1409,9 +1478,10 @@ function drawAdvisorPanel(buf, view, r) {
     buf.text(text, row, label, theme.dim);
     rightText(buf, r.x + r.w - 3, row, value, theme.text, true);
   };
-  stat(22, "calls", String(advisor.calls));
-  stat(23, "tokens read", formatTokens(advisor.tokensRead));
-  stat(24, "routine turns", String(advisor.routineTurns));
+  const numbers = view.anim?.numbers;
+  stat(22, "calls", String(Math.round(numbers?.calls ?? advisor.calls)));
+  stat(23, "tokens read", formatTokens(Math.round(numbers?.tokensRead ?? advisor.tokensRead)));
+  stat(24, "routine turns", String(Math.round(numbers?.routineTurns ?? advisor.routineTurns)));
   const followUp = last?.followUp;
   buf.text(text, 29, `then ${mainName(view).toLowerCase()}:`, theme.dim);
   if (followUp) {
@@ -1512,19 +1582,23 @@ function drawMetrics(buf, view, r) {
     { text: "TOOLS", color: theme.metrics, bold: true },
     { text: " \xB7 real distribution", color: theme.metrics }
   ]);
-  rightText(buf, right, r.y + 1, String(state.toolCalls), theme.metrics, true);
-  rightText(buf, right - cellLength(String(state.toolCalls)) - 1, r.y + 1, "calls", theme.dim);
+  const numbers = view.anim?.numbers;
+  const totalCalls = String(Math.round(numbers?.toolCalls ?? state.toolCalls));
+  rightText(buf, right, r.y + 1, totalCalls, theme.metrics, true);
+  rightText(buf, right - cellLength(totalCalls) - 1, r.y + 1, "calls", theme.dim);
   const sorted = Object.entries(state.tools).sort((a, b) => b[1].count - a[1].count || a[0].localeCompare(b[0]));
   const top = sorted.slice(0, 3);
-  const max = top[0]?.[1].count ?? 1;
+  const countOf = (name, real) => numbers?.tools[name] ?? real;
+  const max = Math.max(1, ...top.map(([name, stat]) => countOf(name, stat.count)));
   const barX = left + 15;
   const barWidth = 17;
   top.forEach(([name, stat], i) => {
     const y = r.y + 2 + i;
     const failed = stat.errors > 0;
+    const shown = countOf(name, stat.count);
     buf.text(left, y, fit(toCells(name), 14), failed ? theme.alert : theme.text);
-    thinBar(buf, barX, y, barWidth, stat.count / max, failed ? theme.barAlert : theme.barGood);
-    rightText(buf, barX + barWidth + 4, y, String(stat.count), theme.text);
+    thinBar(buf, barX, y, barWidth, shown / max, failed ? theme.barAlert : theme.barGood);
+    rightText(buf, barX + barWidth + 4, y, String(Math.round(shown)), theme.text);
     if (failed) rightText(buf, right, y, `${stat.errors} err`, theme.alert);
   });
   if (top.length === 0) buf.text(left, r.y + 2, "no tool calls yet", theme.faint);

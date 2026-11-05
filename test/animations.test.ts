@@ -227,6 +227,81 @@ describe('animación 4: subagentes', () => {
   });
 });
 
+describe('animación 5: contadores y barras', () => {
+  const calls = (n: number, name = 'Read'): SinapsisEvent[] => Array.from({ length: n }, (_, i): SinapsisEvent => ({ type: 'tool_call', t: 1, id: `${name}${i}`, name }));
+
+  it('un contador sube número a número, sin bajar y sin pasarse', () => {
+    const batch = [models, consult(), reply()];
+    const director = new Director();
+    director.ingest({ kind: 'events', events: batch, historical: false }, 0);
+    const shown: number[] = [];
+    for (let now = 0; now < 5000; now += 16) {
+      director.update(now);
+      shown.push(director.view(now).anim?.numbers?.tokensRead ?? 0);
+    }
+    for (let i = 1; i < shown.length; i += 1) expect(shown[i]).toBeGreaterThanOrEqual(shown[i - 1] as number);
+    const distinct = new Set(shown.map((v) => Math.round(v)));
+    expect(distinct.size).toBeGreaterThan(10);
+    expect(shown[shown.length - 1]).toBe(64_700);
+  });
+
+  it('el total de llamadas no se adelanta a lo que ya se aplicó', () => {
+    const director = new Director();
+    director.ingest({ kind: 'events', events: calls(4), historical: false }, 0);
+    for (let now = 0; now < 3000; now += 16) {
+      director.update(now);
+      const view = director.view(now);
+      expect(view.anim?.numbers?.toolCalls ?? 0).toBeLessThanOrEqual(view.state.toolCalls);
+    }
+  });
+
+  it('una barra crece con easing: rápido al principio y suave al final', () => {
+    const director = new Director();
+    director.ingest({ kind: 'events', events: calls(1), historical: false }, 0);
+    director.update(0);
+    const at = (ms: number): number => director.view(ms).anim?.numbers?.tools.Read ?? 0;
+    expect(at(0)).toBe(0);
+    const firstHalf = at(250) - at(0);
+    const secondHalf = at(500) - at(250);
+    expect(firstHalf).toBeGreaterThan(secondHalf);
+    expect(at(500)).toBe(1);
+  });
+
+  it('lo que ya había ocurrido no se vuelve a contar', () => {
+    const director = new Director();
+    director.ingest({ kind: 'events', events: calls(7), historical: true }, 100);
+    const numbers = director.view(100).anim?.numbers;
+    expect(numbers?.toolCalls).toBe(7);
+    expect(numbers?.tools.Read).toBe(7);
+    expect(director.isBusy(100)).toBe(false);
+  });
+
+  it('en reposo, la escena muestra los valores reales', () => {
+    const events = [models, ...calls(3), ...calls(2, 'Grep'), consult(), reply()];
+    const { buf, view } = play(events, 15_000);
+    expect(view.anim?.numbers?.toolCalls).toBe(5);
+    expect(buf.rowText(FULL.metrics.y + 1)).toContain('calls 5');
+    expect(buf.rowText(FULL.metrics.y + 2)).toContain('3');
+    const panel = Array.from({ length: 34 }, (_, i) => buf.rowText(5 + i, 2, 24)).join('\n');
+    expect(panel).toContain('64.7k');
+  });
+
+  it('las barras no se salen del riel mientras crecen', () => {
+    const director = new Director();
+    director.ingest({ kind: 'events', events: [...calls(3), ...calls(2, 'Grep')], historical: false }, 0);
+    for (let now = 0; now < 4000; now += 100) {
+      director.update(now);
+      const buf = bufferOf(director.view(now));
+      for (const y of [FULL.metrics.y + 2, FULL.metrics.y + 3]) expect('┃').toContain(buf.charAt(FULL.metrics.x + FULL.metrics.w - 1, y));
+    }
+  });
+
+  it('el estado final coincide con el reductor', () => {
+    const events = [models, ...calls(3)];
+    expect(play(events, 8000).view.state).toEqual(reduce(events));
+  });
+});
+
 describe('animación 3: consulta al advisor', () => {
   const batch = [models, consult(), reply()];
   const total = (): number => {
