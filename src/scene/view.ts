@@ -40,6 +40,8 @@ export interface AnimFrame {
   numbers?: ShownNumbers;
   /** Respiración de los bordes, de 0 a 1, en pocos niveles para no reescribirlos en cada frame. */
   breath?: number;
+  /** Destello naranjo tras un error, de 1 a 0. */
+  errorFlash?: number;
 }
 
 export interface ShownNumbers {

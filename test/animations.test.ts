@@ -8,6 +8,7 @@ import { renderScene } from '../src/scene/scene.js';
 import { theme } from '../src/scene/theme.js';
 import type { SceneView } from '../src/scene/view.js';
 import { CellBuffer } from '../src/tui/buffer.js';
+import { mix } from '../src/tui/color.js';
 
 const CONSULT_ID = 'c1';
 const consult = (reason: 'before a plan' | 'after subagents' | 'before done' = 'before a plan'): SinapsisEvent => ({ type: 'advisor_consult', t: 1000, id: CONSULT_ID, reason });
@@ -458,6 +459,65 @@ describe('animación 8: respiración en reposo', () => {
 
   it('no mantiene la frecuencia alta', () => {
     expect(new Director().isBusy(5000)).toBe(false);
+  });
+});
+
+describe('animación 9: errores', () => {
+  const failing: SinapsisEvent[] = [models, { type: 'tool_call', t: 1, id: 't', name: 'Bash' }, { type: 'tool_result', t: 2, id: 't', isError: true }];
+  const TOOL_MS = 450;
+
+  it('el destello aparece con el error, se apaga y termina', () => {
+    expect(play(failing, TOOL_MS - 50).view.anim?.errorFlash).toBeUndefined();
+    const early = play(failing, TOOL_MS + 20).view.anim?.errorFlash ?? 0;
+    const later = play(failing, TOOL_MS + 400).view.anim?.errorFlash ?? 0;
+    expect(early).toBeGreaterThan(later);
+    expect(later).toBeGreaterThan(0);
+    expect(play(failing, TOOL_MS + 1000).view.anim?.errorFlash).toBeUndefined();
+  });
+
+  it('tiñe la sesión, las métricas y el log, y no el advisor', () => {
+    const base = play(failing, 3000).view;
+    const lit = bufferOf({ ...base, anim: { ...base.anim, errorFlash: 1 } });
+    const off = bufferOf({ ...base, anim: { ...base.anim, errorFlash: undefined } });
+    for (const r of [FULL.main, FULL.metrics, FULL.log]) {
+      expect(lit.bgAt(r.x + 5, r.y + 2)).not.toBe(off.bgAt(r.x + 5, r.y + 2));
+      expect(lit.fgAt(r.x, r.y)).toBe(mix(off.fgAt(r.x, r.y), theme.alert, 1));
+    }
+    expect(lit.bgAt(FULL.advisor.x + 5, FULL.advisor.y + 2)).toBe(off.bgAt(FULL.advisor.x + 5, FULL.advisor.y + 2));
+  });
+
+  it('no cambia el texto: solo el color', () => {
+    const base = play(failing, 3000).view;
+    const lit = bufferOf({ ...base, anim: { ...base.anim, errorFlash: 1 } });
+    const off = bufferOf({ ...base, anim: { ...base.anim, errorFlash: undefined } });
+    for (let y = 0; y < 48; y += 1) expect(lit.rowText(y)).toBe(off.rowText(y));
+  });
+
+  it('el log y las métricas quedan marcados en naranjo después del destello', () => {
+    const { buf, view } = play(failing, 3000);
+    expect(view.state.tools.Bash).toEqual({ count: 1, errors: 1 });
+    expect(buf.rowText(FULL.metrics.y + 2)).toContain('1 err');
+    expect(buf.fgAt(FULL.metrics.x + 2, FULL.metrics.y + 2)).toBe(theme.alert);
+    const logRows = Array.from({ length: 4 }, (_, i) => buf.rowText(FULL.log.y + 1 + i)).join('\n');
+    expect(logRows).toContain('tool returned an error');
+  });
+
+  it('un error de la API también destella', () => {
+    const events: SinapsisEvent[] = [models, { type: 'api_error', t: 1, status: 529, message: 'Overloaded' }];
+    expect(play(events, 50).view.anim?.errorFlash).toBeGreaterThan(0);
+    expect(play(events, 2000).view.state.apiErrors).toBe(1);
+  });
+
+  it('un error en el historial no destella', () => {
+    const director = new Director();
+    director.ingest({ kind: 'events', events: failing, historical: true }, 0);
+    director.update(0);
+    expect(director.view(0).anim?.errorFlash).toBeUndefined();
+    expect(director.shown.toolErrors).toBe(1);
+  });
+
+  it('el estado final coincide con el reductor', () => {
+    expect(play(failing, 5000).view.state).toEqual(reduce(failing));
   });
 });
 

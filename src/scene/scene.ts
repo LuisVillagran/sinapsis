@@ -570,6 +570,19 @@ function drawStatus(buf: CellBuffer, view: SceneView, y: number, x: number, widt
   rightText(buf, x + width - 2, y, `${view.queue.pending.length} queued`, theme.dim);
 }
 
+// --- Errores ---
+
+/** Destello: tiñe el panel y enciende su borde. Se aplica encima, así que no cambia los datos dibujados. */
+function flashPanel(buf: CellBuffer, r: Rect, amount: number): void {
+  for (let y = r.y; y < r.y + r.h; y += 1) {
+    for (let x = r.x; x < r.x + r.w; x += 1) {
+      buf.blendBg(x, y, theme.alert, amount * 0.26);
+      const onBorder = x === r.x || x === r.x + r.w - 1 || y === r.y || y === r.y + r.h - 1;
+      if (onBorder) buf.tintFg(x, y, theme.alert, amount);
+    }
+  }
+}
+
 // --- Layouts ---
 
 function renderFull(buf: CellBuffer, view: SceneView): void {
@@ -598,6 +611,12 @@ function renderFull(buf: CellBuffer, view: SceneView): void {
   drawPrompt(target, view, rows.prompt, 0, FULL_COLS);
   drawStatus(target, view, rows.status, 0, FULL_COLS);
   for (const packet of view.anim?.packets ?? []) drawPacket(target, packet);
+  const flash = view.anim?.errorFlash ?? 0;
+  if (flash > 0) {
+    flashPanel(target, FULL.main, flash);
+    flashPanel(target, FULL.metrics, flash);
+    flashPanel(target, FULL.log, flash);
+  }
   const bootMs = view.anim?.bootMs;
   if (bootMs !== undefined && bootMs < BOOT_MS) {
     const width = segmentsWidth(headerSegments(view));
@@ -682,6 +701,11 @@ function renderReduced(buf: CellBuffer, view: SceneView): void {
   drawLog(buf, view, logRect);
   drawPrompt(buf, view, height - 2, 0, width);
   drawStatus(buf, view, height - 1, 0, width);
+  const flash = view.anim?.errorFlash ?? 0;
+  if (flash > 0) {
+    flashPanel(buf, mainRect, flash);
+    flashPanel(buf, logRect, flash);
+  }
 }
 
 function renderTooSmall(buf: CellBuffer): void {

@@ -783,6 +783,7 @@ var PULSE_PERIOD_MS = 170;
 var TYPE_CHARS_PER_MS = 0.03;
 var QUEUE_AFTER_BOOT_MS = 1600;
 var LEAD_GLOW_MS = 900;
+var ERROR_FLASH_MS = 750;
 var LOG_MOTION_MS = 800;
 var COUNT_MS = 500;
 var TOKENS_MS = 900;
@@ -812,6 +813,7 @@ var Director = class {
   leadGlowStart;
   tweens = new TweenSet();
   lastLogBorn;
+  flashStart;
   constructor(options = {}) {
     this.animateBoot = options.boot ?? false;
   }
@@ -832,6 +834,8 @@ var Director = class {
       this.waitingCards = [];
       this.leadGlowStart = void 0;
       this.tweens.clear();
+      this.flashStart = void 0;
+      this.lastLogBorn = void 0;
       this.log = [];
       this.last = void 0;
       this.connected = true;
@@ -886,7 +890,9 @@ var Director = class {
     for (const event of active.item.events) this.show(event, now);
     const { item, start, duration } = active;
     const first = item.events[0];
-    if (item.kind === "tool" && first?.type === "tool_call" && !first.agentId) {
+    if (item.kind === "error") {
+      this.flashStart = start;
+    } else if (item.kind === "tool" && first?.type === "tool_call" && !first.agentId) {
       this.addPacket("tool", start, duration);
     } else if (item.kind === "advisor" && first?.type === "advisor_consult") {
       const slot = consultSlot(first.reason);
@@ -960,6 +966,11 @@ var Director = class {
     this.tweens.settle("routineTurns", advisor.routineTurns);
     for (const [name, stat] of Object.entries(tools)) this.tweens.settle(`tool:${name}`, stat.count);
   }
+  errorFlash(now) {
+    if (this.flashStart === void 0) return void 0;
+    const t = progress(now, this.flashStart, ERROR_FLASH_MS);
+    return t < 1 ? 1 - easeOutCubic(t) : void 0;
+  }
   leadGlow(now) {
     if (this.leadGlowStart === void 0 || now < this.leadGlowStart) return void 0;
     const t = progress(now, this.leadGlowStart, LEAD_GLOW_MS);
@@ -1004,7 +1015,7 @@ var Director = class {
   /** Hay algo moviéndose que exige la frecuencia alta. */
   isBusy(now) {
     const boot = this.bootElapsed(now);
-    return !this.queue.isEmpty || this.packets.length > 0 || this.tweens.isActive(now) || this.cardsMoving(now) || this.lastLogBorn !== void 0 && now < this.lastLogBorn + LOG_MOTION_MS || boot !== void 0 && boot < BOOT_MS;
+    return !this.queue.isEmpty || this.packets.length > 0 || this.tweens.isActive(now) || this.cardsMoving(now) || this.flashStart !== void 0 && now < this.flashStart + ERROR_FLASH_MS || this.lastLogBorn !== void 0 && now < this.lastLogBorn + LOG_MOTION_MS || boot !== void 0 && boot < BOOT_MS;
   }
   animFrame(now) {
     const boot = this.bootElapsed(now);
@@ -1015,6 +1026,7 @@ var Director = class {
       leadGlow: this.leadGlow(now),
       numbers: this.shownNumbers(now),
       breath: breathLevel(now),
+      errorFlash: this.errorFlash(now),
       ...this.advisorMotion(now)
     };
   }
@@ -1769,6 +1781,15 @@ function drawStatus(buf, view, y, x, width) {
   squares.forEach((kind, i) => buf.put(x + chipWidth + 3 + i, y, "\u25A0", KIND_COLOR2[kind]));
   rightText(buf, x + width - 2, y, `${view.queue.pending.length} queued`, theme.dim);
 }
+function flashPanel(buf, r, amount) {
+  for (let y = r.y; y < r.y + r.h; y += 1) {
+    for (let x = r.x; x < r.x + r.w; x += 1) {
+      buf.blendBg(x, y, theme.alert, amount * 0.26);
+      const onBorder = x === r.x || x === r.x + r.w - 1 || y === r.y || y === r.y + r.h - 1;
+      if (onBorder) buf.tintFg(x, y, theme.alert, amount);
+    }
+  }
+}
 function renderFull(buf, view) {
   buf.originX = Math.floor((buf.width - FULL_COLS) / 2);
   buf.originY = Math.floor((buf.height - FULL_ROWS) / 2);
@@ -1794,6 +1815,12 @@ function renderFull(buf, view) {
   drawPrompt(target, view, rows.prompt, 0, FULL_COLS);
   drawStatus(target, view, rows.status, 0, FULL_COLS);
   for (const packet of view.anim?.packets ?? []) drawPacket(target, packet);
+  const flash = view.anim?.errorFlash ?? 0;
+  if (flash > 0) {
+    flashPanel(target, FULL.main, flash);
+    flashPanel(target, FULL.metrics, flash);
+    flashPanel(target, FULL.log, flash);
+  }
   const bootMs = view.anim?.bootMs;
   if (bootMs !== void 0 && bootMs < BOOT_MS) {
     const width = segmentsWidth(headerSegments(view));
@@ -1871,6 +1898,11 @@ function renderReduced(buf, view) {
   drawLog(buf, view, logRect);
   drawPrompt(buf, view, height - 2, 0, width);
   drawStatus(buf, view, height - 1, 0, width);
+  const flash = view.anim?.errorFlash ?? 0;
+  if (flash > 0) {
+    flashPanel(buf, mainRect, flash);
+    flashPanel(buf, logRect, flash);
+  }
 }
 function renderTooSmall(buf) {
   const lines = ["Agranda la ventana", `M\xEDnimo ${MIN_COLS}x${MIN_ROWS} \xB7 ahora ${buf.width}x${buf.height}`];

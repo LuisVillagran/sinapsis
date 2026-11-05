@@ -24,6 +24,7 @@ const TYPE_CHARS_PER_MS = 0.03;
 const QUEUE_AFTER_BOOT_MS = 1600;
 
 const LEAD_GLOW_MS = 900;
+const ERROR_FLASH_MS = 750;
 /** Lo que tarda una línea del log en terminar de entrar. */
 const LOG_MOTION_MS = 800;
 const COUNT_MS = 500;
@@ -74,6 +75,7 @@ export class Director {
   private leadGlowStart: number | undefined;
   private readonly tweens = new TweenSet();
   private lastLogBorn: number | undefined;
+  private flashStart: number | undefined;
 
   constructor(options: DirectorOptions = {}) {
     this.animateBoot = options.boot ?? false;
@@ -97,6 +99,8 @@ export class Director {
       this.waitingCards = [];
       this.leadGlowStart = undefined;
       this.tweens.clear();
+      this.flashStart = undefined;
+      this.lastLogBorn = undefined;
       this.log = [];
       this.last = undefined;
       this.connected = true;
@@ -158,7 +162,9 @@ export class Director {
     const { item, start, duration } = active;
     const first = item.events[0];
 
-    if (item.kind === 'tool' && first?.type === 'tool_call' && !first.agentId) {
+    if (item.kind === 'error') {
+      this.flashStart = start;
+    } else if (item.kind === 'tool' && first?.type === 'tool_call' && !first.agentId) {
       this.addPacket('tool', start, duration);
     } else if (item.kind === 'advisor' && first?.type === 'advisor_consult') {
       const slot = consultSlot(first.reason);
@@ -241,6 +247,12 @@ export class Director {
     for (const [name, stat] of Object.entries(tools)) this.tweens.settle(`tool:${name}`, stat.count);
   }
 
+  private errorFlash(now: number): number | undefined {
+    if (this.flashStart === undefined) return undefined;
+    const t = progress(now, this.flashStart, ERROR_FLASH_MS);
+    return t < 1 ? 1 - easeOutCubic(t) : undefined;
+  }
+
   private leadGlow(now: number): number | undefined {
     if (this.leadGlowStart === undefined || now < this.leadGlowStart) return undefined;
     const t = progress(now, this.leadGlowStart, LEAD_GLOW_MS);
@@ -301,6 +313,7 @@ export class Director {
       this.packets.length > 0 ||
       this.tweens.isActive(now) ||
       this.cardsMoving(now) ||
+      (this.flashStart !== undefined && now < this.flashStart + ERROR_FLASH_MS) ||
       (this.lastLogBorn !== undefined && now < this.lastLogBorn + LOG_MOTION_MS) ||
       (boot !== undefined && boot < BOOT_MS)
     );
@@ -315,6 +328,7 @@ export class Director {
       leadGlow: this.leadGlow(now),
       numbers: this.shownNumbers(now),
       breath: breathLevel(now),
+      errorFlash: this.errorFlash(now),
       ...this.advisorMotion(now),
     };
   }
