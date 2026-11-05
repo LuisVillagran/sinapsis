@@ -1,34 +1,35 @@
 # Paleta
 
-Valores de `src/scene/theme.ts`. Los muestreados salen de `npx tsx tools/sample-colors.ts`, que necesita la
-imagen de referencia local; esa imagen no se publica.
+Valores de `src/scene/theme.ts`. Los muestreados salen de `npx tsx tools/sample-colors.ts`, que necesita las imágenes
+de `referencia/`; esas imágenes no se publican.
+
+Son fotos JPEG de una pantalla, así que un borde de un píxel se mezcla con el fondo. Por eso los colores sólidos salen
+de un promedio de 5x5 px, y los trazos finos, del píxel más saturado de una ventana de 9x9 px.
 
 | Token | Valor | Cómo se obtuvo |
 | --- | --- | --- |
-| `bgEdge` | `#13182d` | Mediana de zonas sin texto en dos esquinas (`#13182e`, `#13182b`) |
-| `bgCenter` | `#232b4e` | Mediana entre las tarjetas (`#2a3557`), oscurecida a ojo: esa zona incluye el brillo de las tarjetas |
-| `panel` | `#0f1225` | Mediana del interior de la sesión principal y de una tarjeta (`#111327`, `#0d1224`) |
-| `chip` | `#161d32` | Mediana del fondo de la línea de estado de la sesión |
-| `main` | `#7ec2ed` | Cuadro sólido de la leyenda |
-| `advisor` | `#adacfa` | Cuadro sólido de la leyenda |
-| `metrics` | `#75c8a6` | Cuadro sólido de la leyenda |
-| `sub` | `#afd5ff` | Píxel más brillante del borde de una tarjeta |
-| `subBright` | `#e6ffff` | Píxel más brillante del borde de "back to lead" |
-| `barGood` | `#34977a` | Píxel más saturado de la barra verde |
-| `barAlert` | `#bb763d` | Píxel más saturado de la barra naranja |
-| `barSub` | `#5797c8` | Píxel más saturado de la barra de tarjeta |
-| `barTrack` | `#253352` | Mediana del riel de la barra de tarjeta |
-| `text` | `#eaefff` | Píxel más brillante del título |
-| `faint` | `#4c5164` | Píxel más brillante de la hora del log |
-
-Los bordes de los paneles del advisor, la sesión y las métricas se dibujan un 20 % más cerca del fondo que su
-token, porque en la imagen son más tenues que los cuadros de la leyenda.
+| `bg`, `panel` | `#191e24` | Promedio del fondo, igual en dos zonas y dentro de los paneles |
+| `windowBar` | `#242831` | Promedio de la barra de ventana |
+| `main` | `#e38d63` | Cuadro sólido de la leyenda, píxel vivo |
+| `sub` | `#81b0f6` | Cuadro sólido de la leyenda, píxel vivo |
+| `metrics` | `#77ce9b` | Cuadro sólido de la leyenda, píxel vivo |
+| `notes` | `#af9eec` | Cuadro sólido de la leyenda, píxel vivo |
+| `barSub` | `#8cc0ff` | Barra de una tarjeta, píxel vivo |
+| `barGood` | `#76d099` | Barra de memoria, píxel vivo |
 
 Sin muestrear:
 
 | Token | Valor | Por qué |
 | --- | --- | --- |
-| `alert` | `#e08a4f` | Valor base de `CLAUDE.md`. El texto naranjo de la imagen es demasiado fino: las muestras salían contaminadas |
-| `dim` | `#7c88a8` | Valor base de `CLAUDE.md`. El muestreado (`#636677`) resultaba poco legible |
-| `windowBar` | `#0f1426` | Elegido: el título de la barra contamina la muestra |
+| `advisor` | `#e59ad8` | El advisor no está en la referencia: lleva un tono propio para no confundirse con la memoria |
+| `alert` | `#f0695a` | En la referencia, el naranjo es del modelo principal: los errores van más hacia el rojo |
+| `caption` | `#e8b56e` | Elegido a ojo: el pie del panel de memoria es texto fino y la muestra sale contaminada |
+| `text`, `dim`, `faint` | `#dfe3ea`, `#8b909b`, `#50555f` | Elegidos a ojo sobre capturas: el texto fino también contamina la muestra |
+| `line`, `barTrack`, `chip` | `#4a505c`, `#3a404b`, `#262c36` | Elegidos a ojo, partiendo del borde del log (`#3e424b`) |
+| `subBright` | `#f2f6ff` | Paquetes de regreso, que en la imagen se ven casi blancos |
 | `dot*` | Colores habituales de una barra de ventana | Decorativos |
+
+Los bordes de los paneles se dibujan un 12 % más cerca del fondo que su token, porque en la imagen son más tenues que
+los cuadros de la leyenda.
+
+En 256 colores, los tintes pequeños y los halos se apagan, porque saltarían a otro gris.

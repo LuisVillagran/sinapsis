@@ -136,6 +136,13 @@ describe('contenido', () => {
     expect(rectText(render(FULL_COLS, FULL_ROWS, fixtureView()), L.log)).toContain('fixtures/*.jsonl');
   });
 
+  it('una tarjeta terminada tiene la barra llena, también sin animación', () => {
+    const buf = render(FULL_COLS, FULL_ROWS, fixtureView());
+    const card = L.cards[0];
+    expect(buf.charAt(card.x + 2, card.y + 3)).toBe('█');
+    expect(buf.rowText(card.y + 3, card.x, card.x + card.w)).not.toContain('░');
+  });
+
   it('una tarjeta en curso no muestra porcentaje y sí su contador real', () => {
     const view = fixtureView(MID_SESSION_MS);
     expect(view.state.subagents.some((s) => s.running)).toBe(true);

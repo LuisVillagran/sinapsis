@@ -176,6 +176,36 @@ No hay porcentaje ni total de pasos. Lo real para una tarjeta en vivo:
 
 Los subagentes llevan `advisorModel`, pero ninguno consultó al advisor (0 de 3). No se sabe si pueden hacerlo.
 
+## Memoria
+
+Reconocimiento del 2026-11-05 sobre 47 transcripts locales (42.862 líneas), contando solo tipos y nombres de archivo.
+
+| Señal | Fuente | Estado |
+| --- | --- | --- |
+| Archivos cargados al iniciar | Adjunto `instructions`, con `files: [{ path, type, content }]`. `CLAUDE.md` 46 veces y `MEMORY.md` 5 | **Observado**, pero el sanitizador lo borra de los fixtures. Probado con líneas de prueba |
+| Lectura de `CLAUDE.md` por el principal o un subagente | `tool_use` de `Read` o `Grep` | **Observado** (22 veces, una en un subagente y en el fixture) |
+| Escritura de `CLAUDE.md` | `tool_use` de `Edit` o `Write` | **Observado** (71 veces) |
+| Escritura de la memoria automática | `tool_use` de `Write` en `~/.claude/projects/<proyecto>/memory/` | **Observado** (6 veces) |
+| Memoria por agente | `tool_use` en `.claude/agent-memory/<agente>/` | **Sin observar**: 0 apariciones. La regla usa la ruta esperada |
+
+Los subagentes tocaron archivos de memoria una sola vez en esos 47 transcripts, así que en una sesión normal el panel
+`AGENT MEMORY` estará casi siempre quieto.
+
+No se detecta: un archivo de memoria leído con un comando de `Bash`, ni la razón de una consulta.
+
+### Hitos inferidos
+
+El transcript no dice por qué se tocó la memoria. Cada operación se asigna a un hito mirando lo ocurrido antes en el
+mismo turno, y por eso el resultado no cambia con lo que llegue después ni con el orden de llegada:
+
+| Hito | Regla, en orden de prioridad | Etiqueta del agente |
+| --- | --- | --- |
+| `repeat failure` | Hubo un error de herramienta antes en el turno. Basta con uno: no se comprueba que el fallo se repita | `check`, si es una lectura |
+| `before sign-off` | Un subagente terminó antes en el turno | `recall` |
+| `before work` | Cualquier otro caso, y los archivos cargados al iniciar | `recall` |
+
+Una escritura siempre lleva la etiqueta `save`.
+
 ## Hooks
 
 Sesión real con `--settings` temporal, registrando `PreToolUse`, `PostToolUse`, `PostToolBatch`,
@@ -298,7 +328,7 @@ La sesión Haiku lo confirma con otros dos casos: las consultas de 19,4 s y 39,3
 
 ## Elementos de la imagen frente a datos reales
 
-Referencia: `referencia/diseño.png`.
+Esta tabla corresponde a la primera referencia, que ya no se usa. El diseño vigente está en la sección 6 de `CLAUDE.md`.
 
 | Elemento de la imagen | Fuente real | Estado |
 | --- | --- | --- |
@@ -381,6 +411,7 @@ no suele usarlos por iniciativa propia. Coste total: 0,59 USD.
 
 ## Sin observar todavía
 
+- Memoria por agente (`.claude/agent-memory/`), en ninguna sesión.
 - Otras variantes de `advisor_tool_result`, como errores.
 - Subagentes en segundo plano (`run_in_background: true`), anidados, fallidos o con otro `agentType`.
 - Si un subagente puede consultar al advisor.

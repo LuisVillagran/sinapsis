@@ -455,7 +455,7 @@ function drawGrowingBox(buf: CellBuffer, r: Rect, grow: number): void {
   const w = Math.max(3, Math.round(r.w * k));
   const h = Math.max(3, Math.round(r.h * k));
   const rect: Rect = { x: r.x + Math.floor((r.w - w) / 2), y: r.y + Math.floor((r.h - h) / 2), w, h };
-  box(buf, rect, { color: mix(theme.bg, theme.sub, k), fill: theme.panel, halo: 0.5 * k });
+  box(buf, rect, { color: mix(theme.bg, theme.sub, k), fill: theme.panel, halo: 0.12 * k });
 }
 
 function fadeArea(buf: CellBuffer, r: Rect, toward: Rgb, amount: number): void {
@@ -472,7 +472,8 @@ function drawCard(buf: CellBuffer, r: Rect, sub: SubagentState | undefined, slot
     return;
   }
   const grow = card?.grow ?? 1;
-  const fade = card?.fade ?? 0;
+  // Sin animación, una tarjeta terminada se dibuja en su estado final.
+  const fade = card?.fade ?? (sub.running ? 0 : 1);
   if (grow < GROW_SHARE) {
     drawGrowingBox(buf, r, grow);
     return;

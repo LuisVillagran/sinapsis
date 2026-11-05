@@ -1,7 +1,7 @@
 // Tira de frames de una animación: reproduce la sesión con reloj falso y captura varios instantes en un PNG.
 //
 // Uso: npx tsx tools/strip.ts <salida.png> --times 100,400,800 [--crop x,y,w,h] [--speed N] [--columns N]
-//                             [--start-at MS] [--source haiku|opus] [--cols N] [--rows N]
+//                             [--source haiku|opus|error] [--cols N] [--rows N] [--boot] [--illustrative]
 //
 // `--times` son ms de animación. `--crop` recorta cada frame, en celdas.
 
@@ -27,7 +27,8 @@ const rows = Number(option('rows', '47'));
 const speed = Number(option('speed', '1'));
 const columns = Number(option('columns', String(times.length)));
 const [cx, cy, cw, ch] = option('crop', `0,0,${cols},${rows}`).split(',').map(Number) as [number, number, number, number];
-const fixture = option('source', 'haiku') === 'opus' ? 'sesion-opus-advisor-opus.jsonl' : 'sesion-haiku-advisor-opus.jsonl';
+const FIXTURE_FILES: Record<string, string> = { haiku: 'sesion-haiku-advisor-opus.jsonl', opus: 'sesion-opus-advisor-opus.jsonl', error: 'sesion-haiku-con-error.jsonl' };
+const fixture = FIXTURE_FILES[option('source', 'haiku')] ?? (FIXTURE_FILES.haiku as string);
 
 const director = new Director({ boot: process.argv.includes('--boot'), illustrative: process.argv.includes('--illustrative') });
 const replay = createReplay(loadTranscript(join(import.meta.dirname, '..', 'fixtures', fixture)), { speed });

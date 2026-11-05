@@ -4,9 +4,89 @@ Bitácora para retomar el trabajo solo con este archivo. Ver `CLAUDE.md` para el
 
 ## Fase actual
 
-**Proyecto terminado.** Fases 0 a 6 cerradas. Repositorio público: https://github.com/LuisVillagran/sinapsis (tag `v0.1.0`).
+**Rediseño según las nuevas imágenes de referencia, en la rama `rediseno-referencia`, sin fusionar ni publicar.** Espera
+que el usuario lo revise en su terminal. Fases 0 a 6 cerradas antes. Repositorio público:
+https://github.com/LuisVillagran/sinapsis (tag `v0.1.0`, con el diseño anterior).
 
-## Hecho
+## Rediseño (2026-11-05)
+
+El usuario entregó `referencia/Referencia (1..4).jpeg` y pidió apegarse a su estilo y tener todos los apartados
+conectados, con animación en los caminos. La parte de abajo no le aparecía porque el diseño completo exigía 48 filas, y
+una ventana más baja caía en un layout reducido sin conectores. **Esto reemplaza lo que este archivo dice más abajo sobre
+el panel del advisor, las métricas y la geometría.** La sección 6 de `CLAUDE.md` ya está actualizada.
+
+**Decisiones del usuario, tomadas con preguntas directas:**
+
+- Dos tamaños: fiel desde 90x46, y compacto con todos los apartados desde 80x30.
+- Advisor en una caja junto a la sesión principal: la referencia no lo incluye.
+- Datos reales en vivo y en replay. Solo `sinapsis demo` muestra `%` y actividad de memoria de ejemplo, rotulados.
+- **Sin grabar una sesión nueva con `builder`, `debugger` y `reviewer`:** primero aceptó y luego lo cambió. No se gastó
+  dinero. La demo sigue mostrando subagentes `Explore`, y los nombres de la imagen solo aparecen si una sesión los usa.
+
+**Decisiones propias, para revisar:**
+
+- **Se quitó el panel de distribución de herramientas**, porque la referencia no lo tiene. Quedan el total en
+  `PROJECT MEMORY`, el contador por tarjeta y el log. También salieron de pantalla `routine turns` y el texto que seguía
+  al consejo, y la línea de tiempo de motivos pasó al log.
+- **La demo corre en bucle**, con 9 s de pausa al final. No estaba pedido, pero sin esto queda quieta tras unos 35 s.
+- **Los tres hitos son inferidos**, con reglas en `docs/eventos.md`. `repeat failure` se activa con un solo error, no
+  con uno repetido.
+- **Textos fijos de la imagen en `PROJECT MEMORY`** ("saved findings…", "build then debug…"): son una explicación general
+  de la memoria y no datos de la sesión, igual que antes "reads the whole session". `build then debug` describe un flujo
+  que una sesión real puede no seguir.
+- **`integrate + verify`** se muestra en el lead mientras no vuelve ningún resumen, como descripción de lo que hará.
+- **El advisor lleva un color propio** (`#e59ad8`) y los errores van más al rojo (`#f0695a`), porque en la referencia el
+  naranjo es del modelo principal y el púrpura, de la memoria.
+
+**Verificado:**
+
+- 258 tests. La geometría del layout completo coincide con lo medido en las imágenes, en `test/layout.test.ts`.
+- En 400 tamaños entre 80x30 y 150x62, los paneles no se pisan, caben, y cada camino parte y llega a su panel.
+- **Sesión interactiva real, seguida a 120x30** con la salida en un emulador: fue esta misma sesión de trabajo. Mostró
+  todos los apartados, detectó el `CLAUDE.md` cargado al iniciar, 166 herramientas y 1 error, y salió con código 0. Es la
+  primera vez que se prueba con una sesión interactiva.
+- El fixture real detecta la lectura de `CLAUDE.md` en el subagente que la hizo.
+
+**Sin verificar:**
+
+- Una ventana real de terminal. Sigue pendiente, y es lo que el usuario debe confirmar.
+- `.claude/agent-memory/`: ningún transcript la usa. La regla se probó solo con líneas de prueba.
+- El adjunto `instructions` no llega a los fixtures, porque el sanitizador lo borra: se probó con líneas de prueba y con
+  la sesión real de arriba.
+- `tools/live-run.ts`: se adaptó a la pantalla nueva, pero no se ejecutó porque lanza `claude -p`, con costo. Por eso se
+  borraron las capturas `vivo-*`, que mostraban el diseño anterior.
+
+Medición con `npx tsx tools/measure.ts`, en Windows 11 con Node 24, y salida hacia un `Writable`. Los bytes bajan porque
+el fondo plano evita los cambios de color por celda:
+
+| Medida | Resultado | Presupuesto |
+| --- | --- | --- |
+| Frame a 90x47 (p95) | 0,89 ms | menos de 8 ms |
+| Frame a 140x50 (p95) | 0,85 ms | menos de 8 ms |
+| Frame a 80x24 (p95) | 0,44 ms | menos de 8 ms |
+| Frecuencia con animación activa | 63,2 fps | 60 fps |
+| CPU en reposo, siguiendo una sesión | 2,1 % de un núcleo | menos de 5 % |
+| CPU en reposo, sin sesión | 1,2 % de un núcleo | menos de 5 % |
+| Bytes en replay a 90x47 | 42,6 KB/s | sin presupuesto |
+| Bytes en reposo | 5,8 KB/s | sin presupuesto |
+
+Diferencias que quedan frente a la referencia, y por qué:
+
+- **Barra de ventana:** la imagen la tiene aparte de sus 46 filas. Aquí se dibuja solo si hay una fila 47.
+- **Sin `%` fuera de la demo, y otros nombres y modelos:** son datos de cada sesión.
+- **Caja del advisor:** agregada en el espacio vacío a la derecha de la sesión principal.
+- **Una fila de memoria parada:** en sesiones reales, `AGENT MEMORY` casi no se mueve.
+- **Sin brillo real:** los paneles encendidos llevan un halo de fondos tintados.
+- **Layout compacto:** con menos filas, los títulos de los paneles van sobre su borde y las tarjetas juntan nombre y
+  modelo en una línea.
+
+Iteraciones de comparación con la referencia: cuatro. Corrigieron la columna de hitos, los cuadros de fondo de los
+paquetes, los halos excesivos, la leyenda apretada, los recortes en 80x30 y la barra vacía de las tarjetas terminadas.
+
+Sugerencias, fuera de lo pedido: grabar la sesión con esos tres agentes si se quiere verlos en la demo, y conservar la
+distribución de herramientas en algún espacio libre si se echa de menos.
+
+## Hecho antes del rediseño
 
 - **Fase 6:** README, licencia MIT, GIF de demo y revisión de privacidad del historial. Verificado: clon limpio desde
   GitHub con `npm ci`, `npm test` y build; instalación con `npm install -g --prefix <tmp> github:LuisVillagran/sinapsis`
@@ -162,15 +242,18 @@ distinta de la local, tampoco aparece: 0 coincidencias en 203 blobs de texto y b
 
 ## Para revisar al volver
 
-- **Confirmar en una terminal real:** ejecutar `sinapsis demo` en una ventana de al menos 96x48. Es lo único que Claude
-  no pudo mirar: fluidez, parpadeo, teclas, redimensionado y que al salir la terminal quede normal.
+- **Confirmar en una terminal real:** en la rama `rediseno-referencia`, ejecutar `node dist/cli.js demo` a 120x30 y a
+  90x46 o más. Es lo único que Claude no pudo mirar: fluidez, parpadeo, teclas, redimensionado y que al salir la
+  terminal quede normal.
+- **Fusionar y publicar el rediseño:** no se hizo. El comando `sinapsis` instalado sigue con el diseño anterior hasta
+  entonces.
+- **Autor de las imágenes nuevas:** el README lo declara sin confirmar. Corregir el crédito si se conoce.
 - **Correo en el historial:** los commits llevan el correo personal configurado en este repositorio, como se acordó.
   Al ser público, ese correo queda visible en cada commit.
 - **`dist/` versionado y sin `prepare`:** ver Decisiones. Se aparta de lo que pedía `CLAUDE.md`.
 - **Cuenta:** la de `gh` y el nombre de git son distintos. La URL de instalación usa la cuenta de `gh`.
-- **Detalle cosmético conocido:** durante los primeros 1,6 s de `demo`, mientras los eventos esperan al arranque, el
-  encabezado dice `WAITING FOR A SESSION` y la barra `no session`. También se ve en el GIF.
-- **Sin verificar además:** seguimiento de una sesión interactiva (solo se probó con `claude -p`), teclas en modo raw de
-  una terminal real, y Node 20 anterior a 20.20.
+- **Detalle cosmético conocido:** durante los primeros 1,6 s de `demo`, la barra de ventana dice `no session`. El
+  encabezado ya muestra los modelos.
+- **Sin verificar además:** teclas en modo raw de una terminal real, y Node 20 anterior a 20.20.
 - **Inferencias a validar con el uso:** los motivos de consulta y el agrupamiento en tres hitos del panel.
 - **Fuera de alcance, como sugerencia:** comprobar en Linux y macOS, y un modo que muestre todas las consultas.

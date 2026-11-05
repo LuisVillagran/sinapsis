@@ -32,6 +32,8 @@ const browser = await chromium.launch({ channel: 'chrome' });
 const page = await browser.newPage();
 await page.setContent(`<img id="i" src="data:image/jpeg;base64,${readFileSync(IMAGE).toString('base64')}">`);
 await page.waitForFunction(() => document.images[0]?.complete);
+// `tsx` envuelve las funciones con nombre en una ayuda propia, que no existe dentro del navegador.
+await page.evaluate('globalThis.__name = (fn) => fn');
 
 const result = await page.evaluate((samples) => {
   const image = document.getElementById('i') as HTMLImageElement;
