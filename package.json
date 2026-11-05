@@ -16,7 +16,7 @@
     "fixtures/sesion-haiku-advisor-opus"
   ],
   "scripts": {
-    "build": "tsup",
+    "bundle": "tsup",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
