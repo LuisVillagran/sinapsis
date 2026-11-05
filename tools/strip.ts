@@ -46,7 +46,7 @@ for (const target of times) {
     for (const update of replay.tick(now)) director.ingest(update, now);
     director.update(now);
   }
-  renderScene(buffer, director.view(target));
+  renderScene(buffer, director.view(target, { speed: replay.speed, paused: replay.paused, finished: replay.finished }));
   await capture.write(encodeFrame(previous, buffer, 'truecolor'));
   previous = new CellBuffer(cols, rows);
   previous.copyFrom(buffer);

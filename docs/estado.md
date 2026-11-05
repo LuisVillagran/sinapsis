@@ -125,6 +125,20 @@ Bitácora para retomar el trabajo solo con este archivo. Ver `CLAUDE.md` para el
 
 Ninguno.
 
+## Revisión de privacidad (Fase 6)
+
+Se revisaron todos los blobs de todo el historial, con términos calculados en la máquina: usuario, correo, cuenta,
+carpeta personal y nombres de otros proyectos, además de patrones de secretos. Sin hallazgos: las coincidencias con
+carpetas de otros proyectos son palabras comunes del español. El nombre de la cuenta solo aparece en las URL del
+repositorio. Las capturas se revisaron a la vista. `referencia/` nunca entró al historial.
+
 ## Para revisar al volver
 
-- Cuenta de GitHub en `gh` y nombre de git son distintos. La URL de instalación usa la cuenta de `gh`.
+- **Confirmar en una terminal real:** ejecutar `sinapsis demo` en una ventana de al menos 96x48. Es lo único que Claude
+  no pudo mirar: fluidez, parpadeo, teclas, redimensionado y que al salir la terminal quede normal.
+- **Correo en el historial:** los commits llevan el correo personal configurado en este repositorio, como se acordó.
+  Al ser público, ese correo queda visible en cada commit.
+- **`dist/` versionado y sin `prepare`:** ver Decisiones. Se aparta de lo que pedía `CLAUDE.md`.
+- **Cuenta:** la de `gh` y el nombre de git son distintos. La URL de instalación usa la cuenta de `gh`.
+- **Inferencias a validar con el uso:** los motivos de consulta y el agrupamiento en tres hitos del panel.
+- **Fuera de alcance, como sugerencia:** comprobar en Linux y macOS, y un modo que muestre todas las consultas.
