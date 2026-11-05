@@ -29,12 +29,8 @@ const advisorModelOf = (view: SceneView): string | undefined => view.state.advis
 const mainName = (view: SceneView): string => displayModel(mainModelOf(view));
 const advisorName = (view: SceneView): string => displayModel(advisorModelOf(view));
 
-/** Modelo que hace el trabajo delegado: el del subagente más reciente o, sin subagentes, el principal. */
-function builderName(view: SceneView): string {
-  const { subagents } = view.state;
-  const latest = [...subagents].reverse().find((s) => s.model);
-  return displayModel(latest?.model ?? mainModelOf(view));
-}
+/** Modelo que hace el trabajo delegado: el del subagente más reciente. Sin subagentes no hay ninguno que nombrar. */
+const builderModelOf = (view: SceneView): string | undefined => [...view.state.subagents].reverse().find((s) => s.model)?.model;
 
 const EFFORT_LEVELS: Record<string, number> = { low: 1, medium: 2, high: 3, xhigh: 4, max: 5 };
 
@@ -109,16 +105,18 @@ function headerSegments(view: SceneView): Segment[] {
 }
 
 function drawLegend(buf: CellBuffer, view: SceneView, L: SceneLayout): void {
+  const builder = builderModelOf(view);
   const fullItems: Array<[Rgb, string]> = [
     [theme.main, `lead · ${mainName(view)}`],
-    [theme.sub, `build · ${builderName(view)}`],
+    [theme.sub, builder ? `build · ${displayModel(builder)}` : 'build'],
     [theme.metrics, 'agent memory'],
     [theme.notes, 'project memory'],
     [theme.advisor, `advisor · ${advisorName(view)}`],
   ];
+  // Si no cabe, todos los modelos pasan a su alias: mezclarlos con el nombre completo se lee como un error.
   const aliasItems: Array<[Rgb, string]> = [
-    [theme.main, `lead · ${mainName(view)}`],
-    [theme.sub, `build · ${modelAlias(view.state.subagents.slice().reverse().find((s) => s.model)?.model ?? mainModelOf(view))}`],
+    [theme.main, `lead · ${modelAlias(mainModelOf(view))}`],
+    [theme.sub, builder ? `build · ${modelAlias(builder)}` : 'build'],
     [theme.metrics, 'agent memory'],
     [theme.notes, 'project memory'],
     [theme.advisor, `advisor · ${modelAlias(advisorModelOf(view))}`],
@@ -433,19 +431,17 @@ function drawAdvisorBox(buf: CellBuffer, view: SceneView, r: Rect): void {
   const calls = String(callsCount);
   const consultWord = callsCount === 1 ? 'consult' : 'consults';
   const tokens = formatTokens(Math.round(numbers?.tokensRead ?? state.advisor.tokensRead));
-  const longStats = `${calls} ${consultWord} · ${tokens} tok`;
-  const midStats = `${calls} · ${tokens} tok`;
-  const compactStats = `${calls}·${tokens} tok`;
-  const statsLine = cellLength(longStats) <= inner ? longStats : cellLength(midStats) <= inner ? midStats : cellLength(compactStats) <= inner ? compactStats : `${calls} · ${tokens}`;
   // `replaying` no deja lugar para el contador en una fila.
   const fullShort = `${status} · ${calls} ${consultWord}`;
   const shortStatus = replaying ? status : cellLength(fullShort) <= inner ? fullShort : `${status} · ${calls}`;
 
   centerText(buf, left, inner, r.y + 1, 'ADVISOR', theme.advisor, true);
   if (r.h >= 6) {
+    // El estado va sobre el borde: así las consultas y los tokens caben completos, con su unidad.
+    centerText(buf, left, inner, r.y, ` ${status} `, statusColor, replaying);
     centerText(buf, left, inner, r.y + 2, advisorName(view), theme.text);
-    centerText(buf, left, inner, r.y + 3, status, statusColor, replaying);
-    centerText(buf, left, inner, r.y + 4, statsLine, theme.dim);
+    centerText(buf, left, inner, r.y + 3, `${calls} ${consultWord}`, theme.dim);
+    centerText(buf, left, inner, r.y + 4, `${tokens} tok`, theme.dim);
   } else if (r.h === 5) {
     centerText(buf, left, inner, r.y + 2, advisorName(view), theme.text);
     centerText(buf, left, inner, r.y + 3, shortStatus, statusColor, replaying);

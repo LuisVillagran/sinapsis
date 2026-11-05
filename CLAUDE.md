@@ -247,12 +247,12 @@ Medida sobre 90x46 (sin barra falsa de ventana ni separador decorativo, y con `A
 | Elemento | Contenido |
 | --- | --- |
 | Encabezado | `SINAPSIS · <carpeta> · <modo>` (`LIVE`, `REPLAY xN`, `PAUSED`, `REPLAY END`, `DEMO` o `WAITING FOR A SESSION`) |
-| Leyenda | Cuadros de color: `lead · <modelo>`, `build · <modelo>`, `agent memory`, `project memory`, `advisor · <modelo>` |
+| Leyenda | Cuadros de color: `lead · <modelo>`, `build · <modelo>` (solo `build` sin subagentes), `agent memory`, `project memory`, `advisor · <modelo>`. Si los nombres completos no caben, todos pasan a su alias |
 | Project memory | Alcance real, hitos `before work`, `repeat failure` y `before sign-off` con su hora de disparo y flechas a la sesión, a la primera tarjeta y al lead, lista real de archivos de memoria tocados y totales (`totals`: `agents`, `memories`, `tools`, `errors`) |
 | Sesión principal | Modelo, tarea (`ai-title` o último prompt), medidor de effort y actividad con spinner, o `--model` en reposo |
-| Advisor | Modelo, estado (`silent`, `replaying` u `off`), borde punteado en `silent` y sólido en `replaying`, consultas y tokens leídos (`N consults · Xk tok`) |
-| Agent memory | `roles` con memoria sobre el total, y una fila por rol existente: nombre, barra según sus operaciones y `recall`, `check` o `save` (o `no subagents yet` sin subagentes). Pie `memory · real tool calls`, o `illustrative activity` en la demo |
-| Tarjetas | Nombre, modelo, `read-only` si corresponde, barra por cantidad real de herramientas (`countBar`, 1 celda por herramienta en curso y llena al terminar), contador de herramientas, descripción y estado |
+| Advisor | Modelo, estado (`silent`, `replaying` u `off`) sobre el borde superior, borde punteado salvo en `replaying`, y en filas separadas consultas (`N consults`) y tokens leídos (`Xk tok`) |
+| Agent memory | `roles` con memoria sobre el total, y una fila por rol existente: nombre, barra según sus operaciones y `recall`, `check` o `save`. Sin operaciones: `indexed` si recibió un índice `MEMORY.md` con notas, `no memory` si no tiene notas y `no data` si el transcript no lo dice (o `no subagents yet` sin subagentes). Pie `memory · real tool calls`, o `illustrative activity` en la demo |
+| Tarjetas | Nombre, modelo, `read-only` si corresponde, barra por cantidad real de herramientas (`countBar`, 1 celda por herramienta en curso, reiniciada antes de llenarse, y llena solo al terminar), contador de herramientas, descripción y estado |
 | Back to lead | `back to <modelo> · lead`, y resúmenes recibidos (`N back · <resumen>`), `waiting for N summaries` o `no summaries yet` |
 | Session log | Tiempo desde el inicio, agente, evento |
 | Línea de teclas | Controles reales disponibles: `q quit` siempre, y `space pause · +/- speed` en replay/demo (más el rótulo `demo: illustrative activity` en la demo) |

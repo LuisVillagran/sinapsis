@@ -265,7 +265,8 @@ Reconocimiento del 2026-11-05 sobre 47 transcripts locales (42.862 líneas), con
 | Lectura de `CLAUDE.md` por el principal o un subagente | `tool_use` de `Read` o `Grep` | **Observado** (22 veces, una en un subagente y en el fixture) |
 | Escritura de `CLAUDE.md` | `tool_use` de `Edit` o `Write` | **Observado** (71 veces) |
 | Escritura de la memoria automática | `tool_use` de `Write` en `~/.claude/projects/<proyecto>/memory/` | **Observado** (6 veces) |
-| Memoria por agente | `tool_use` en `.claude/agent-memory/<agente>/` | **Sin observar**: 0 apariciones. La regla usa la ruta esperada |
+| Memoria por agente | `tool_use` de `Read`, `Write`, `Edit` o `Glob` en `.claude/agent-memory/<agente>/` | **Observado** (18 veces en una sesión de 2026-11-05). Los comandos `Bash` sobre esa carpeta no se cuentan |
+| Índice de memoria de un subagente | Sección `## MEMORY.md` del adjunto `prompt_snapshot`, sin herramienta. `Your MEMORY.md is currently empty` si no hay notas, y sin la sección si el agente no tiene memoria, como `Explore` | **Observado** (22 de 22 subagentes). El sanitizador borra `systemPrompt`, así que en los fixtures no se sabe |
 
 Los subagentes tocaron archivos de memoria una sola vez en esos 47 transcripts, así que en una sesión normal el panel
 `AGENT MEMORY` estará casi siempre quieto.
@@ -490,7 +491,6 @@ no suele usarlos por iniciativa propia. Coste total: 0,59 USD.
 
 ## Sin observar todavía
 
-- Memoria por agente (`.claude/agent-memory/`), en ninguna sesión.
 - Otras variantes de `advisor_tool_result`, como errores.
 - Subagentes anidados, fallidos o con otro `agentType`, y un subagente en segundo plano reanudado que vuelve a trabajar
   tras cerrarse (el aviso dice que puede notificar más de una vez).

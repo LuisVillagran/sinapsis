@@ -530,10 +530,10 @@ describe('animación 3: consulta al advisor', () => {
   it('el estado dice replaying solo durante la animación, y los datos llegan al final', () => {
     const length = total();
     const mid = play(batch, length * 0.5);
-    expect(mid.buf.rowText(FULL.advisor.y + 3, FULL.advisor.x, FULL.advisor.x + FULL.advisor.w)).toContain('replaying');
+    expect(mid.buf.rowText(FULL.advisor.y, FULL.advisor.x, FULL.advisor.x + FULL.advisor.w)).toContain('replaying');
     expect(mid.view.state.advisor.tokensRead).toBe(0);
     const end = play(batch, length + 100);
-    expect(end.buf.rowText(FULL.advisor.y + 3, FULL.advisor.x, FULL.advisor.x + FULL.advisor.w)).toContain('silent');
+    expect(end.buf.rowText(FULL.advisor.y, FULL.advisor.x, FULL.advisor.x + FULL.advisor.w)).toContain('silent');
     expect(end.view.state.advisor.tokensRead).toBe(64_700);
   });
 

@@ -49,7 +49,7 @@ describe('geometría medida sobre el buffer', () => {
 
   it('filas de texto', () => {
     expect(textRow(buf, 'SINAPSIS')).toBe(L.rows.header);
-    expect(textRow(buf, 'lead · Haiku 5.5')).toBe(L.rows.legend);
+    expect(textRow(buf, 'lead · haiku')).toBe(L.rows.legend);
     expect(textRow(buf, 'delegated')).toBe(L.rows.delegate);
     expect(textRow(buf, 'q quit')).toBe(L.rows.prompt);
     expect(textRow(buf, 'queued')).toBe(L.rows.status);
@@ -624,7 +624,8 @@ describe('AGENT MEMORY por rol y rótulos de rol', () => {
     view.queue = { last: 'builder · Read · CLAUDE.md', pending: ['tool'] };
     const buf = render(FULL_COLS, FULL_ROWS, view);
     const legend = buf.rowText(L.rows.legend);
-    for (const part of ['lead · Opus 5.5', 'build · sonnet', 'agent memory', 'project memory', 'advisor · opus']) expect(legend).toContain(part);
+    // Todos en alias o todos con su nombre completo, sin mezclar.
+    for (const part of ['lead · opus', 'build · sonnet', 'agent memory', 'project memory', 'advisor · opus']) expect(legend).toContain(part);
     const wideLegend = render(120, 30, view).rowText((layoutFor(120, 30) as SceneLayout).rows.legend);
     for (const part of ['lead · Opus 5.5', 'build · Sonnet 5.5', 'agent memory', 'project memory', 'advisor · Opus 5.5']) expect(wideLegend).toContain(part);
     const status = buf.rowText(L.rows.status);
@@ -632,6 +633,35 @@ describe('AGENT MEMORY por rol y rótulos de rol', () => {
     for (const old of ['lead [', 'subagents [', 'memories [', 'build [', 'advisor [']) expect(status).not.toContain(old);
     expect(buf.rowText(L.rows.header)).toContain('SINAPSIS · p · LIVE');
     expect(rectText(buf, L.lead)).toContain('back to Opus 5.5 · lead');
+  });
+
+  it('leyenda sin subagentes: no atribuye un modelo a build', () => {
+    for (const [cols, rows] of [[FULL_COLS, FULL_ROWS], [84, 46], [80, 30], [120, 30]] as const) {
+      const legend = render(cols, rows, roleView([])).rowText((layoutFor(cols, rows) as SceneLayout).rows.legend);
+      expect(legend, `${cols}x${rows}`).toContain('lead · Opus 5.5');
+      expect(legend, `${cols}x${rows}`).toContain('advisor · Opus 5.5');
+      expect(legend, `${cols}x${rows}`).toMatch(/build\s+■/);
+    }
+  });
+
+  it('caja del advisor: estado sobre el borde, y consultas y tokens completos en su fila', () => {
+    const view = roleView([]);
+    applyEvent(view.state, { type: 'advisor_consult', t: 5000, id: 'c1', reason: 'before a plan' });
+    applyEvent(view.state, { type: 'advisor_reply', t: 6000, id: 'c1', durationMs: 1000, tokensRead: 87_460, tokensWritten: 10, isError: false });
+    const row = (buf: CellBuffer, y: number): string => buf.rowText(L.advisor.y + y, L.advisor.x, L.advisor.x + L.advisor.w);
+    const one = render(FULL_COLS, FULL_ROWS, view);
+    expect(row(one, 0)).toContain(' silent ');
+    expect(row(one, 3)).toContain('1 consult');
+    expect(row(one, 3)).not.toContain('consults');
+    expect(row(one, 4)).toContain('87.5k tok');
+    expect(one.charAt(L.advisor.x, L.advisor.y)).toBe('┌');
+    expect(one.charAt(L.advisor.x + L.advisor.w - 1, L.advisor.y)).toBe('┐');
+    applyEvent(view.state, { type: 'advisor_consult', t: 7000, id: 'c2', reason: 'before a plan' });
+    const open = render(FULL_COLS, FULL_ROWS, view);
+    expect(row(open, 0)).toContain(' replaying ');
+    expect(row(open, 3)).toContain('2 consults');
+    expect(open.charAt(L.advisor.x, L.advisor.y)).toBe('┌');
+    expect(open.charAt(L.advisor.x + L.advisor.w - 1, L.advisor.y)).toBe('┐');
   });
 
   it('back to lead: sin resumen no inventa texto, y sin subagentes cerrados muestra waiting for N summaries', () => {
@@ -657,7 +687,7 @@ describe('AGENT MEMORY por rol y rótulos de rol', () => {
     const view = roleView([]);
     applyEvent(view.state, { type: 'advisor_consult', t: 5000, id: 'c1', reason: 'before a plan' });
     const replaying = render(FULL_COLS, FULL_ROWS, view);
-    expect(replaying.charAt(L.advisor.x + 1, L.advisor.y)).toBe('─');
+    expect(replaying.charAt(L.advisor.x + 1, L.advisor.y + L.advisor.h - 1)).toBe('─');
   });
 
   it('barra de tarjeta en curso representa toolCount real (1 celda por herramienta) y nunca barra indeterminada', () => {

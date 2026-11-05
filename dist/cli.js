@@ -1608,11 +1608,7 @@ var mainModelOf = (view) => view.state.mainModel ?? view.preview?.main;
 var advisorModelOf = (view) => view.state.advisorModel ?? view.preview?.advisor;
 var mainName = (view) => displayModel(mainModelOf(view));
 var advisorName = (view) => displayModel(advisorModelOf(view));
-function builderName(view) {
-  const { subagents } = view.state;
-  const latest = [...subagents].reverse().find((s) => s.model);
-  return displayModel(latest?.model ?? mainModelOf(view));
-}
+var builderModelOf = (view) => [...view.state.subagents].reverse().find((s) => s.model)?.model;
 var EFFORT_LEVELS = { low: 1, medium: 2, high: 3, xhigh: 4, max: 5 };
 function effortSegments(effort) {
   const level = effort ? EFFORT_LEVELS[effort] ?? 0 : 0;
@@ -1670,16 +1666,17 @@ function headerSegments(view) {
   return [title, gap, { text: toCells(folderName(cwd)), color: theme.text }, gap, mode];
 }
 function drawLegend(buf, view, L) {
+  const builder = builderModelOf(view);
   const fullItems = [
     [theme.main, `lead \xB7 ${mainName(view)}`],
-    [theme.sub, `build \xB7 ${builderName(view)}`],
+    [theme.sub, builder ? `build \xB7 ${displayModel(builder)}` : "build"],
     [theme.metrics, "agent memory"],
     [theme.notes, "project memory"],
     [theme.advisor, `advisor \xB7 ${advisorName(view)}`]
   ];
   const aliasItems = [
-    [theme.main, `lead \xB7 ${mainName(view)}`],
-    [theme.sub, `build \xB7 ${modelAlias(view.state.subagents.slice().reverse().find((s) => s.model)?.model ?? mainModelOf(view))}`],
+    [theme.main, `lead \xB7 ${modelAlias(mainModelOf(view))}`],
+    [theme.sub, builder ? `build \xB7 ${modelAlias(builder)}` : "build"],
     [theme.metrics, "agent memory"],
     [theme.notes, "project memory"],
     [theme.advisor, `advisor \xB7 ${modelAlias(advisorModelOf(view))}`]
@@ -1932,17 +1929,14 @@ function drawAdvisorBox(buf, view, r) {
   const calls = String(callsCount);
   const consultWord = callsCount === 1 ? "consult" : "consults";
   const tokens = formatTokens(Math.round(numbers?.tokensRead ?? state.advisor.tokensRead));
-  const longStats = `${calls} ${consultWord} \xB7 ${tokens} tok`;
-  const midStats = `${calls} \xB7 ${tokens} tok`;
-  const compactStats = `${calls}\xB7${tokens} tok`;
-  const statsLine = cellLength(longStats) <= inner ? longStats : cellLength(midStats) <= inner ? midStats : cellLength(compactStats) <= inner ? compactStats : `${calls} \xB7 ${tokens}`;
   const fullShort = `${status} \xB7 ${calls} ${consultWord}`;
   const shortStatus = replaying ? status : cellLength(fullShort) <= inner ? fullShort : `${status} \xB7 ${calls}`;
   centerText(buf, left, inner, r.y + 1, "ADVISOR", theme.advisor, true);
   if (r.h >= 6) {
+    centerText(buf, left, inner, r.y, ` ${status} `, statusColor, replaying);
     centerText(buf, left, inner, r.y + 2, advisorName(view), theme.text);
-    centerText(buf, left, inner, r.y + 3, status, statusColor, replaying);
-    centerText(buf, left, inner, r.y + 4, statsLine, theme.dim);
+    centerText(buf, left, inner, r.y + 3, `${calls} ${consultWord}`, theme.dim);
+    centerText(buf, left, inner, r.y + 4, `${tokens} tok`, theme.dim);
   } else if (r.h === 5) {
     centerText(buf, left, inner, r.y + 2, advisorName(view), theme.text);
     centerText(buf, left, inner, r.y + 3, shortStatus, statusColor, replaying);
