@@ -64,9 +64,20 @@ export function summarizeToolInput(name: string, input: unknown): string | undef
 }
 
 /**
- * Clasifica una ruta como archivo de memoria. `CLAUDE.md` y la memoria automática se observaron en transcripts
- * reales; `.claude/agent-memory/` todavía no (ver docs/eventos.md).
+ * ¿El subagente recibió un índice `MEMORY.md` con notas? Llega en su prompt de sistema, sin usar herramientas.
+ * Sin `systemPrompt` (por ejemplo, en un fixture sanitizado) no se sabe. Solo se responde sí o no: el texto no se guarda.
  */
+export function memoryIndexedOf(attachment: Record<string, unknown>): boolean | undefined {
+  if (!Array.isArray(attachment.systemPrompt)) return undefined;
+  const prompt = attachment.systemPrompt.filter((part): part is string => typeof part === 'string').join('\n');
+  const heading = '\n## MEMORY.md\n';
+  const at = prompt.lastIndexOf(heading);
+  if (at < 0) return false;
+  const section = prompt.slice(at + heading.length).split(/\n#{1,2} /, 1)[0] as string;
+  return section.trim() !== '' && !section.includes('currently empty');
+}
+
+/** Clasifica una ruta como archivo de memoria. Las tres formas se observaron en transcripts reales (ver docs/eventos.md). */
 export function memoryScopeOf(path: string): MemoryScope | undefined {
   const normal = path.replace(/\\/g, '/').toLowerCase();
   if (normal.includes('/.claude/agent-memory/') || normal.startsWith('.claude/agent-memory/')) return 'agent';
@@ -190,6 +201,8 @@ export function createParser(): Parser {
   const subagents = new Map<string, SubagentRecord>();
   const info: Record<string, string | boolean | undefined> = {};
   const loadedMemory = new Set<string>();
+  /** El adjunto `prompt_snapshot` se repite: solo se avisa si la respuesta cambia. */
+  const memoryIndexed = new Map<string, boolean>();
   /** Avisos de tarea ya procesados: el mismo texto llega por varios portadores. */
   const notified = new Set<string>();
 
@@ -617,6 +630,13 @@ export function createParser(): Parser {
         }
         if (!agentId && attachment?.type === 'instructions') events.push(...memoryLoads(attachment, t));
         if (!agentId && attachment?.type === 'queued_command') events.push(...parseNotification(str(attachment.prompt), t));
+        if (agentId && attachment?.type === 'prompt_snapshot') {
+          const indexed = memoryIndexedOf(attachment);
+          if (indexed !== undefined && memoryIndexed.get(agentId) !== indexed) {
+            memoryIndexed.set(agentId, indexed);
+            events.push({ type: 'subagent_info', t, subagentId: agentId, memoryIndexed: indexed });
+          }
+        }
         break;
       }
       case 'system':

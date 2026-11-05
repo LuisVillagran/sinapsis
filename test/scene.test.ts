@@ -533,7 +533,30 @@ describe('AGENT MEMORY por rol y rótulos de rol', () => {
   it('un rol sin memoria cuenta en el total pero no en el numerador', () => {
     const text = memoryText(roleView([['builder', true, false], ['builder', true, false], ['reviewer', false, false]]));
     expect(text).toContain('1 / 2');
-    expect(text).toContain('no memory');
+    expect(text).toContain('no data');
+  });
+
+  it('sin operaciones, distingue índice con notas, sin notas y sin dato', () => {
+    const view = roleView([['builder', false, false], ['debugger', false, false], ['reviewer', false, false]]);
+    applyEvent(view.state, { type: 'subagent_info', t: 5000, subagentId: 'ag0', memoryIndexed: true });
+    applyEvent(view.state, { type: 'subagent_info', t: 5000, subagentId: 'ag1', memoryIndexed: false });
+    const lines = memoryText(view).split('\n');
+    expect(lines.find((line) => line.includes('builder'))).toContain('indexed');
+    expect(lines.find((line) => line.includes('debugger'))).toContain('no memory');
+    expect(lines.find((line) => line.includes('reviewer'))).toContain('no data');
+    // Tener notas cuenta como memoria, sin dibujar operaciones que no ocurrieron.
+    expect(lines.join('\n')).toContain('1 / 3');
+    expect(lines.find((line) => line.includes('builder'))).not.toContain('█');
+    for (const [cols, rows] of [[80, 30], [120, 30]] as const) expect(memoryText(view, cols, rows)).toContain('indexed');
+  });
+
+  it('una operación real tiene prioridad sobre el índice', () => {
+    const view = roleView([['builder', true, false]]);
+    applyEvent(view.state, { type: 'subagent_info', t: 5000, subagentId: 'ag0', memoryIndexed: true });
+    const text = memoryText(view);
+    expect(text).toContain('recall');
+    expect(text).not.toContain('indexed');
+    expect(text).toContain('1 / 1');
   });
 
   it('la barra suma las operaciones de todas las ejecuciones del rol', () => {

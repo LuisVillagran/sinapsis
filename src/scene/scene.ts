@@ -502,6 +502,15 @@ interface RoleGroup {
   lastTouch?: MemoryTouchState;
 }
 
+/** Alguna ejecución del rol recibió un índice de memoria con notas. */
+const isIndexed = (group: RoleGroup): boolean => group.members.some((m) => m.memoryIndexed === true);
+
+/** Sin operaciones, distingue tener notas, no tenerlas y no poder saberlo. */
+function idleMemoryLabel(group: RoleGroup): string {
+  if (isIndexed(group)) return 'indexed';
+  return group.members.some((m) => m.memoryIndexed === false) ? 'no memory' : 'no data';
+}
+
 function roleGroups(view: SceneView): RoleGroup[] {
   const { state } = view;
   const groups = new Map<string, RoleGroup>();
@@ -544,9 +553,10 @@ function memoryRows(view: SceneView, count: number): MemoryRow[] {
     const group = groups[i];
     if (!group) continue;
     const last = group.lastTouch;
-    const label = last ? memoryLabel(state, last) : 'no memory';
+    const label = last ? memoryLabel(state, last) : idleMemoryLabel(group);
     const check = label === 'check';
-    rows.push({ name: group.name, fraction: total(group) / max, label, labelColor: last ? (check ? theme.main : theme.metrics) : theme.faint, barColor: check ? theme.main : theme.barGood });
+    const idleColor = isIndexed(group) ? theme.dim : theme.faint;
+    rows.push({ name: group.name, fraction: total(group) / max, label, labelColor: last ? (check ? theme.main : theme.metrics) : idleColor, barColor: check ? theme.main : theme.barGood });
   }
   return rows;
 }
@@ -559,7 +569,7 @@ function drawAgentMemory(buf: CellBuffer, view: SceneView, r: Rect): void {
   const rows = memoryRows(view, 3);
   const allRoles = view.illustrativeDemo ? undefined : roleGroups(view);
   const rolesTotal = allRoles ? allRoles.length : state.subagents.length;
-  const rolesWithMemory = allRoles ? allRoles.filter((g) => g.lastTouch).length : state.subagents.length;
+  const rolesWithMemory = allRoles ? allRoles.filter((g) => g.lastTouch || isIndexed(g)).length : state.subagents.length;
   const rolesFull: Segment[] = [
     { text: 'roles  ', color: theme.dim },
     { text: `${rolesWithMemory} / ${rolesTotal}`, color: theme.metrics },

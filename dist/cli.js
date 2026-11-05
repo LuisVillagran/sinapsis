@@ -321,6 +321,7 @@ function applyEvent(state, event) {
       const sub = upsertSubagent(state, event.subagentId, event.t);
       if (event.description) sub.description = event.description;
       if (event.toolUseId) sub.toolUseId = event.toolUseId;
+      if (event.memoryIndexed !== void 0) sub.memoryIndexed = event.memoryIndexed;
       if (event.agentType) {
         sub.agentType = event.agentType;
         sub.readOnly = event.agentType === "Explore" || event.agentType === "Plan";
@@ -1973,6 +1974,11 @@ function slotMemoryRows(view, count) {
   }
   return rows;
 }
+var isIndexed = (group) => group.members.some((m) => m.memoryIndexed === true);
+function idleMemoryLabel(group) {
+  if (isIndexed(group)) return "indexed";
+  return group.members.some((m) => m.memoryIndexed === false) ? "no memory" : "no data";
+}
 function roleGroups(view) {
   const { state } = view;
   const groups = /* @__PURE__ */ new Map();
@@ -2011,9 +2017,10 @@ function memoryRows(view, count) {
     const group = groups[i];
     if (!group) continue;
     const last = group.lastTouch;
-    const label = last ? memoryLabel(state, last) : "no memory";
+    const label = last ? memoryLabel(state, last) : idleMemoryLabel(group);
     const check = label === "check";
-    rows.push({ name: group.name, fraction: total(group) / max, label, labelColor: last ? check ? theme.main : theme.metrics : theme.faint, barColor: check ? theme.main : theme.barGood });
+    const idleColor = isIndexed(group) ? theme.dim : theme.faint;
+    rows.push({ name: group.name, fraction: total(group) / max, label, labelColor: last ? check ? theme.main : theme.metrics : idleColor, barColor: check ? theme.main : theme.barGood });
   }
   return rows;
 }
@@ -2025,7 +2032,7 @@ function drawAgentMemory(buf, view, r) {
   const rows = memoryRows(view, 3);
   const allRoles = view.illustrativeDemo ? void 0 : roleGroups(view);
   const rolesTotal = allRoles ? allRoles.length : state.subagents.length;
-  const rolesWithMemory = allRoles ? allRoles.filter((g) => g.lastTouch).length : state.subagents.length;
+  const rolesWithMemory = allRoles ? allRoles.filter((g) => g.lastTouch || isIndexed(g)).length : state.subagents.length;
   const rolesFull = [
     { text: "roles  ", color: theme.dim },
     { text: `${rolesWithMemory} / ${rolesTotal}`, color: theme.metrics }
@@ -2783,6 +2790,15 @@ function summarizeToolInput(name, input) {
   const text = str(input.description) ?? str(input.pattern) ?? str(input.command) ?? str(input.query) ?? str(input.url);
   return text ? firstLineShort(text, 60) : void 0;
 }
+function memoryIndexedOf(attachment) {
+  if (!Array.isArray(attachment.systemPrompt)) return void 0;
+  const prompt = attachment.systemPrompt.filter((part) => typeof part === "string").join("\n");
+  const heading = "\n## MEMORY.md\n";
+  const at = prompt.lastIndexOf(heading);
+  if (at < 0) return false;
+  const section = prompt.slice(at + heading.length).split(/\n#{1,2} /, 1)[0];
+  return section.trim() !== "" && !section.includes("currently empty");
+}
 function memoryScopeOf(path) {
   const normal = path.replace(/\\/g, "/").toLowerCase();
   if (normal.includes("/.claude/agent-memory/") || normal.startsWith(".claude/agent-memory/")) return "agent";
@@ -2851,6 +2867,7 @@ function createParser() {
   const subagents = /* @__PURE__ */ new Map();
   const info = {};
   const loadedMemory = /* @__PURE__ */ new Set();
+  const memoryIndexed = /* @__PURE__ */ new Map();
   const notified = /* @__PURE__ */ new Set();
   function memoryLoads(attachment, t) {
     const files = [];
@@ -3206,6 +3223,13 @@ function createParser() {
         }
         if (!agentId && attachment?.type === "instructions") events.push(...memoryLoads(attachment, t));
         if (!agentId && attachment?.type === "queued_command") events.push(...parseNotification(str(attachment.prompt), t));
+        if (agentId && attachment?.type === "prompt_snapshot") {
+          const indexed = memoryIndexedOf(attachment);
+          if (indexed !== void 0 && memoryIndexed.get(agentId) !== indexed) {
+            memoryIndexed.set(agentId, indexed);
+            events.push({ type: "subagent_info", t, subagentId: agentId, memoryIndexed: indexed });
+          }
+        }
         break;
       }
       case "system":

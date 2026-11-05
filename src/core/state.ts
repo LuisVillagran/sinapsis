@@ -59,6 +59,8 @@ export interface SubagentState {
   totalTokens?: number;
   /** Ya llegaron los totales del proceso principal. */
   finalized: boolean;
+  /** Recibió un índice `MEMORY.md` con notas, sin usar herramientas. Sin esto, no se sabe. */
+  memoryIndexed?: boolean;
 }
 
 export type MainStatus = 'idle' | 'working' | 'tool';
@@ -402,6 +404,7 @@ export function applyEvent(state: SessionState, event: SinapsisEvent): void {
       const sub = upsertSubagent(state, event.subagentId, event.t);
       if (event.description) sub.description = event.description;
       if (event.toolUseId) sub.toolUseId = event.toolUseId;
+      if (event.memoryIndexed !== undefined) sub.memoryIndexed = event.memoryIndexed;
       if (event.agentType) {
         sub.agentType = event.agentType;
         sub.readOnly = event.agentType === 'Explore' || event.agentType === 'Plan';

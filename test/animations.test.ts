@@ -629,7 +629,9 @@ describe('memoria: hitos, caminos y brillo', () => {
   it('la fila del agente muestra recall, check o save según lo que ocurrió', () => {
     const row = FULL.memory.y + 2;
     const text = (events: SinapsisEvent[]): string => play([models, start, info, ...events], 20_000).buf.rowText(row, FULL.memory.x, FULL.memory.x + FULL.memory.w);
-    expect(text([])).toContain('no memory');
+    expect(text([])).toContain('no data');
+    expect(text([{ type: 'subagent_info', t: 2, subagentId: 'a', memoryIndexed: false }])).toContain('no memory');
+    expect(text([{ type: 'subagent_info', t: 2, subagentId: 'a', memoryIndexed: true }])).toContain('indexed');
     expect(text([touch(5, 'read', 'a')])).toContain('recall');
     expect(text([touch(5, 'write', 'a')])).toContain('save');
     expect(text([...failing, touch(5, 'read', 'a')])).toContain('check');
@@ -685,7 +687,7 @@ describe('demo ilustrada', () => {
     expect(view.anim?.illustrative).toBeUndefined();
     expect(text).not.toMatch(/\d+%/);
     expect(text).not.toContain('illustrative');
-    expect(text).toContain('no memory');
+    expect(text).toContain('no data');
   });
 
   it('la actividad de ejemplo nunca toca el estado de la sesión', () => {

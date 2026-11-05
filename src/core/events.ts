@@ -130,6 +130,8 @@ export interface SubagentInfo extends EventBase {
   description?: string;
   agentType?: string;
   toolUseId?: string;
+  /** Recibió un índice `MEMORY.md` con notas en su prompt de sistema. Sin esto, no se sabe. */
+  memoryIndexed?: boolean;
 }
 
 export interface SubagentEnd extends EventBase {

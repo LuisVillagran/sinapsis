@@ -719,6 +719,32 @@ describe('memoria', () => {
     expect(state.memory.loaded.map((l) => l.file)).toEqual(['CLAUDE.md', 'MEMORY.md']);
   });
 
+  it('el prompt del subagente dice si recibió un índice de memoria con notas, sin exponer su texto', () => {
+    const memory = (section: string, more = '') => `Eres builder.\n\n## MEMORY.md\n\n${section}${more}`;
+    const snapshot = (systemPrompt: unknown): string => JSON.stringify({ type: 'attachment', timestamp: '2026-11-05T10:00:00.000Z', attachment: { type: 'prompt_snapshot', systemPrompt } });
+    const indexed = (agentId: string, ...lines: string[]): unknown[] => {
+      const parser = createParser();
+      return lines.flatMap((line) => parser.feed(line, { agentId })).filter((e) => e.type === 'subagent_info');
+    };
+    const notes = snapshot([memory('- [Secreto](nota.md) — texto privado'), 'otra parte']);
+    const events = indexed('a', notes, notes);
+    // El adjunto se repite: se avisa una vez, con la respuesta y nada del contenido.
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ subagentId: 'a', memoryIndexed: true });
+    expect(JSON.stringify(events)).not.toContain('Secreto');
+
+    expect(indexed('a', snapshot([memory('Your MEMORY.md is currently empty. When you save new memories, they will appear here.')]))[0]).toMatchObject({ memoryIndexed: false });
+    // Lo que sigue a la sección no cuenta como notas.
+    expect(indexed('a', snapshot([memory('', '\n## Otra sección\n\n- no es una nota')]))[0]).toMatchObject({ memoryIndexed: false });
+    // Un subagente sin sistema de memoria no tiene la sección.
+    expect(indexed('a', snapshot(['Eres un agente sin memoria.']))[0]).toMatchObject({ memoryIndexed: false });
+    // Sin prompt, como en un fixture sanitizado, no se sabe.
+    expect(indexed('a', JSON.stringify({ type: 'attachment', attachment: { type: 'prompt_snapshot' } }))).toEqual([]);
+    expect(indexed('a', snapshot('no es una lista'))).toEqual([]);
+    // El proceso principal no es un subagente.
+    expect(createParser().feed(notes).filter((e) => e.type === 'subagent_info')).toEqual([]);
+  });
+
   it('un adjunto sin archivos, como en los fixtures sanitizados, no falla', () => {
     const loads = (attachment: object): SinapsisEvent[] => parseOne({ type: 'attachment', attachment }).filter((e) => e.type === 'memory_load');
     expect(loads({ type: 'instructions' })).toEqual([]);
