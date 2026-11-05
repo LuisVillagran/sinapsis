@@ -32,6 +32,8 @@ Corrida de solo lectura con `builder`, `debugger` y `reviewer` en segundo plano,
 - Caja del advisor con consultas y tokens completos, también a 80x30 y 120x30, con el estado sobre el borde.
 - De la revisión de `reviewer` sobre el retoque de Gemini: la hora de un hito pisaba `agents` o se perdía en compacto; la lista de archivos recortaba el nombre con horas de sesión; y README, `CLAUDE.md` y `docs/eventos.md` desfasados.
 
+Una revisión acotada de `reviewer` sobre estas correcciones (`336e292`) no encontró defectos nuevos. Verificado: 320 tests y `tsc`, los tests nuevos fallan con la escena anterior, y capturas y GIF regenerados. Falta una ventana real de terminal.
+
 **Hallazgos de `reviewer` que se dejaron sin corregir, por menores:**
 
 - Nombres de rol largos en `AGENT MEMORY` (`general-…`), con 9 celdas a 90x46.
@@ -59,11 +61,11 @@ antes de empezar la Fase B.
 
 ## Para retomar (2026-11-05)
 
-Todo lo hecho está en commits de `rediseno-referencia`, sin fusionar ni subir. Pendiente, en orden:
+Lo último está en commits locales de `rediseno-funcional`, sin subir ni fusionar. Pendiente, en orden:
 
-1. El usuario prueba en su terminal, con `node dist/cli.js`, a 120x30 y a 90x46 o más. El comando `sinapsis` sigue en `v0.1.0`.
-2. Decisiones sin responder: limitar `reviewer` a cambios de código (recomendado), poner el rol primero también en las cajas, y
-   arreglar `advisor` a 90 columnas (recomendado).
+1. El usuario prueba en su terminal, con `node dist/cli.js`, a 120x30 y a 90x46 o más, sobre todo en vivo con subagentes. El comando `sinapsis` sigue en `v0.1.0`.
+2. Decisiones sin responder: limitar `reviewer` a cambios de código (recomendado) y poner el rol primero también en las cajas.
+   El corte de `advisor` a 90 columnas ya se resolvió con la línea de estado del retoque.
 3. Fase B, sin aprobar: `SendMessage` real, dos rondas y sanitizador que conserve solo nombres de archivo.
 
 4. Propuesta sin aprobar, para que Sinapsis funcione con cualquier sesión en vez de exigir subagentes: (a) matriz de fixtures y
@@ -71,7 +73,7 @@ Todo lo hecho está en commits de `rediseno-referencia`, sin fusionar ni subir. 
    Fase B puede aportar parte; (b) pantalla útil sin subagentes (`no subagents`), sin revisar aún; (c) preset opcional
    `sinapsis init`. Descartado: un hook que bloquee `Edit` y `Write`. Recomendado: empezar por (a). (b) y (c) requieren aprobación.
 
-Rama ya subida a GitHub; `main` sin cambios. Estos registros no pasaron por `reviewer`, para ahorrar tokens.
+`rediseno-referencia` ya está en GitHub, `rediseno-funcional` no; `main` sin cambios. Estos registros no pasaron por `reviewer`, para ahorrar tokens.
 
 ## Costo del flujo con subagentes (2026-11-05)
 
@@ -396,7 +398,7 @@ distinta de la local, tampoco aparece: 0 coincidencias en 203 blobs de texto y b
 
 ## Para revisar al volver
 
-- **Confirmar en una terminal real:** en la rama `rediseno-referencia`, ejecutar `node dist/cli.js demo` a 120x30 y a
+- **Confirmar en una terminal real:** en la rama `rediseno-funcional`, ejecutar `node dist/cli.js demo` a 120x30 y a
   90x46 o más. Es lo único que Claude no pudo mirar: fluidez, parpadeo, teclas, redimensionado y que al salir la
   terminal quede normal.
 - **Fusionar y publicar el rediseño:** no se hizo. El comando `sinapsis` instalado sigue con el diseño anterior hasta
