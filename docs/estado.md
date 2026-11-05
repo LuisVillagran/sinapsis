@@ -22,7 +22,12 @@ Todo lo hecho está en commits de `rediseno-referencia`, sin fusionar ni subir. 
    arreglar `advisor` a 90 columnas (recomendado).
 3. Fase B, sin aprobar: `SendMessage` real, dos rondas y sanitizador que conserve solo nombres de archivo.
 
-Este último registro no pasó por `reviewer`, a pedido del usuario, para ahorrar tokens.
+4. Propuesta sin aprobar, para que Sinapsis funcione con cualquier sesión en vez de exigir subagentes: (a) matriz de fixtures y
+   tests: sin subagentes, integrados, roles propios, segundo plano y sin advisor, con la versión de Claude Code probada; la
+   Fase B puede aportar parte; (b) pantalla útil sin subagentes (`no subagents`), sin revisar aún; (c) preset opcional
+   `sinapsis init`. Descartado: un hook que bloquee `Edit` y `Write`. Recomendado: empezar por (a). (b) y (c) requieren aprobación.
+
+Rama ya subida a GitHub; `main` sin cambios. Estos registros no pasaron por `reviewer`, para ahorrar tokens.
 
 ## Costo del flujo con subagentes (2026-11-05)
 
