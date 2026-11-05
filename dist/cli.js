@@ -786,6 +786,12 @@ var LEAD_GLOW_MS = 900;
 var LOG_MOTION_MS = 800;
 var COUNT_MS = 500;
 var TOKENS_MS = 900;
+var BREATH_PERIOD_MS = 4200;
+var BREATH_LEVELS = 6;
+function breathLevel(now) {
+  const wave = 0.5 + 0.5 * Math.sin(now / BREATH_PERIOD_MS * 2 * Math.PI);
+  return Math.round(wave * BREATH_LEVELS) / BREATH_LEVELS;
+}
 var Director = class {
   truth = createState();
   shown = createState();
@@ -1008,6 +1014,7 @@ var Director = class {
       cards: this.cardViews(now),
       leadGlow: this.leadGlow(now),
       numbers: this.shownNumbers(now),
+      breath: breathLevel(now),
       ...this.advisorMotion(now)
     };
   }
@@ -1414,7 +1421,8 @@ function drawLegend(buf, view, ox, oy) {
     buf.text(ox + x + 2, y, label, theme.dim);
   }
 }
-var panelBorder = (color) => mix(color, theme.panel, 0.2);
+var BREATH_DEPTH = 0.22;
+var panelBorder = (color, view) => mix(color, theme.panel, 0.2 + BREATH_DEPTH * (view.anim?.breath ?? 0));
 var SLOTS = [
   { row: FULL.arrows.main, index: 0, empty: "before a plan" },
   { row: FULL.arrows.cards, index: 1, empty: "after errors" },
@@ -1443,7 +1451,7 @@ function drawAdvisorPanel(buf, view, r) {
   const { advisor } = view.state;
   const pulse = view.anim?.advisorPulse ?? 0;
   box(buf, r, {
-    color: mix(panelBorder(theme.advisor), theme.subBright, pulse * 0.75),
+    color: mix(panelBorder(theme.advisor, view), theme.subBright, pulse * 0.75),
     fill: mix(theme.panel, theme.advisor, pulse * 0.08),
     halo: 0.35 + pulse * 0.9,
     bold: pulse > 0.5
@@ -1538,7 +1546,7 @@ function drawConnectors(buf, view) {
 }
 function drawMainPanel(buf, view, r) {
   const { state } = view;
-  box(buf, r, { color: panelBorder(theme.main), fill: theme.panel, halo: 0.4 });
+  box(buf, r, { color: panelBorder(theme.main, view), fill: theme.panel, halo: 0.4 });
   const inner = r.w - 2;
   const left = r.x + 1;
   centerSegments(buf, left, inner, r.y + 1, [
@@ -1564,7 +1572,7 @@ function drawMainPanel(buf, view, r) {
 }
 function drawAdvisorState(buf, view, r) {
   const { state } = view;
-  box(buf, r, { color: theme.advisor, dashed: true, fill: theme.panel, halo: 0.25 });
+  box(buf, r, { color: panelBorder(theme.advisor, view), dashed: true, fill: theme.panel, halo: 0.25 });
   centerText(buf, r.x + 1, r.w - 2, r.y + 1, "ADVISOR", theme.advisor, true);
   const replaying = state.advisor.consults.some((c) => c.open);
   const row = (y, label, value, color = theme.text) => {
@@ -1578,7 +1586,7 @@ function drawAdvisorState(buf, view, r) {
 }
 function drawMetrics(buf, view, r) {
   const { state } = view;
-  box(buf, r, { color: panelBorder(theme.metrics), fill: theme.panel, halo: 0.3 });
+  box(buf, r, { color: panelBorder(theme.metrics, view), fill: theme.panel, halo: 0.3 });
   const left = r.x + 2;
   const right = r.x + r.w - 3;
   const toolRunning = view.connected && (state.status === "tool" || state.subagents.some((s) => s.currentTool));
@@ -1977,6 +1985,7 @@ var TerminalSession = class {
 var MAX_FPS = 60;
 var MIN_FPS = 30;
 var IDLE_FPS = 20;
+var IDLE_FRAME_MS = 120;
 function runApp(options) {
   const now = options.now ?? (() => performance.now());
   const director = new Director({ boot: true });
@@ -2018,7 +2027,7 @@ function runApp(options) {
   }
   function frameKey(time, size) {
     const status = replay ? `${replay.speed}|${replay.paused}|${replay.finished}` : "";
-    const moving = director.isBusy(time) ? time : Math.floor(time / 50);
+    const moving = director.isBusy(time) ? time : Math.floor(time / IDLE_FRAME_MS);
     return `${size.cols}x${size.rows}|${director.version}|${moving}|${status}`;
   }
   function frame() {

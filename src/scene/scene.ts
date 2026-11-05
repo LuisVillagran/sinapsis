@@ -134,8 +134,11 @@ function drawLegend(buf: CellBuffer, view: SceneView, ox: number, oy: number): v
   }
 }
 
-/** Los bordes son más tenues que el color puro del token, como en la referencia. */
-const panelBorder = (color: Rgb): Rgb => mix(color, theme.panel, 0.2);
+/** Cuánto se apagan los bordes al respirar. */
+const BREATH_DEPTH = 0.22;
+
+/** Los bordes son más tenues que el color puro del token, como en la referencia, y respiran en reposo. */
+const panelBorder = (color: Rgb, view: SceneView): Rgb => mix(color, theme.panel, 0.2 + BREATH_DEPTH * (view.anim?.breath ?? 0));
 
 // --- Panel del advisor ---
 
@@ -171,7 +174,7 @@ function drawAdvisorPanel(buf: CellBuffer, view: SceneView, r: Rect): void {
   const { advisor } = view.state;
   const pulse = view.anim?.advisorPulse ?? 0;
   box(buf, r, {
-    color: mix(panelBorder(theme.advisor), theme.subBright, pulse * 0.75),
+    color: mix(panelBorder(theme.advisor, view), theme.subBright, pulse * 0.75),
     fill: mix(theme.panel, theme.advisor, pulse * 0.08),
     halo: 0.35 + pulse * 0.9,
     bold: pulse > 0.5,
@@ -287,7 +290,7 @@ function drawConnectors(buf: CellBuffer, view: SceneView): void {
 
 function drawMainPanel(buf: CellBuffer, view: SceneView, r: Rect): void {
   const { state } = view;
-  box(buf, r, { color: panelBorder(theme.main), fill: theme.panel, halo: 0.4 });
+  box(buf, r, { color: panelBorder(theme.main, view), fill: theme.panel, halo: 0.4 });
   const inner = r.w - 2;
   const left = r.x + 1;
   centerSegments(buf, left, inner, r.y + 1, [
@@ -315,7 +318,7 @@ function drawMainPanel(buf: CellBuffer, view: SceneView, r: Rect): void {
 
 function drawAdvisorState(buf: CellBuffer, view: SceneView, r: Rect): void {
   const { state } = view;
-  box(buf, r, { color: theme.advisor, dashed: true, fill: theme.panel, halo: 0.25 });
+  box(buf, r, { color: panelBorder(theme.advisor, view), dashed: true, fill: theme.panel, halo: 0.25 });
   centerText(buf, r.x + 1, r.w - 2, r.y + 1, 'ADVISOR', theme.advisor, true);
   const replaying = state.advisor.consults.some((c) => c.open);
   const row = (y: number, label: string, value: string, color: Rgb = theme.text): void => {
@@ -334,7 +337,7 @@ function drawAdvisorState(buf: CellBuffer, view: SceneView, r: Rect): void {
 
 function drawMetrics(buf: CellBuffer, view: SceneView, r: Rect): void {
   const { state } = view;
-  box(buf, r, { color: panelBorder(theme.metrics), fill: theme.panel, halo: 0.3 });
+  box(buf, r, { color: panelBorder(theme.metrics, view), fill: theme.panel, halo: 0.3 });
   const left = r.x + 2;
   const right = r.x + r.w - 3;
   // Gira si alguna herramienta está corriendo, en el proceso principal o en un subagente.

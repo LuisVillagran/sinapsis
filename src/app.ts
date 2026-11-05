@@ -13,6 +13,7 @@ const MAX_FPS = 60;
 const MIN_FPS = 30;
 /** Sin nada moviéndose basta con esto para spinners, cursor y respiración. */
 const IDLE_FPS = 20;
+const IDLE_FRAME_MS = 120;
 
 export interface Size {
   cols: number;
@@ -92,7 +93,8 @@ export function runApp(options: AppOptions): App {
   /** Identifica lo que se vería. Si no cambió, no hace falta dibujar ni comparar. */
   function frameKey(time: number, size: Size): string {
     const status = replay ? `${replay.speed}|${replay.paused}|${replay.finished}` : '';
-    const moving = director.isBusy(time) ? time : Math.floor(time / 50);
+    // En reposo solo se mueven spinners, cursor y respiración: basta con mirar unas ocho veces por segundo.
+    const moving = director.isBusy(time) ? time : Math.floor(time / IDLE_FRAME_MS);
     return `${size.cols}x${size.rows}|${director.version}|${moving}|${status}`;
   }
 

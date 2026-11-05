@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { SinapsisEvent } from '../src/core/events.js';
 import { reduce } from '../src/core/state.js';
-import { Director } from '../src/engine/director.js';
+import { Director, breathLevel } from '../src/engine/director.js';
+import { encodeFrame } from '../src/tui/ansi.js';
 import { FULL, ROUTES, consultSlot } from '../src/scene/layout.js';
 import { renderScene } from '../src/scene/scene.js';
 import { theme } from '../src/scene/theme.js';
@@ -413,6 +414,50 @@ describe('animación 7: spinners y cursor', () => {
     const buf = bufferOf(historicalView(events, 100));
     const frames = FULL.cards.map((c) => spinnerCell(buf, c.y + 2, c.x, c.x + c.w));
     expect(new Set(frames).size).toBeGreaterThan(1);
+  });
+});
+
+describe('animación 8: respiración en reposo', () => {
+  const idle = (now: number): SceneView => new Director().view(now);
+
+  it('el borde cambia con el tiempo, sin dejar de verse', () => {
+    const colors = new Set<number>();
+    for (let now = 0; now < 4200; now += 100) colors.add(bufferOf(idle(now)).fgAt(FULL.main.x, FULL.main.y));
+    expect(colors.size).toBeGreaterThan(2);
+    const luma = (c: number): number => ((c >> 16) & 255) + ((c >> 8) & 255) + (c & 255);
+    const panelLuma = luma(theme.panel);
+    for (const color of colors) expect(luma(color)).toBeGreaterThan(panelLuma + 100);
+  });
+
+  it('es periódica y usa pocos niveles', () => {
+    const levels = new Set<number>();
+    for (let now = 0; now < 8400; now += 16) levels.add(breathLevel(now));
+    expect(levels.size).toBeLessThanOrEqual(7);
+    expect(levels.size).toBeGreaterThan(3);
+    expect(breathLevel(1000)).toBe(breathLevel(1000 + 4200));
+  });
+
+  it('la mayoría de los frames en reposo no cambia ningún borde', () => {
+    const frames = 4200 / 16;
+    let changes = 0;
+    for (let now = 16; now < 4200; now += 16) if (breathLevel(now) !== breathLevel(now - 16)) changes += 1;
+    expect(changes / frames).toBeLessThan(0.1);
+  });
+
+  it('entre dos frames de reposo, sin cambio de nivel, el diff es pequeño', () => {
+    const a = bufferOf(idle(1000));
+    const b = bufferOf(idle(1010));
+    expect(encodeFrame(a, b, 'truecolor').length).toBeLessThan(200);
+  });
+
+  it('no es una animación que oculte nada: sin sesión, el panel sigue completo', () => {
+    const buf = bufferOf(idle(2000));
+    expect(buf.rowText(2)).toContain('CLAUDE CODE ADVISOR');
+    expect(buf.charAt(FULL.main.x, FULL.main.y)).toBe('┏');
+  });
+
+  it('no mantiene la frecuencia alta', () => {
+    expect(new Director().isBusy(5000)).toBe(false);
   });
 });
 

@@ -29,6 +29,15 @@ const LOG_MOTION_MS = 800;
 const COUNT_MS = 500;
 const TOKENS_MS = 900;
 
+const BREATH_PERIOD_MS = 4200;
+const BREATH_LEVELS = 6;
+
+/** Respiración cuantizada: pocos valores por ciclo, para que el diff casi nunca tenga que reescribir los bordes. */
+export function breathLevel(now: number): number {
+  const wave = 0.5 + 0.5 * Math.sin((now / BREATH_PERIOD_MS) * 2 * Math.PI);
+  return Math.round(wave * BREATH_LEVELS) / BREATH_LEVELS;
+}
+
 interface Span {
   start: number;
   duration: number;
@@ -305,6 +314,7 @@ export class Director {
       cards: this.cardViews(now),
       leadGlow: this.leadGlow(now),
       numbers: this.shownNumbers(now),
+      breath: breathLevel(now),
       ...this.advisorMotion(now),
     };
   }

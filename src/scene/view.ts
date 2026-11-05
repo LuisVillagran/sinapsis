@@ -38,6 +38,8 @@ export interface AnimFrame {
   leadGlow?: number;
   /** Contadores en camino a su valor real. */
   numbers?: ShownNumbers;
+  /** Respiración de los bordes, de 0 a 1, en pocos niveles para no reescribirlos en cada frame. */
+  breath?: number;
 }
 
 export interface ShownNumbers {
