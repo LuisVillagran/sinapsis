@@ -106,6 +106,8 @@ Bitácora para retomar el trabajo solo con este archivo. Ver `CLAUDE.md` para el
   documentan como uso normal.
 - **Tarjetas terminadas:** se atenúan y conservan sus datos en lugar de desaparecer, para no borrar información.
   Un subagente nuevo reemplaza a una tarjeta terminada, y si las tres están activas, espera su turno.
+- **`chokidar` 4 en vez de 6:** la versión 6 exige Node 22.22 o superior, y el acuerdo pide Node 20. La API usada es
+  la misma.
 - **Privacidad:** el fixture antiguo traía en una línea la salida de una revisión anterior, con fragmentos
   de nombres de otros proyectos. Se limpió también en el historial local con `git filter-branch`, antes del
   primer push. Por eso los hashes de la Fase 0 cambiaron.
@@ -120,6 +122,22 @@ Bitácora para retomar el trabajo solo con este archivo. Ver `CLAUDE.md` para el
   se cae. Con `deviceScaleFactor: 2`, WebGL mostraba un solo cuadrante, así que se captura a escala 1.
 - Fase 4, prueba de instalación desde git: `"tsup" no se reconoce como un comando interno o externo`, durante
   `git dep preparation failed`. Ver la decisión sobre `dist/` versionado.
+- Fase 4, instalación con `prepare` tolerante: `npm warn allow-scripts sinapsis@0.1.0 (prepare: node scripts/prepare.mjs)`,
+  y luego `node:internal/modules/cjs/loader:1520 throw err;` al ejecutar el comando: la carpeta instalada solo tenía
+  `.git`. Lo mismo con `git+file://` sin `prepare`. Desde un tarball funciona.
+- Fase 4, al aplicar un parche por consola: `/usr/bin/bash: -c: line 154: unexpected EOF while looking for matching`.
+  No se ejecutó nada. Se hizo con las herramientas de edición.
+- Fase 4, script de medición suelto: `Top-level await is currently not supported with the "cjs" output format`, y luego
+  `ERR_UNSUPPORTED_ESM_URL_SCHEME: ... Received protocol 'c:'`. La medición pasó a `tools/measure.ts`.
+- Fase 4, tests del comando empaquetado: `Error: Test timed out in 5000ms.` al salir con `q`. Era un defecto real: el
+  proceso no terminaba con stdin en pausa. Corregido con una salida explícita.
+- Fase 4, bucle: `RangeError: Maximum call stack size exceeded` con una frecuencia alta. Corregido.
+- Fase 5, `tools/live-run.ts`: `SyntaxError: The requested module '@xterm/headless' does not provide an export named
+  'Terminal'`, antes de lanzar la sesión. Sin gasto.
+- Fase 5, comprobación: `FALLA total de herramientas en pantalla: 10` y `FALLA consultas en pantalla: 3`. La pantalla
+  estaba bien (5 y 2): la herramienta contaba también las líneas `api-request-blob`.
+- Fase 6, `tools/gif.ts`: `SyntaxError: The requested module 'gifenc' does not provide an export named 'GIFEncoder'`.
+- Durante el desarrollo, varios fallos de tests propios, citados en el momento en la salida de la sesión.
 
 ## Bloqueos
 

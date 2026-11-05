@@ -182,7 +182,7 @@ function drawAdvisorPanel(buf: CellBuffer, view: SceneView, r: Rect): void {
   const inner = r.w - 2;
   const left = r.x + 1;
   centerText(buf, left, inner, r.y + 1, advisorName(view).toUpperCase(), theme.advisor, true);
-  centerText(buf, left, inner, r.y + 2, 'advisor · on call', theme.dim);
+  centerText(buf, left, inner, r.y + 2, view.state.advisorModel ? 'advisor · on call' : 'advisor · not seen', theme.dim);
   const chip = `[ --advisor ${modelAlias(view.state.advisorModel)} ]`;
   buf.fill(left + 1, r.y + 3, inner - 2, 1, theme.chip);
   centerText(buf, left + 1, inner - 2, r.y + 3, chip, theme.dim);
