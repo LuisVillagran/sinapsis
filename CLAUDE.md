@@ -278,7 +278,7 @@ Implementarlas una por una, en este orden:
   **duración mínima visible** (punto de partida: 350 ms; paquete: 400 a 700 ms).
 - Si la cola crece, se acelera de forma gradual y se agrupan herramientas consecutivas.
 - **Nunca se descartan** consultas al advisor, subagentes ni errores.
-- Los animaciones no se superponen de forma caótica en un mismo conector.
+- Las animaciones no se superponen de forma caótica en un mismo conector.
 
 ### Rendimiento
 
