@@ -4,7 +4,7 @@ Bitácora para retomar el trabajo solo con este archivo. Ver `CLAUDE.md` para el
 
 ## Fase actual
 
-**Retoque visual funcional (2026-11-05), en la rama `rediseno-funcional` (creada desde `rediseno-referencia`), sin fusionar ni publicar.** Probado por el usuario con subagentes reales en su terminal, con `replay`. Las correcciones posteriores (ver la sección siguiente) y el seguimiento en vivo con subagentes aún no los confirma en su terminal. Se eliminaron todos los adornos de las imágenes de referencia que no tenían respaldo funcional (barra falsa de ventana con botones de colores, separador grueso, textos fijos de `PROJECT MEMORY`, filas vacías `—`, barra que rebota sin dato, `integrate + verify`, prompt falso con cursor parpadeante y estados repetidos en la línea inferior) y se sacó `AGENT MEMORY` del camino del tronco de delegación. Según informó el usuario, lo hizo con Gemini, así que no consta que pasara por `builder` ni `reviewer`. 309 tests comprobados de forma independiente con Claude Code.
+**Retoque visual funcional (2026-11-05), fusionado en `main` con la aprobación del usuario.** Probado por el usuario con subagentes reales en su terminal, con `replay`. Tras las correcciones posteriores (ver la sección siguiente) confirmó que "funciona perfecto", sin precisar si probó también el seguimiento en vivo con subagentes. No se creó tag: `v0.1.0` sigue apuntando al diseño anterior y `package.json` dice `0.1.0`. Se eliminaron todos los adornos de las imágenes de referencia que no tenían respaldo funcional (barra falsa de ventana con botones de colores, separador grueso, textos fijos de `PROJECT MEMORY`, filas vacías `—`, barra que rebota sin dato, `integrate + verify`, prompt falso con cursor parpadeante y estados repetidos en la línea inferior) y se sacó `AGENT MEMORY` del camino del tronco de delegación. Según informó el usuario, lo hizo con Gemini, así que no consta que pasara por `builder` ni `reviewer`. 309 tests comprobados de forma independiente con Claude Code.
 
 ## Retoque visual funcional (2026-11-05)
 
@@ -32,7 +32,7 @@ Corrida de solo lectura con `builder`, `debugger` y `reviewer` en segundo plano,
 - Caja del advisor con consultas y tokens completos, también a 80x30 y 120x30, con el estado sobre el borde.
 - De la revisión de `reviewer` sobre el retoque de Gemini: la hora de un hito pisaba `agents` o se perdía en compacto; la lista de archivos recortaba el nombre con horas de sesión; y README, `CLAUDE.md` y `docs/eventos.md` desfasados.
 
-Una revisión acotada de `reviewer` sobre estas correcciones (`336e292`) no encontró defectos nuevos. Verificado: 321 tests y `tsc`, los tests nuevos de esas correcciones fallan con la escena anterior, y capturas y GIF regenerados. Falta una ventana real de terminal. La rama está subida a `origin` a pedido del usuario; `main` y el comando instalado siguen con el diseño anterior hasta que confirme la prueba.
+Una revisión acotada de `reviewer` sobre estas correcciones (`336e292`) no encontró defectos nuevos. Verificado: 321 tests y `tsc`, los tests nuevos de esas correcciones fallan con la escena anterior, y capturas y GIF regenerados. El usuario lo confirmó después en su terminal.
 
 **Hallazgos de `reviewer` que se dejaron sin corregir, por menores:**
 
@@ -45,7 +45,7 @@ Una revisión acotada de `reviewer` sobre estas correcciones (`336e292`) no enco
 
 - **Bash no se cuenta como memoria:** la sesión antigua tiene 5 comandos `Bash` que mencionan `agent-memory`. Quedan fuera del panel, como dice el README.
 - **Fixture de esta corrida:** es la primera grabación real con subagentes en segundo plano y sigue sin entrar a `fixtures/`. El sanitizador borra `systemPrompt`, así que `indexed` seguiría sin poder probarse desde el repositorio.
-- **Fusión y publicación:** pendientes de la aprobación del usuario.
+- **Versión:** el diseño nuevo se instala desde `main` con el número `0.1.0`, igual que el tag anterior. Crear `v0.2.0` queda a decisión del usuario.
 
 ## Fase anterior (`rediseno-referencia`)
 
@@ -60,9 +60,9 @@ antes de empezar la Fase B.
 
 ## Para retomar (2026-11-05)
 
-Lo último está en commits locales de `rediseno-funcional`, sin subir ni fusionar. Pendiente, en orden:
+Todo está en `main`. Pendiente, en orden:
 
-1. El usuario prueba en su terminal, con `node dist/cli.js`, a 120x30 y a 90x46 o más, sobre todo en vivo con subagentes. El comando `sinapsis` sigue en `v0.1.0`.
+1. Confirmar el seguimiento en vivo con subagentes en una terminal real, si el usuario no lo probó ya.
 2. Decisiones sin responder: limitar `reviewer` a cambios de código (recomendado) y poner el rol primero también en las cajas.
    El corte de `advisor` a 90 columnas ya se resolvió con la línea de estado del retoque.
 3. Fase B, sin aprobar: `SendMessage` real, dos rondas y sanitizador que conserve solo nombres de archivo.
@@ -397,11 +397,8 @@ distinta de la local, tampoco aparece: 0 coincidencias en 203 blobs de texto y b
 
 ## Para revisar al volver
 
-- **Confirmar en una terminal real:** en la rama `rediseno-funcional`, ejecutar `node dist/cli.js demo` a 120x30 y a
-  90x46 o más. Es lo único que Claude no pudo mirar: fluidez, parpadeo, teclas, redimensionado y que al salir la
-  terminal quede normal.
-- **Fusionar y publicar el rediseño:** no se hizo. El comando `sinapsis` instalado sigue con el diseño anterior hasta
-  entonces.
+- **Terminal real:** el usuario confirmó el rediseño en Git Bash, en Windows 11. Claude no puede mirar esa ventana, así
+  que fluidez, parpadeo, teclas y redimensionado dependen de esa confirmación.
 - **Autor de las imágenes nuevas:** el README lo declara sin confirmar. Corregir el crédito si se conoce.
 - **Correo en el historial:** los commits llevan el correo personal configurado en este repositorio, como se acordó.
   Al ser público, ese correo queda visible en cada commit.

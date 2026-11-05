@@ -120,8 +120,8 @@ plano sí se observaron.
 ### Verificado y sin verificar
 
 Las pruebas conectan la aplicación a un emulador de terminal (xterm.js), y se siguió una sesión interactiva real a
-120x30. Se desarrolló en Windows 11 con Node 24. **No se ha comprobado en una ventana de terminal real, ni en Linux o
-macOS.**
+120x30. Se desarrolló en Windows 11 con Node 24, y se probó con `replay` en una ventana real de Git Bash. **No se ha
+comprobado en Linux o macOS.**
 
 ## Desarrollo
 
