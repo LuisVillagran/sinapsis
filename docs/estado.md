@@ -38,8 +38,11 @@ restaurada. Primer trabajo real de `builder` y `reviewer`, ambos revisados de fo
   debería llenar este vacío, pasando por el sanitizador.
 - **Falla intermitente sin identificar:** una corrida de tests dio 286 de 287 en 389 s, cuando lo normal son 56 s. La salida se
   recortó y no se sabe cuál falló. No se repitió en las tres corridas posteriores que se comprobaron. Si reaparece, delegar en `debugger`.
-- **Línea de estado a 90 columnas:** si están activos a la vez `memories [project]` y `build [building]`, el grupo `advisor` no
-  cabe. Ya pasaba antes y la caja del advisor sigue mostrando su estado.
+- **Línea de estado a 90 columnas:** el grupo `advisor` no cabe en estados comunes, por ejemplo con `lead [working]`, `subagents
+  [11/11]`, `memories [agent]` y `build [idle]`, aunque `CLAUDE.md` lo incluye. Ya pasaba antes y la caja del advisor sigue
+  mostrando su estado. Una opción es no reservar lugar para `N queued` con la cola vacía. Lo decide el usuario.
+- **Última ronda de correcciones:** las cuatro correcciones tras la revisión de `reviewer` se comprobaron con tests y a mano, sin
+  una segunda revisión suya.
 - **Subagente reanudado:** con `SendMessage`, uno cerrado no se reabre. Hay que resolverlo en las fases B o C.
 - **Capturas y GIF de `docs/` y del README:** muestran los rótulos anteriores. Regenerarlos antes de publicar.
 - **`reviewer` escribió un archivo:** creó y borró un test temporal en `test/`, pese a la orden de no modificar archivos. Lo
