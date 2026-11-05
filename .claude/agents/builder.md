@@ -1,6 +1,6 @@
 ---
 name: builder
-description: Implementa cambios de código ya planificados, siguiendo los patrones existentes y con el cambio mínimo. Úsalo para delegar la implementación de una tarea ya dividida.
+description: Implementa cambios de código ya planificados, siguiendo los patrones existentes y con el cambio mínimo. Úsalo para delegar la implementación de una tarea grande ya dividida; un cambio pequeño y ya definido no se delega.
 model: sonnet
 memory: project
 disallowedTools: mcp__*

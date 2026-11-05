@@ -31,8 +31,8 @@ versión anterior.
   debe revisar el usuario al volver.
 - **Si algo bloquea una parte:** intentar una alternativa razonable, registrarlo y seguir
   con lo demás. Nunca fingir que algo funciona: lo no verificado se declara como tal.
-- **Consultar al advisor** al empezar cada fase con decisiones de diseño, cuando un
-  problema no converge y antes de declarar terminado el proyecto.
+- **Consultar al advisor** solo para decisiones de diseño, cuando un problema no converge y
+  antes de cerrar una fase o una tarea larga. No como rutina ni en tareas cortas.
 
 ### Qué está autorizado sin preguntar
 
@@ -438,7 +438,10 @@ revisar el usuario.
 
 ## Flujo de trabajo con subagentes
 
-- Planifica y divide la tarea; delega la implementación en builder.
+- Planifica y divide la tarea. Delega en builder solo las tareas grandes, las que requieren investigar o iterar con tests.
+  Un cambio pequeño y ya definido lo hace directamente el modelo principal.
+- Consulta al advisor según la sección 1: solo para decisiones de diseño, cuando un problema no converge y antes de cerrar
+  una fase o una tarea larga.
 - Si un error se repite o un test falla dos veces, delega en debugger.
 - Antes de dar una tarea por terminada, pide a reviewer que revise el diff.
 - Integra los resultados y verifica antes de cerrar.

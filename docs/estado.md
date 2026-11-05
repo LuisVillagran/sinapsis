@@ -13,6 +13,16 @@ antes de empezar la Fase B.
 
 **Corrección de lo que el usuario vio al probar (2026-11-05), en la misma rama.** Espera que lo confirme en su terminal.
 
+## Costo del flujo con subagentes (2026-11-05)
+
+El usuario preguntó si usar subagentes con Opus 5.5 como principal hacía inútil el ahorro. Medido en una sesión real, a precios
+de API y suponiendo que escribir en caché cuesta 1,25 veces la entrada: subagentes Sonnet ~$6,36, principal Opus ~$3,72 y
+advisor Opus ~$1,77. Los mismos tokens de subagentes en Opus habrían costado ~$9,88. El ahorro total fue de cerca de 23%, no 50%,
+porque leer de la caché cuesta igual en ambos modelos. No se midió la calidad ni una sesión igual sin subagentes.
+
+**Decisión del usuario:** delegar en `builder` solo tareas grandes, y consultar al advisor solo para decisiones de diseño,
+problemas que no convergen y antes de cerrar. La regla de pedir a `reviewer` que revise antes de terminar no cambió.
+
 ## Corrección tras la prueba del usuario (2026-11-05)
 
 El usuario reportó que las tareas quedaban en `0/2` o `0/N`, y que Opus 5.5 aparecía como principal, advisor y lead.
