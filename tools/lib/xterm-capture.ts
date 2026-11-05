@@ -91,6 +91,11 @@ export class XtermCapture {
     return { width: Math.round(box?.width ?? 0), height: Math.round(box?.height ?? 0) };
   }
 
+  /** Captura a memoria, sin la espera de `screenshot`: es para grabar muchos frames seguidos. */
+  async frame(): Promise<Buffer> {
+    return this.page.locator('.xterm-screen').screenshot();
+  }
+
   async close(): Promise<void> {
     await this.browser.close();
   }

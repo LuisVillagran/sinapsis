@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { Terminal } from '@xterm/headless';
+import headless from '@xterm/headless';
 import { encodeProjectPath } from '../src/sources/discovery.js';
 import { RESTORE_SEQUENCE } from '../src/tui/terminal.js';
 import { XtermCapture } from './lib/xterm-capture.js';
@@ -37,7 +37,7 @@ const tui = spawn(process.execPath, [join(ROOT, 'dist', 'cli.js'), '--session', 
   stdio: ['pipe', 'pipe', 'pipe'],
 });
 
-const emulator = new Terminal({ cols: COLS, rows: ROWS, allowProposedApi: true });
+const emulator = new headless.Terminal({ cols: COLS, rows: ROWS, allowProposedApi: true });
 const capture = await XtermCapture.open({ cols: COLS, rows: ROWS, lineHeight: 1.15 });
 const chunks: Buffer[] = [];
 let tuiStderr = '';
@@ -73,6 +73,7 @@ await shot('esperando');
 const claude: ChildProcess = spawn(
   'claude',
   ['-p', '--model', 'haiku', '--advisor', 'opus', '--max-budget-usd', budget, '--session-id', sessionId, '--tools', 'Read', 'Glob', 'Grep', 'Agent', '--allowedTools', 'Read', 'Glob', 'Grep', 'Agent'],
+  // El comando puede ser un .cmd en Windows, y Node exige un shell para ejecutarlo. Ningún argumento viene de afuera.
   { cwd: ROOT, shell: true, stdio: ['pipe', 'pipe', 'pipe'] },
 );
 claude.stdin?.end(PROMPT);
@@ -115,7 +116,9 @@ const parse = (file: string): Array<Record<string, any>> => readFileSync(file, '
 const main = parse(transcript);
 const subDir = join(projectDir, sessionId, 'subagents');
 const subs = existsSync(subDir) ? readdirSync(subDir).filter((f) => f.endsWith('.jsonl')).map((f) => parse(join(subDir, f))) : [];
-const blocks = (lines: Array<Record<string, any>>): Array<Record<string, any>> => lines.flatMap((l) => (Array.isArray(l.message?.content) ? l.message.content : []));
+// Solo mensajes: las líneas `api-request-blob` repiten los bloques dentro de cada petición.
+const blocks = (lines: Array<Record<string, any>>): Array<Record<string, any>> =>
+  lines.flatMap((l) => ((l.type === 'assistant' || l.type === 'user') && Array.isArray(l.message?.content) ? l.message.content : []));
 const toolCalls = [main, ...subs].flatMap(blocks).filter((b) => b.type === 'tool_use').length;
 const consults = blocks(main).filter((b) => b.type === 'server_tool_use' && b.name === 'advisor').length;
 const usage = new Map<string, Record<string, any>>();

@@ -354,6 +354,7 @@ nombre para no presentarlo como el consejo del advisor. En la muestra, ese texto
 | --- | --- | --- |
 | `fixtures/sesion-opus-advisor-opus.jsonl` | Sesión de Fase 0, con 2 consultas reales | Opus + Opus, sin subagentes |
 | `fixtures/sesion-haiku-advisor-opus.jsonl` y carpeta homónima | `claude -p` con 2 consultas y 3 subagentes (0,59 USD) | Sin errores de herramientas, sin compactación ni `ai-title` |
+| `fixtures/sesion-haiku-con-error.jsonl` y carpeta homónima | Sesión de la Fase 5: 2 consultas, 2 subagentes y una lectura que falla a propósito (0,45 USD) | Sin compactación ni `ai-title` |
 
 Se generan con `scripts/sanitize-fixture.mjs`, que conserva la estructura y quita
 prompts de sistema, contenido largo, rutas, correos, identificadores de cuenta y
@@ -370,6 +371,13 @@ claude -p --model haiku --advisor opus --max-budget-usd 2 --session-id <uuid>
 `--advisor` no aparece en `claude --help` (2.1.318), pero el CLI lo acepta: lo confirman el adjunto
 `advisor_tool` y las consultas. El prompt pidió consultas y subagentes de forma explícita, porque el modelo
 no suele usarlos por iniciativa propia. Coste total: 0,59 USD.
+
+## Trampas encontradas en la Fase 5
+
+- **`api-request-blob` repite los mensajes.** Sus líneas traen `message.content` con los mismos bloques, así que
+  un conteo que no filtre por `type` duplica herramientas y consultas. El parser no las lee.
+- **`stop_reason` llega antes que la respuesta del advisor.** Cada línea del mensaje trae el valor final, así que
+  `end_turn` aparece en la línea de la consulta, antes de `advisor_tool_result`. La cola une ambas igualmente.
 
 ## Sin observar todavía
 

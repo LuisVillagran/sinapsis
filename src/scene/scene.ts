@@ -381,6 +381,8 @@ function drawMetrics(buf: CellBuffer, view: SceneView, r: Rect): void {
 
 // --- Subagentes ---
 
+const toolsLabel = (count: number): string => `${count} ${count === 1 ? 'tool' : 'tools'}`;
+
 /** Parte de la entrada de una tarjeta en que crece la caja. Después se funde el contenido. */
 const GROW_SHARE = 0.6;
 /** Parte de la salida en que se llena la barra. Después se atenúa. */
@@ -442,7 +444,7 @@ function drawCard(buf: CellBuffer, r: Rect, sub: SubagentState | undefined, inde
 
   const detail = sub.running
     ? `tools: ${sub.toolCount}${sub.currentTool ? ` · ${sub.currentTool}` : ''}`
-    : `${sub.toolCount} tools${sub.durationMs !== undefined ? ` · ${formatDuration(sub.durationMs)}` : ''}`;
+    : `${toolsLabel(sub.toolCount)}${sub.durationMs !== undefined ? ` · ${formatDuration(sub.durationMs)}` : ''}`;
   centerText(buf, left, inner, r.y + 4, detail, failed ? theme.alert : theme.sub);
   const status = sub.running ? ['◐', '◓', '◑', '◒'][Math.floor(view.now / 160 + index) % 4] : failed ? '✕' : '●';
   const tokens = !sub.running && sub.totalTokens !== undefined ? ` ${formatTokens(sub.totalTokens)}` : '';
@@ -689,7 +691,7 @@ function renderReduced(buf: CellBuffer, view: SceneView): void {
     centerText(buf, r.x + 1, r.w - 2, r.y + 1, plainText(subagentName(view.state, sub.id)), theme.text, true);
     if (sub.running) indeterminateBar(buf, r.x + 2, r.y + 2, r.w - 4, view.now / 1800 + index * 0.27, theme.barSub);
     else bar(buf, r.x + 2, r.y + 2, r.w - 4, 1, failed ? theme.barAlert : theme.barSub);
-    centerText(buf, r.x + 1, r.w - 2, r.y + 3, sub.running ? `tools: ${sub.toolCount}` : `${sub.toolCount} tools · ${formatDuration(sub.durationMs)}`, failed ? theme.alert : theme.sub);
+    centerText(buf, r.x + 1, r.w - 2, r.y + 3, sub.running ? `tools: ${sub.toolCount}` : `${toolsLabel(sub.toolCount)}${sub.durationMs !== undefined ? ` · ${formatDuration(sub.durationMs)}` : ''}`, failed ? theme.alert : theme.sub);
   }
 
   // Herramientas: una línea con los conteos reales.
