@@ -1,10 +1,12 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { type App, runApp } from './app.js';
 import { ArgsError, type ParsedArgs, USAGE, parseArgs } from './args.js';
 import { createLiveSource } from './sources/live.js';
 import { printEvents } from './sources/printEvents.js';
 import { type ReplaySource, createReplay, loadTranscript } from './sources/replay.js';
 import type { EventSource } from './sources/types.js';
+import { detectColorMode } from './tui/color.js';
 
 const assetPath = (relative: string): string => fileURLToPath(new URL(relative, import.meta.url));
 
@@ -19,6 +21,69 @@ function createSource(args: ParsedArgs): EventSource {
   const file = command.kind === 'demo' ? assetPath('../fixtures/sesion-haiku-advisor-opus.jsonl') : (command as { file: string }).file;
   if (!existsSync(file)) throw new ArgsError(`No existe el archivo: ${file}`);
   return createReplay(loadTranscript(file), { speed: args.speed });
+}
+
+/**
+ * `SINAPSIS_FORCE_TTY=COLxFIL` permite dibujar hacia una salida que no es una terminal, con un tamaño fijo.
+ * Solo sirve para las pruebas automáticas, que conectan la salida a un emulador.
+ */
+function forcedSize(env: NodeJS.ProcessEnv): { cols: number; rows: number } | undefined {
+  const match = /^(\d+)x(\d+)$/.exec(env.SINAPSIS_FORCE_TTY ?? '');
+  return match ? { cols: Number(match[1]), rows: Number(match[2]) } : undefined;
+}
+
+async function runInterface(args: ParsedArgs, source: EventSource): Promise<void> {
+  const { stdout, stdin, env } = process;
+  const forced = forcedSize(env);
+  if (!stdout.isTTY && !forced) {
+    await source.stop();
+    process.stderr.write('sinapsis necesita una terminal: la salida no es una TTY. Usa --print-events para ver los eventos como texto.\n');
+    process.exitCode = 1;
+    return;
+  }
+
+  const replay = args.command.kind === 'follow' ? undefined : (source as ReplaySource);
+  const fd = stdout.fd;
+  const app: App = runApp({
+    source,
+    replay,
+    output: stdout,
+    input: stdin.isTTY ? stdin : undefined,
+    // Al morir el proceso no se alcanza a vaciar una escritura asíncrona.
+    writeSync: (data) => {
+      writeSync(fd, data);
+    },
+    size: () => forced ?? { cols: stdout.columns || 80, rows: stdout.rows || 24 },
+    onResize: (listener) => {
+      stdout.on('resize', listener);
+      return () => stdout.off('resize', listener);
+    },
+    colorMode: forced ? (env.SINAPSIS_COLOR === '256' ? '256' : 'truecolor') : detectColorMode(stdout.getColorDepth()),
+    fps: args.fps,
+    crashAtFrame: env.SINAPSIS_CRASH_AT_FRAME ? Number(env.SINAPSIS_CRASH_AT_FRAME) : undefined,
+    exitWhenDone: env.SINAPSIS_EXIT_WHEN_DONE === '1',
+  });
+
+  const restoreAndExit = (code: number): void => {
+    app.session.restore();
+    process.exit(code);
+  };
+  process.once('SIGINT', () => app.stop());
+  process.once('SIGTERM', () => app.stop());
+  process.once('SIGHUP', () => app.stop());
+  process.once('exit', () => app.session.restore());
+  process.once('uncaughtException', (error) => {
+    app.session.restore();
+    process.stderr.write(`${error.stack ?? error.message}\n`);
+    restoreAndExit(1);
+  });
+  process.once('unhandledRejection', (reason) => {
+    app.session.restore();
+    process.stderr.write(`${reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)}\n`);
+    restoreAndExit(1);
+  });
+
+  await app.done;
 }
 
 async function main(): Promise<void> {
@@ -45,9 +110,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  await source.stop();
-  process.stderr.write('La interfaz todavía no está disponible. Usa --print-events.\n');
-  process.exitCode = 1;
+  await runInterface(args, source);
 }
 
 main().catch((error: unknown) => {

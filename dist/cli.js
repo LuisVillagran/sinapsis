@@ -1,8 +1,1766 @@
 #!/usr/bin/env node
 
 // src/cli.ts
-import { existsSync, readFileSync as readFileSync2 } from "fs";
+import { existsSync, readFileSync as readFileSync2, writeSync } from "fs";
 import { fileURLToPath } from "url";
+
+// src/core/describe.ts
+function displayModel(id) {
+  if (!id) return "\u2014";
+  const match = /^claude-([a-z]+)-(\d+)(?:-(\d+))?/.exec(id);
+  if (!match) return id;
+  const family = match[1];
+  return `${family[0]?.toUpperCase()}${family.slice(1)} ${match[2]}${match[3] ? `.${match[3]}` : ""}`;
+}
+function modelAlias(id) {
+  if (!id) return "\u2014";
+  return /^claude-([a-z]+)-/.exec(id)?.[1] ?? id;
+}
+function formatTokens(value) {
+  if (value >= 999500) return `${(value / 1e6).toFixed(1)}M`;
+  if (value >= 1e5) return `${Math.round(value / 1e3)}k`;
+  if (value >= 1e3) return `${(value / 1e3).toFixed(1)}k`;
+  return String(value);
+}
+function formatDuration(ms) {
+  if (ms === void 0) return "\u2014";
+  if (ms < 1e4) return `${(ms / 1e3).toFixed(1)} s`;
+  return `${Math.round(ms / 1e3)} s`;
+}
+function plainText(text) {
+  return text.replace(/…<recortado:\d+>/g, "\u2026").replace(/<\/?[a-z-]+>/gi, " ").replace(/[*`#>_]+/g, "").replace(/\s+/g, " ").trim();
+}
+function subagentName(state, id) {
+  const sub = state.subagents.find((s) => s.id === id);
+  return sub?.description ?? sub?.agentType ?? id.slice(0, 7);
+}
+function who(state, agentId) {
+  if (!agentId) return { who: modelAlias(state.mainModel), kind: "main" };
+  const sub = state.subagents.find((s) => s.id === agentId);
+  const short = (sub?.description ?? sub?.agentType ?? agentId.slice(0, 7)).split(/\s+/)[0]?.toLowerCase() ?? "";
+  return { who: `${modelAlias(sub?.model ?? state.mainModel)}:${short}`, kind: "sub" };
+}
+function describeEvent(event, state) {
+  const { t } = event;
+  const advisor = modelAlias(state.advisorModel);
+  switch (event.type) {
+    case "user_prompt":
+      return { t, who: "you", kind: "main", text: plainText(event.text) };
+    case "tool_call":
+      return { t, ...who(state, event.agentId), text: event.summary ? `${event.name} \xB7 ${event.summary.replace(/\s+/g, " ")}` : event.name };
+    case "tool_result":
+      if (!event.isError) return void 0;
+      return { t, ...who(state, event.agentId), kind: "error", text: "tool returned an error" };
+    case "advisor_consult":
+      return { t, who: advisor, kind: "advisor", text: `consulted \xB7 ${event.reason} (inferred)` };
+    case "advisor_reply":
+      return {
+        t,
+        who: advisor,
+        kind: event.isError ? "error" : "advisor",
+        text: `${event.isError ? "failed" : "sealed reply"} \xB7 ${formatDuration(event.durationMs)} \xB7 ${formatTokens(event.tokensRead)} read \xB7 ${formatTokens(event.tokensWritten)} written`
+      };
+    case "subagent_start":
+      return { t, who: `${modelAlias(event.model ?? state.mainModel)}:${event.subagentId.slice(0, 7)}`, kind: "sub", text: "subagent started" };
+    case "subagent_info":
+      return event.description ? { t, ...who(state, event.subagentId), kind: "sub", text: `delegated \xB7 ${plainText(event.description)}` } : void 0;
+    case "subagent_end":
+      return { t, ...who(state, event.subagentId), kind: event.status === "completed" ? "sub" : "error", text: event.status === "completed" ? "summary sent back to lead" : `subagent ${event.status}` };
+    case "turn_end":
+      return { t, ...who(state, void 0), text: "turn finished" };
+    case "api_error":
+      return { t, who: "api", kind: "error", text: `${event.status ?? "error"}${event.message ? ` \xB7 ${plainText(event.message)}` : ""}` };
+    case "compaction":
+      return { t, who: "session", kind: "tool", text: `context compacted${event.preTokens ? ` \xB7 ${formatTokens(event.preTokens)} \u2192 ${formatTokens(event.postTokens ?? 0)}` : ""}` };
+    case "session_end":
+      return { t, who: "session", kind: "tool", text: `ended (inferred)${event.costUSD !== void 0 ? ` \xB7 $${event.costUSD.toFixed(2)}` : ""}` };
+    default:
+      return void 0;
+  }
+}
+
+// src/core/state.ts
+var internals = /* @__PURE__ */ new WeakMap();
+function createState() {
+  const state = {
+    advisorEnabled: false,
+    ended: false,
+    status: "idle",
+    tools: {},
+    toolCalls: 0,
+    toolErrors: 0,
+    apiErrors: 0,
+    compactions: 0,
+    prompts: 0,
+    turns: 0,
+    tokens: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+    messages: 0,
+    advisor: { calls: 0, tokensRead: 0, tokensWritten: 0, routineTurns: 0, consults: [] },
+    subagents: []
+  };
+  internals.set(state, { usage: /* @__PURE__ */ new Map(), calls: /* @__PURE__ */ new Map(), openMain: [] });
+  return state;
+}
+var bySubagentStart = (a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id);
+function upsertSubagent(state, id, t) {
+  let sub = state.subagents.find((s) => s.id === id);
+  if (!sub) {
+    sub = { id, startedAt: t, running: true, readOnly: false, toolCount: 0, errors: 0, finalized: false };
+    state.subagents.push(sub);
+    state.subagents.sort(bySubagentStart);
+  }
+  return sub;
+}
+function upsertConsult(state, id, t) {
+  let consult = state.advisor.consults.find((c) => c.id === id);
+  if (!consult) {
+    consult = { id, t, reason: "check-in", open: true, tokensRead: 0, tokensWritten: 0, isError: false };
+    state.advisor.consults.push(consult);
+    state.advisor.consults.sort((a, b) => a.t - b.t);
+  }
+  return consult;
+}
+function countToolError(state, internal, id) {
+  const call = internal.calls.get(id);
+  if (!call?.name || !call.error || call.counted) return;
+  call.counted = true;
+  (state.tools[call.name] ??= { count: 0, errors: 0 }).errors += 1;
+  state.toolErrors += 1;
+  if (call.agentId) {
+    const sub = state.subagents.find((s) => s.id === call.agentId);
+    if (sub) sub.errors += 1;
+  }
+}
+function refreshMainTool(state, internal) {
+  const id = internal.openMain[internal.openMain.length - 1];
+  const call = id ? internal.calls.get(id) : void 0;
+  if (call?.name) {
+    state.currentTool = { name: call.name, summary: call.summary };
+    state.status = "tool";
+  } else {
+    state.currentTool = void 0;
+  }
+}
+function applyEvent(state, event) {
+  const internal = internals.get(state);
+  if (!internal) throw new Error("El estado debe crearse con createState()");
+  if (event.t > 0 && event.type !== "session_info") {
+    if (state.startedAt === void 0 || event.t < state.startedAt) state.startedAt = event.t;
+    if (state.lastEventAt === void 0 || event.t > state.lastEventAt) state.lastEventAt = event.t;
+  }
+  switch (event.type) {
+    case "session_start":
+      if (event.sessionId) state.sessionId = event.sessionId;
+      break;
+    case "session_info": {
+      const { type: _type, t: _t, agentId: _agentId, ...fields } = event;
+      Object.assign(state, fields);
+      break;
+    }
+    case "user_prompt":
+      state.prompts += 1;
+      state.ended = false;
+      state.status = "working";
+      break;
+    case "request_start":
+      if (event.agentId) {
+        if (event.model) upsertSubagent(state, event.agentId, event.t).model ??= event.model;
+        break;
+      }
+      state.ended = false;
+      if (internal.openMain.length === 0) state.status = "working";
+      break;
+    case "message_usage": {
+      if (event.agentId) break;
+      const previous = internal.usage.get(event.messageId);
+      if (previous) {
+        state.tokens.input -= previous.input;
+        state.tokens.output -= previous.output;
+        state.tokens.cacheRead -= previous.cacheRead;
+        state.tokens.cacheCreation -= previous.cacheCreation;
+        if (!previous.hasAdvisor) state.advisor.routineTurns -= 1;
+      } else {
+        state.messages += 1;
+      }
+      internal.usage.set(event.messageId, event);
+      state.tokens.input += event.input;
+      state.tokens.output += event.output;
+      state.tokens.cacheRead += event.cacheRead;
+      state.tokens.cacheCreation += event.cacheCreation;
+      if (!event.hasAdvisor) state.advisor.routineTurns += 1;
+      break;
+    }
+    case "tool_call": {
+      const call = internal.calls.get(event.id) ?? {};
+      Object.assign(call, { name: event.name, agentId: event.agentId, summary: event.summary });
+      internal.calls.set(event.id, call);
+      (state.tools[event.name] ??= { count: 0, errors: 0 }).count += 1;
+      state.toolCalls += 1;
+      if (event.agentId) {
+        const sub = upsertSubagent(state, event.agentId, event.t);
+        if (!sub.finalized) sub.toolCount += 1;
+        if (!call.done && sub.running) sub.currentTool = event.name;
+      } else if (!call.done) {
+        internal.openMain.push(event.id);
+        refreshMainTool(state, internal);
+      }
+      countToolError(state, internal, event.id);
+      break;
+    }
+    case "tool_result": {
+      const call = internal.calls.get(event.id) ?? {};
+      call.done = true;
+      call.error = event.isError;
+      call.agentId = call.agentId ?? event.agentId;
+      internal.calls.set(event.id, call);
+      countToolError(state, internal, event.id);
+      if (event.agentId) {
+        const sub = state.subagents.find((s) => s.id === event.agentId);
+        if (sub && sub.currentTool === call.name) sub.currentTool = void 0;
+      } else {
+        internal.openMain = internal.openMain.filter((id) => id !== event.id);
+        refreshMainTool(state, internal);
+        if (internal.openMain.length === 0) state.status = "working";
+      }
+      break;
+    }
+    case "advisor_consult": {
+      const consult = upsertConsult(state, event.id, event.t);
+      consult.t = event.t;
+      consult.reason = event.reason;
+      state.advisor.calls += 1;
+      break;
+    }
+    case "advisor_reply": {
+      const consult = upsertConsult(state, event.id, event.t);
+      consult.open = false;
+      consult.durationMs = event.durationMs;
+      consult.tokensRead = event.tokensRead;
+      consult.tokensWritten = event.tokensWritten;
+      consult.model = event.model;
+      consult.resultType = event.resultType;
+      consult.isError = event.isError;
+      state.advisor.tokensRead += event.tokensRead;
+      state.advisor.tokensWritten += event.tokensWritten;
+      if (!event.agentId) internal.awaitingFollowUp = consult;
+      break;
+    }
+    case "assistant_text":
+      if (!event.agentId && internal.awaitingFollowUp) {
+        internal.awaitingFollowUp.followUp = event.text;
+        internal.awaitingFollowUp = void 0;
+      }
+      break;
+    case "subagent_start": {
+      const sub = upsertSubagent(state, event.subagentId, event.t);
+      if (event.t > 0 && event.t < sub.startedAt) {
+        sub.startedAt = event.t;
+        state.subagents.sort(bySubagentStart);
+      }
+      if (event.model) sub.model = event.model;
+      break;
+    }
+    case "subagent_info": {
+      const sub = upsertSubagent(state, event.subagentId, event.t);
+      if (event.description) sub.description = event.description;
+      if (event.toolUseId) sub.toolUseId = event.toolUseId;
+      if (event.agentType) {
+        sub.agentType = event.agentType;
+        sub.readOnly = event.agentType === "Explore" || event.agentType === "Plan";
+      }
+      break;
+    }
+    case "subagent_end": {
+      const sub = upsertSubagent(state, event.subagentId, event.t);
+      sub.running = false;
+      sub.currentTool = void 0;
+      if (!sub.finalized) {
+        sub.endedAt = event.t;
+        sub.status = event.status;
+        sub.summary = event.summary;
+      }
+      break;
+    }
+    case "subagent_result": {
+      const sub = upsertSubagent(state, event.subagentId, event.t);
+      sub.running = false;
+      sub.currentTool = void 0;
+      sub.finalized = true;
+      sub.status = event.status;
+      sub.endedAt = event.t;
+      if (event.summary) sub.summary = event.summary;
+      if (event.model) sub.model = event.model;
+      if (event.durationMs !== void 0) sub.durationMs = event.durationMs;
+      if (event.totalTokens !== void 0) sub.totalTokens = event.totalTokens;
+      if (event.toolCount !== void 0) sub.toolCount = event.toolCount;
+      break;
+    }
+    case "turn_end":
+      state.turns += 1;
+      internal.openMain = [];
+      state.currentTool = void 0;
+      state.status = "idle";
+      break;
+    case "api_error":
+      state.apiErrors += 1;
+      break;
+    case "compaction":
+      state.compactions += 1;
+      break;
+    case "session_end":
+      state.ended = true;
+      state.costUSD = event.costUSD;
+      state.status = "idle";
+      state.currentTool = void 0;
+      internal.openMain = [];
+      break;
+    default:
+      break;
+  }
+}
+
+// src/engine/easing.ts
+var clamp01 = (t) => t <= 0 ? 0 : t >= 1 ? 1 : t;
+var easeOutCubic = (t) => 1 - (1 - clamp01(t)) ** 3;
+var easeInOutCubic = (t) => {
+  const k = clamp01(t);
+  return k < 0.5 ? 4 * k ** 3 : 1 - (-2 * k + 2) ** 3 / 2;
+};
+function segment(t, from, to) {
+  return to <= from ? t >= to ? 1 : 0 : clamp01((t - from) / (to - from));
+}
+
+// src/scene/layout.ts
+var FULL_COLS = 96;
+var FULL_ROWS = 48;
+var MIN_COLS = 80;
+var MIN_ROWS = 24;
+var span = (x0, x1, y0, y1) => ({ x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 });
+var FULL = {
+  advisor: span(2, 23, 5, 38),
+  main: span(39, 76, 5, 11),
+  advisorState: span(78, 94, 5, 11),
+  metrics: span(38, 83, 13, 19),
+  cards: [span(28, 48, 24, 30), span(50, 71, 24, 30), span(73, 94, 24, 30)],
+  lead: span(43, 78, 35, 38),
+  log: span(2, 94, 39, 44),
+  rows: { windowBar: 0, header: 2, separator: 3, legend: 4, delegate: 21, prompt: 45, status: 46 },
+  /** Columna de la columna vertebral y centros de las tarjetas. */
+  spine: 61,
+  cardCenters: [38, 61, 84],
+  arrows: { main: 9, cards: 26, lead: 35 }
+};
+function layoutKind(cols, rows) {
+  if (cols >= FULL_COLS && rows >= FULL_ROWS) return "full";
+  if (cols >= MIN_COLS && rows >= MIN_ROWS) return "reduced";
+  return "too-small";
+}
+
+// src/tui/color.ts
+var rgb = (hex) => Number.parseInt(hex.replace("#", ""), 16);
+var red = (c) => c >> 16 & 255;
+var green = (c) => c >> 8 & 255;
+var blue = (c) => c & 255;
+function mix(a, b, t) {
+  const k = t <= 0 ? 0 : t >= 1 ? 1 : t;
+  const r = Math.round(red(a) + (red(b) - red(a)) * k);
+  const g = Math.round(green(a) + (green(b) - green(a)) * k);
+  const bl = Math.round(blue(a) + (blue(b) - blue(a)) * k);
+  return r << 16 | g << 8 | bl;
+}
+function detectColorMode(depth) {
+  return depth >= 24 ? "truecolor" : "256";
+}
+var CUBE_STEPS = [0, 95, 135, 175, 215, 255];
+function nearestStep(value) {
+  let best = 0;
+  for (let i = 1; i < CUBE_STEPS.length; i += 1) {
+    if (Math.abs(CUBE_STEPS[i] - value) < Math.abs(CUBE_STEPS[best] - value)) best = i;
+  }
+  return best;
+}
+var cache256 = /* @__PURE__ */ new Map();
+function to256(c) {
+  const cached = cache256.get(c);
+  if (cached !== void 0) return cached;
+  const r = red(c);
+  const g = green(c);
+  const b = blue(c);
+  const ri = nearestStep(r);
+  const gi = nearestStep(g);
+  const bi = nearestStep(b);
+  const cubeR = CUBE_STEPS[ri];
+  const cubeG = CUBE_STEPS[gi];
+  const cubeB = CUBE_STEPS[bi];
+  const cubeDistance = (r - cubeR) ** 2 + (g - cubeG) ** 2 + (b - cubeB) ** 2;
+  const grayIndex = Math.max(0, Math.min(23, Math.round(((r + g + b) / 3 - 8) / 10)));
+  const gray = 8 + grayIndex * 10;
+  const grayDistance = (r - gray) ** 2 + (g - gray) ** 2 + (b - gray) ** 2;
+  const result = grayDistance < cubeDistance ? 232 + grayIndex : 16 + 36 * ri + 6 * gi + bi;
+  cache256.set(c, result);
+  return result;
+}
+
+// src/scene/theme.ts
+var theme = {
+  /** Fondo: viñeta de esquinas oscuras a un centro más claro. */
+  bgEdge: rgb("#13182d"),
+  bgCenter: rgb("#232b4e"),
+  /** Interior de los paneles, más oscuro que el fondo que los rodea. */
+  panel: rgb("#0f1225"),
+  chip: rgb("#161d32"),
+  windowBar: rgb("#0f1426"),
+  main: rgb("#7ec2ed"),
+  sub: rgb("#afd5ff"),
+  subBright: rgb("#e6ffff"),
+  advisor: rgb("#adacfa"),
+  metrics: rgb("#75c8a6"),
+  alert: rgb("#e08a4f"),
+  text: rgb("#eaefff"),
+  dim: rgb("#7c88a8"),
+  faint: rgb("#4c5164"),
+  barTrack: rgb("#253352"),
+  barGood: rgb("#34977a"),
+  barAlert: rgb("#bb763d"),
+  barSub: rgb("#5797c8"),
+  dotRed: rgb("#ff5f57"),
+  dotYellow: rgb("#febc2e"),
+  dotGreen: rgb("#28c840")
+};
+
+// src/scene/boot.ts
+var BOOT_MS = 2200;
+var PANELS = [
+  { rect: FULL.advisor, from: 150, to: 1150 },
+  { rect: FULL.main, from: 350, to: 1250 },
+  { rect: FULL.advisorState, from: 500, to: 1300 },
+  { rect: FULL.metrics, from: 650, to: 1450 },
+  { rect: FULL.cards[0], from: 850, to: 1550 },
+  { rect: FULL.cards[1], from: 950, to: 1650 },
+  { rect: FULL.cards[2], from: 1050, to: 1750 },
+  { rect: FULL.lead, from: 1200, to: 1850 },
+  { rect: FULL.log, from: 1300, to: 2e3 }
+];
+var BORDER_SHARE = 0.6;
+var MARGIN_X = 2;
+var MARGIN_Y = 1;
+function hide(buf, x, y, base) {
+  buf.clearCell(x, y, base(x, y));
+}
+function perimeter(r) {
+  const cells = [];
+  const right = r.x + r.w - 1;
+  const bottom = r.y + r.h - 1;
+  for (let x = r.x; x <= right; x += 1) cells.push([x, r.y]);
+  for (let y = r.y + 1; y <= bottom; y += 1) cells.push([right, y]);
+  for (let x = right - 1; x >= r.x; x -= 1) cells.push([x, bottom]);
+  for (let y = bottom - 1; y > r.y; y -= 1) cells.push([r.x, y]);
+  return cells;
+}
+var perimeterCache = /* @__PURE__ */ new Map();
+var insideRect = (r, x, y) => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+function revealPanel(buf, r, t, base) {
+  if (t >= 1) return;
+  const borderT = easeInOutCubic(segment(t, 0, BORDER_SHARE));
+  const contentT = easeOutCubic(segment(t, BORDER_SHARE, 1));
+  for (let y = r.y - MARGIN_Y; y < r.y + r.h + MARGIN_Y; y += 1) {
+    for (let x = r.x - MARGIN_X; x < r.x + r.w + MARGIN_X; x += 1) {
+      const inside = insideRect(r, x, y);
+      const onBorder = inside && (x === r.x || x === r.x + r.w - 1 || y === r.y || y === r.y + r.h - 1);
+      if (onBorder) continue;
+      if (!inside && PANELS.some(({ rect }) => rect !== r && insideRect(rect, x, y))) continue;
+      if (contentT <= 0) {
+        hide(buf, x, y, base);
+      } else {
+        const fade = 1 - contentT;
+        buf.tintFg(x, y, base(x, y), fade);
+        buf.blendBg(x, y, base(x, y), fade);
+      }
+    }
+  }
+  let cells = perimeterCache.get(r);
+  if (!cells) {
+    cells = perimeter(r);
+    perimeterCache.set(r, cells);
+  }
+  const drawn = t <= 0 ? -1 : Math.floor(borderT * cells.length);
+  cells.forEach(([x, y], i) => {
+    if (i > drawn) hide(buf, x, y, base);
+    else if (i >= drawn - 3 && borderT < 1) buf.tintFg(x, y, theme.subBright, 1 - (drawn - i) / 4);
+  });
+}
+function hideRow(buf, y, fromCol, base) {
+  for (let x = fromCol; x < FULL_COLS; x += 1) hide(buf, x, y, base);
+}
+function fadeRow(buf, y, amount, base) {
+  for (let x = 0; x < FULL_COLS; x += 1) {
+    buf.tintFg(x, y, base(x, y), amount);
+    buf.blendBg(x, y, base(x, y), amount);
+  }
+}
+function fadeConnectors(buf, amount, base) {
+  const panelCells = (x, y) => PANELS.some(({ rect: r }) => x >= r.x - MARGIN_X && x < r.x + r.w + MARGIN_X && y >= r.y - MARGIN_Y && y < r.y + r.h + MARGIN_Y);
+  for (let y = FULL.rows.legend + 1; y < FULL.log.y; y += 1) {
+    for (let x = 0; x < FULL_COLS; x += 1) {
+      if (panelCells(x, y)) continue;
+      if (amount >= 1) {
+        hide(buf, x, y, base);
+      } else {
+        buf.tintFg(x, y, base(x, y), amount);
+        buf.blendBg(x, y, base(x, y), amount);
+      }
+    }
+  }
+}
+function applyBootFull(buf, ms, headerStart, headerLength, base) {
+  const typed = Math.floor(easeInOutCubic(segment(ms, 0, 800)) * headerLength);
+  hideRow(buf, FULL.rows.header, headerStart + typed, base);
+  if (typed > 0 && typed < headerLength) {
+    buf.put(headerStart + typed, FULL.rows.header, "\u258C", theme.main);
+  }
+  fadeRow(buf, FULL.rows.separator, 1 - easeOutCubic(segment(ms, 300, 800)), base);
+  fadeRow(buf, FULL.rows.legend, 1 - easeOutCubic(segment(ms, 450, 950)), base);
+  fadeConnectors(buf, 1 - easeOutCubic(segment(ms, 1500, 2100)), base);
+  for (const panel of PANELS) revealPanel(buf, panel.rect, segment(ms, panel.from, panel.to), base);
+  const bottom = 1 - easeOutCubic(segment(ms, 1700, BOOT_MS));
+  fadeRow(buf, FULL.rows.prompt, bottom, base);
+  fadeRow(buf, FULL.rows.status, bottom, base);
+}
+function applyBootFade(buf, ms, base) {
+  const amount = 1 - easeOutCubic(segment(ms, 0, 700));
+  if (amount <= 0) return;
+  for (let y = 0; y < buf.height; y += 1) {
+    for (let x = 0; x < buf.width; x += 1) {
+      buf.tintFg(x, y, base(x, y), amount);
+      buf.blendBg(x, y, base(x, y), amount);
+    }
+  }
+}
+
+// src/engine/queue.ts
+var BASE = {
+  instant: 0,
+  tool: 450,
+  advisor: 1e3,
+  "advisor-reply": 900,
+  "subagent-start": 800,
+  "subagent-end": 900,
+  error: 650,
+  note: 350
+};
+var MINIMUM = {
+  instant: 0,
+  tool: 120,
+  // Consulta y respuesta separadas suman el mínimo acordado de 1,5 s.
+  advisor: 1e3,
+  "advisor-reply": 500,
+  "subagent-start": 350,
+  "subagent-end": 400,
+  error: 350,
+  note: 120
+};
+var ADVISOR_MIN_MS = 1500;
+var ADVISOR_MAX_MS = 5e3;
+var ADVISOR_LONG_MS = 18e4;
+function advisorDuration(realMs) {
+  const ratio = Math.min(1, Math.max(0, realMs ?? 0) / ADVISOR_LONG_MS);
+  return ADVISOR_MIN_MS + (ADVISOR_MAX_MS - ADVISOR_MIN_MS) * Math.sqrt(ratio);
+}
+function loadScale(pending) {
+  return pending <= 3 ? 1 : 1 / (1 + (pending - 3) * 0.12);
+}
+var GROUP_FROM = 8;
+var GROUP_MAX_EVENTS = 40;
+function classify(event, known) {
+  switch (event.type) {
+    case "tool_call":
+      return "tool";
+    case "tool_result":
+      return event.isError ? "error" : "instant";
+    case "advisor_consult":
+      return "advisor";
+    case "advisor_reply":
+      return "advisor-reply";
+    case "subagent_start":
+      if (known.has(event.subagentId)) return "instant";
+      known.add(event.subagentId);
+      return "subagent-start";
+    case "subagent_end":
+      return "subagent-end";
+    case "api_error":
+      return "error";
+    case "user_prompt":
+    case "turn_end":
+    case "session_end":
+    case "compaction":
+      return "note";
+    default:
+      return "instant";
+  }
+}
+var isNeutral = (item) => item.kind === "instant" && item.events.every((e) => e.type === "message_usage" || e.type === "session_info" || e.type === "request_start");
+var KIND_COLOR = {
+  instant: "tool",
+  tool: "tool",
+  advisor: "advisor",
+  "advisor-reply": "advisor",
+  "subagent-start": "sub",
+  "subagent-end": "sub",
+  error: "error",
+  note: "main"
+};
+var AnimationQueue = class {
+  items = [];
+  current;
+  clockEnd;
+  knownSubagents = /* @__PURE__ */ new Set();
+  get active() {
+    return this.current;
+  }
+  /** Elementos visibles que aún no empiezan. */
+  get pending() {
+    return this.items.reduce((sum, item) => sum + (item.kind === "instant" ? 0 : 1), 0);
+  }
+  get pendingKinds() {
+    return this.items.filter((item) => item.kind !== "instant").map((item) => KIND_COLOR[item.kind]);
+  }
+  get isEmpty() {
+    return this.items.length === 0 && !this.current;
+  }
+  /** Registra un subagente ya visto, para que un inicio repetido no se anime. */
+  markKnown(subagentId) {
+    this.knownSubagents.add(subagentId);
+  }
+  push(events) {
+    for (const event of events) {
+      const kind = classify(event, this.knownSubagents);
+      if (kind === "advisor-reply" && event.type === "advisor_reply" && this.attachReply(event)) continue;
+      this.items.push({ kind, events: [event], endEvents: [] });
+    }
+  }
+  /** Une la respuesta a su consulta si sigue en espera y no hay nada relevante entre ambas. */
+  attachReply(reply) {
+    for (let i = this.items.length - 1; i >= 0; i -= 1) {
+      const item = this.items[i];
+      if (isNeutral(item)) continue;
+      const consult = item.events[0];
+      if (item.kind === "advisor" && consult?.type === "advisor_consult" && consult.id === reply.id && item.endEvents.length === 0) {
+        item.endEvents.push(reply);
+        return true;
+      }
+      return false;
+    }
+    return false;
+  }
+  durationOf(item) {
+    if (item.kind === "advisor") {
+      const reply = item.endEvents[0];
+      if (reply?.type === "advisor_reply") return advisorDuration(reply.durationMs);
+    }
+    return Math.max(MINIMUM[item.kind], BASE[item.kind] * loadScale(this.pending));
+  }
+  /** Une herramientas consecutivas cuando la cola está larga. Sus eventos se aplican todos. */
+  absorbTools(item) {
+    if (item.kind !== "tool" || this.pending < GROUP_FROM) return;
+    while (item.events.length < GROUP_MAX_EVENTS) {
+      const next = this.items[0];
+      if (!next || next.kind !== "tool" && next.kind !== "instant") break;
+      item.events.push(...next.events);
+      this.items.shift();
+    }
+  }
+  /** Avanza la cola hasta `now` y devuelve lo que empezó y terminó, en orden. */
+  update(now) {
+    const steps = [];
+    for (; ; ) {
+      if (this.current) {
+        const end = this.current.start + this.current.duration;
+        if (now < end) break;
+        steps.push({ phase: "end", active: this.current });
+        this.current = void 0;
+        this.clockEnd = end;
+      }
+      const item = this.items.shift();
+      if (!item) break;
+      this.absorbTools(item);
+      const start = this.clockEnd !== void 0 && now - this.clockEnd < 250 ? this.clockEnd : now;
+      const active = { item, start, duration: this.durationOf(item) };
+      this.current = active;
+      this.clockEnd = start;
+      steps.push({ phase: "start", active });
+    }
+    return steps;
+  }
+  clear() {
+    this.items = [];
+    this.current = void 0;
+    this.clockEnd = void 0;
+    this.knownSubagents.clear();
+  }
+};
+
+// src/engine/director.ts
+var LOG_LIMIT = 200;
+var QUEUE_AFTER_BOOT_MS = 1600;
+var Director = class {
+  truth = createState();
+  shown = createState();
+  queue = new AnimationQueue();
+  log = [];
+  last;
+  connected = false;
+  /** Cambia cada vez que algo visible cambia, para no redibujar sin necesidad. */
+  version = 0;
+  bootStart;
+  animateBoot;
+  constructor(options = {}) {
+    this.animateBoot = options.boot ?? false;
+  }
+  bootElapsed(now) {
+    if (!this.animateBoot) return void 0;
+    this.bootStart ??= now;
+    return now - this.bootStart;
+  }
+  ingest(update, now) {
+    if (update.kind === "reset") {
+      this.truth = createState();
+      this.shown = createState();
+      this.queue.clear();
+      this.log = [];
+      this.last = void 0;
+      this.connected = true;
+      this.version += 1;
+      return;
+    }
+    this.connected = true;
+    for (const event of update.events) applyEvent(this.truth, event);
+    if (update.historical) {
+      for (const event of update.events) {
+        if (event.type === "subagent_start") this.queue.markKnown(event.subagentId);
+        this.show(event, void 0);
+      }
+    } else {
+      this.queue.push(update.events);
+    }
+    this.version += 1;
+    void now;
+  }
+  show(event, bornAt) {
+    const repeated = event.type === "subagent_start" && this.shown.subagents.some((s) => s.id === event.subagentId);
+    applyEvent(this.shown, event);
+    const entry = repeated ? void 0 : describeEvent(event, this.shown);
+    if (entry) {
+      this.log.push({ ...entry, bornAt });
+      if (this.log.length > LOG_LIMIT) this.log.shift();
+      this.last = `${entry.who} \xB7 ${entry.text}`;
+    }
+  }
+  onStart(active, now) {
+    for (const event of active.item.events) this.show(event, now);
+  }
+  onEnd(active, now) {
+    for (const event of active.item.endEvents) this.show(event, now);
+  }
+  /** Avanza hasta `now`. Devuelve si algo de los datos cambió. */
+  update(now) {
+    const boot = this.bootElapsed(now);
+    if (boot !== void 0 && boot < QUEUE_AFTER_BOOT_MS) return false;
+    const steps = this.queue.update(now);
+    for (const step of steps) {
+      if (step.phase === "start") this.onStart(step.active, now);
+      else this.onEnd(step.active, now);
+    }
+    if (steps.length) this.version += 1;
+    return steps.length > 0;
+  }
+  /** La cola está vacía: lo visible ya es lo real. */
+  get settled() {
+    return this.queue.isEmpty;
+  }
+  /** Hay algo moviéndose que exige la frecuencia alta. */
+  isBusy(now) {
+    const boot = this.bootElapsed(now);
+    return !this.queue.isEmpty || boot !== void 0 && boot < BOOT_MS;
+  }
+  animFrame(now) {
+    const boot = this.bootElapsed(now);
+    return { bootMs: boot !== void 0 && boot < BOOT_MS ? boot : void 0 };
+  }
+  view(now, replay, flatBackground = false) {
+    return {
+      state: this.shown,
+      log: this.log,
+      now,
+      queue: { last: this.last, pending: this.queue.pendingKinds },
+      replay,
+      connected: this.connected,
+      flatBackground,
+      anim: this.animFrame(now)
+    };
+  }
+};
+
+// src/tui/buffer.ts
+var BOLD = 1;
+var SPACE = 32;
+function charWidth(cp) {
+  if (cp < 32 || cp >= 127 && cp < 160) return 0;
+  if (cp >= 768 && cp <= 879 || cp >= 8203 && cp <= 8207 || cp >= 65024 && cp <= 65039) return 0;
+  if (cp >= 4352 && cp <= 4447 || cp >= 11904 && cp <= 42191 || cp >= 44032 && cp <= 55203 || cp >= 63744 && cp <= 64255 || cp >= 65072 && cp <= 65135 || cp >= 65280 && cp <= 65376 || cp >= 65504 && cp <= 65510 || cp >= 127744 && cp <= 129791 || cp >= 131072 && cp <= 262141) {
+    return 2;
+  }
+  return 1;
+}
+function toCells(text) {
+  let out = "";
+  for (const char of text.normalize("NFC")) {
+    const width = charWidth(char.codePointAt(0));
+    if (width === 1) out += char;
+    else if (width === 2) out += "\u25A1";
+  }
+  return out;
+}
+var cellLength = (text) => [...text].length;
+function fit(text, max) {
+  if (max <= 0) return "";
+  const chars = [...text];
+  return chars.length <= max ? text : `${chars.slice(0, max - 1).join("")}\u2026`;
+}
+var CellBuffer = class {
+  constructor(width, height) {
+    this.width = width;
+    this.height = height;
+    const size = width * height;
+    this.chars = new Uint32Array(size).fill(SPACE);
+    this.fg = new Int32Array(size);
+    this.bg = new Int32Array(size);
+    this.attrs = new Uint8Array(size);
+  }
+  width;
+  height;
+  chars;
+  fg;
+  bg;
+  attrs;
+  /** En 256 colores un tinte pequeño salta a otro gris: los halos se apagan. */
+  tintsEnabled = true;
+  /** Desplazamiento de las coordenadas de dibujo: centra el layout en una terminal mayor. */
+  originX = 0;
+  originY = 0;
+  /** Índice de una celda en coordenadas de dibujo, o -1 si está fuera. */
+  index(x, y) {
+    const col = x + this.originX;
+    const row = y + this.originY;
+    return col >= 0 && row >= 0 && col < this.width && row < this.height ? row * this.width + col : -1;
+  }
+  /** Escribe un carácter sin tocar el fondo. */
+  put(x, y, char, fg, attrs = 0) {
+    const i = this.index(x, y);
+    if (i < 0) return;
+    this.chars[i] = char.codePointAt(0);
+    this.fg[i] = fg;
+    this.attrs[i] = attrs;
+  }
+  /** Cambia solo el fondo de una celda. */
+  setBg(x, y, color) {
+    const i = this.index(x, y);
+    if (i >= 0) this.bg[i] = color;
+  }
+  /** Acerca el fondo de una celda a un color, para halos y destellos. */
+  tintBg(x, y, color, amount) {
+    if (!this.tintsEnabled) return;
+    const i = this.index(x, y);
+    if (i >= 0) this.bg[i] = mix(this.bg[i], color, amount);
+  }
+  /** Como `tintBg`, pero también en 256 colores: es para animaciones breves, no para halos permanentes. */
+  blendBg(x, y, color, amount) {
+    const i = this.index(x, y);
+    if (i >= 0) this.bg[i] = mix(this.bg[i], color, amount);
+  }
+  /** Acerca el texto de una celda a un color, para fundidos y paquetes. */
+  tintFg(x, y, color, amount) {
+    const i = this.index(x, y);
+    if (i >= 0) this.fg[i] = mix(this.fg[i], color, amount);
+  }
+  /** Celda vacía con ese fondo. */
+  clearCell(x, y, bg) {
+    const i = this.index(x, y);
+    if (i < 0) return;
+    this.chars[i] = SPACE;
+    this.fg[i] = bg;
+    this.attrs[i] = 0;
+    this.bg[i] = bg;
+  }
+  /** Carácter de una celda en coordenadas de dibujo, o un espacio si está fuera. */
+  charAtDraw(x, y) {
+    const i = this.index(x, y);
+    return i < 0 ? " " : String.fromCodePoint(this.chars[i]);
+  }
+  fill(x, y, w, h, bg) {
+    for (let row = y; row < y + h; row += 1) {
+      for (let col = x; col < x + w; col += 1) this.clearCell(col, row, bg);
+    }
+  }
+  /** Escribe texto ya ajustado a celdas y devuelve la columna siguiente. */
+  text(x, y, text, fg, attrs = 0) {
+    let col = x;
+    for (const char of text) {
+      this.put(col, y, char, fg, attrs);
+      col += 1;
+    }
+    return col;
+  }
+  /** Texto de una fila, para pruebas y mediciones. */
+  rowText(y, from = 0, to = this.width) {
+    let out = "";
+    for (let x = from; x < to; x += 1) out += String.fromCodePoint(this.chars[y * this.width + x]);
+    return out;
+  }
+  charAt(x, y) {
+    return String.fromCodePoint(this.chars[y * this.width + x]);
+  }
+  fgAt(x, y) {
+    return this.fg[y * this.width + x];
+  }
+  bgAt(x, y) {
+    return this.bg[y * this.width + x];
+  }
+  copyFrom(other) {
+    this.chars.set(other.chars);
+    this.fg.set(other.fg);
+    this.bg.set(other.bg);
+    this.attrs.set(other.attrs);
+  }
+};
+
+// src/scene/draw.ts
+var HEAVY = { h: "\u2501", v: "\u2503", tl: "\u250F", tr: "\u2513", bl: "\u2517", br: "\u251B" };
+var DASHED = { h: "\u254D", v: "\u254F", tl: "\u250F", tr: "\u2513", bl: "\u2517", br: "\u251B" };
+function halo(buf, r, color, strength) {
+  if (strength <= 0) return;
+  const ring = (dx, dy, amount) => {
+    for (let x = r.x - dx; x < r.x + r.w + dx; x += 1) {
+      buf.tintBg(x, r.y - dy, color, amount);
+      buf.tintBg(x, r.y + r.h - 1 + dy, color, amount);
+    }
+    for (let y = r.y - dy + 1; y < r.y + r.h - 1 + dy; y += 1) {
+      buf.tintBg(r.x - dx, y, color, amount);
+      buf.tintBg(r.x + r.w - 1 + dx, y, color, amount);
+    }
+  };
+  ring(2, 1, strength * 0.07);
+  ring(1, 0, strength * 0.13);
+}
+function box(buf, r, options) {
+  const glyphs = options.dashed ? DASHED : HEAVY;
+  const attrs = options.bold ? BOLD : 0;
+  if (options.halo) halo(buf, r, options.color, options.halo);
+  if (options.fill !== void 0) buf.fill(r.x + 1, r.y + 1, r.w - 2, r.h - 2, options.fill);
+  const right = r.x + r.w - 1;
+  const bottom = r.y + r.h - 1;
+  for (let x = r.x + 1; x < right; x += 1) {
+    buf.put(x, r.y, glyphs.h, options.color, attrs);
+    buf.put(x, bottom, glyphs.h, options.color, attrs);
+  }
+  for (let y = r.y + 1; y < bottom; y += 1) {
+    buf.put(r.x, y, glyphs.v, options.color, attrs);
+    buf.put(right, y, glyphs.v, options.color, attrs);
+  }
+  buf.put(r.x, r.y, glyphs.tl, options.color, attrs);
+  buf.put(right, r.y, glyphs.tr, options.color, attrs);
+  buf.put(r.x, bottom, glyphs.bl, options.color, attrs);
+  buf.put(right, bottom, glyphs.br, options.color, attrs);
+}
+var segmentsWidth = (segments) => segments.reduce((sum, s) => sum + cellLength(s.text), 0);
+function writeSegments(buf, x, y, segments) {
+  let col = x;
+  for (const segment2 of segments) col = buf.text(col, y, segment2.text, segment2.color, segment2.bold ? BOLD : 0);
+  return col;
+}
+function centerSegments(buf, x, width, y, segments) {
+  writeSegments(buf, x + Math.floor((width - segmentsWidth(segments)) / 2), y, segments);
+}
+function centerText(buf, x, width, y, text, color, bold = false) {
+  centerSegments(buf, x, width, y, [{ text: fit(toCells(text), width), color, bold }]);
+}
+function rightText(buf, rightEdge, y, text, color, bold = false) {
+  buf.text(rightEdge - cellLength(text) + 1, y, text, color, bold ? BOLD : 0);
+}
+var PARTIAL = ["", "\u258F", "\u258E", "\u258D", "\u258C", "\u258B", "\u258A", "\u2589"];
+function bar(buf, x, y, width, fraction, color, track = theme.barTrack) {
+  const total = Math.max(0, Math.min(1, fraction)) * width;
+  const full = Math.floor(total);
+  const eighths = Math.floor((total - full) * 8);
+  for (let i = 0; i < width; i += 1) {
+    buf.clearCell(x + i, y, track);
+    if (i < full) buf.put(x + i, y, "\u2588", color);
+    else if (i === full && eighths > 0) buf.put(x + i, y, PARTIAL[eighths], color);
+  }
+}
+function thinBar(buf, x, y, width, fraction, color, track = theme.barTrack) {
+  const halves = Math.round(Math.max(0, Math.min(1, fraction)) * width * 2);
+  for (let i = 0; i < width; i += 1) {
+    const filled = halves - i * 2;
+    if (filled >= 2) buf.put(x + i, y, "\u2584", color);
+    else if (filled === 1) {
+      buf.put(x + i, y, "\u2596", color);
+    } else buf.put(x + i, y, "\u2584", track);
+  }
+}
+function indeterminateBar(buf, x, y, width, phase, color, track = theme.barTrack) {
+  const band = Math.max(3, width * 0.32);
+  const start = (phase - Math.floor(phase)) * (width + band) - band;
+  const end = start + band;
+  for (let i = 0; i < width; i += 1) {
+    buf.clearCell(x + i, y, track);
+    const covered = Math.min(i + 1, end) - Math.max(i, start);
+    if (covered <= 0) continue;
+    if (covered >= 1) {
+      buf.put(x + i, y, "\u2588", color);
+    } else if (start > i) {
+      buf.setBg(x + i, y, color);
+      buf.put(x + i, y, PARTIAL[Math.max(1, Math.round((1 - covered) * 8))] ?? "\u258F", track);
+    } else {
+      buf.put(x + i, y, PARTIAL[Math.max(1, Math.round(covered * 8))] ?? "\u2589", color);
+    }
+  }
+}
+var SPINNER = ["|", "/", "-", "\\"];
+var spinnerFrame = (now, period = 120) => SPINNER[Math.floor(now / period) % SPINNER.length];
+function wrap(text, width, maxLines) {
+  const lines = [];
+  let line = "";
+  for (const raw of toCells(text).split(/\s+/)) {
+    let word = raw;
+    while (cellLength(word) > width) {
+      if (line) {
+        lines.push(line);
+        line = "";
+      }
+      const chars = [...word];
+      lines.push(chars.slice(0, width).join(""));
+      word = chars.slice(width).join("");
+    }
+    const next = line ? `${line} ${word}` : word;
+    if (cellLength(next) > width) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = next;
+    }
+  }
+  if (line) lines.push(line);
+  if (lines.length > maxLines) {
+    const kept = lines.slice(0, maxLines);
+    const last = kept[maxLines - 1];
+    kept[maxLines - 1] = cellLength(last) >= width ? fit(last, width) : `${last}\u2026`;
+    return kept;
+  }
+  return lines;
+}
+
+// src/scene/scene.ts
+var backgroundCache = /* @__PURE__ */ new Map();
+function paintBackground(buf, flat) {
+  if (flat) {
+    buf.fill(0, 0, buf.width, buf.height, theme.bgEdge);
+    return;
+  }
+  const key = `${buf.width}x${buf.height}`;
+  let cached = backgroundCache.get(key);
+  if (!cached) {
+    cached = new Int32Array(buf.width * buf.height);
+    const cx = (buf.width - 1) / 2;
+    const cy = (buf.height - 1) / 2;
+    for (let y = 0; y < buf.height; y += 1) {
+      for (let x = 0; x < buf.width; x += 1) {
+        const distance = Math.hypot((x - cx) / (cx || 1), (y - cy) / (cy || 1)) / Math.SQRT2;
+        cached[y * buf.width + x] = mix(theme.bgCenter, theme.bgEdge, Math.min(1, distance * 1.15) ** 1.4);
+      }
+    }
+    backgroundCache.set(key, cached);
+  }
+  buf.bg.set(cached);
+  buf.chars.fill(32);
+  buf.attrs.fill(0);
+  buf.fg.set(cached);
+}
+function baseColor(buf, flat) {
+  const cached = backgroundCache.get(`${buf.width}x${buf.height}`);
+  if (flat || !cached) return () => theme.bgEdge;
+  return (x, y) => cached[y * buf.width + x] ?? theme.bgEdge;
+}
+var folderName = (cwd) => cwd ? cwd.split(/[\\/]/).filter(Boolean).pop() ?? cwd : "no session";
+var mainName = (view) => displayModel(view.state.mainModel);
+var advisorName = (view) => displayModel(view.state.advisorModel);
+var EFFORT_LEVELS = { low: 1, medium: 2, high: 3, xhigh: 4, max: 5 };
+function effortMeter(effort) {
+  const level = effort ? EFFORT_LEVELS[effort] ?? 0 : 0;
+  return `${"\u25AE".repeat(level)}${"\u25AF".repeat(5 - level)}`;
+}
+function formatClock(t) {
+  if (t <= 0) return "--:--:--";
+  const d = new Date(t);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+var KIND_COLOR2 = {
+  main: theme.main,
+  sub: theme.sub,
+  advisor: theme.advisor,
+  tool: theme.metrics,
+  error: theme.alert
+};
+function mainActivity(view, width) {
+  const { state } = view;
+  if (!view.connected) return fit("waiting for a session", width);
+  if (state.ended) return "session ended";
+  if (state.status === "tool" && state.currentTool) {
+    const { name, summary } = state.currentTool;
+    return fit(toCells(summary ? `${name} \xB7 ${summary.replace(/\s+/g, " ")}` : name), width);
+  }
+  if (state.status === "working") return "working";
+  return "idle";
+}
+function drawWindowBar(buf, view, y, width, ox) {
+  buf.fill(ox, y, width, 1, theme.windowBar);
+  buf.put(ox + 1, y, "\u25CF", theme.dotRed);
+  buf.put(ox + 3, y, "\u25CF", theme.dotYellow);
+  buf.put(ox + 5, y, "\u25CF", theme.dotGreen);
+  centerText(buf, ox, width, y, `${folderName(view.state.cwd)} \u2014 sinapsis \u2014 ${buf.width}x${buf.height}`, theme.dim);
+}
+function headerSegments(view) {
+  if (!view.state.mainModel) {
+    return [
+      { text: "CLAUDE CODE ADVISOR", color: theme.text, bold: true },
+      { text: "  \xB7  ", color: theme.dim },
+      { text: "WAITING FOR A SESSION", color: theme.dim }
+    ];
+  }
+  const main2 = mainName(view).toUpperCase();
+  const advisor = advisorName(view).toUpperCase();
+  return [
+    { text: "CLAUDE CODE ADVISOR", color: theme.text, bold: true },
+    { text: "  \xB7  ", color: theme.dim },
+    { text: main2, color: theme.main, bold: true },
+    { text: " BUILDS", color: theme.text, bold: true },
+    { text: "  \xB7  ", color: theme.dim },
+    { text: advisor, color: theme.advisor, bold: true },
+    { text: " THINKS", color: theme.text, bold: true }
+  ];
+}
+function drawLegend(buf, view, ox, oy) {
+  const y = oy + FULL.rows.legend;
+  const main2 = mainName(view).toLowerCase();
+  const items = [
+    [3, theme.main, `${main2} \xB7 main`],
+    [23, theme.sub, `${main2} \xB7 subagents`],
+    [48, theme.advisor, `${advisorName(view).toLowerCase()} \xB7 advisor`],
+    [71, theme.metrics, "tools"]
+  ];
+  for (const [x, color, label] of items) {
+    buf.put(ox + x, y, "\u25A0", color);
+    buf.text(ox + x + 2, y, label, theme.dim);
+  }
+}
+var panelBorder = (color) => mix(color, theme.panel, 0.2);
+var SLOTS = [
+  { row: FULL.arrows.main, reasons: ["before a plan", "check-in"], empty: "before a plan" },
+  { row: FULL.arrows.cards, reasons: ["after errors", "after subagents"], empty: "after errors" },
+  { row: FULL.arrows.lead, reasons: ["before done"], empty: "before done" }
+];
+function drawSlot(buf, x, row, consults, empty, inner) {
+  const last = consults[consults.length - 1];
+  if (!last) {
+    buf.put(x, row, "\u25C7", theme.faint);
+    buf.text(x + 2, row, empty, theme.faint);
+    return;
+  }
+  buf.put(x, row, "\u25C6", last.isError ? theme.alert : theme.advisor, BOLD);
+  const times = consults.length > 1 ? ` x${consults.length}` : "";
+  buf.text(x + 2, row, fit(`${last.reason}${times}`, inner - 2), theme.text);
+  const detail = last.open ? "replying\u2026" : `${formatDuration(last.durationMs)} \xB7 ${formatTokens(last.tokensRead)}`;
+  buf.text(x + 2, row + 1, fit(detail, inner - 2), theme.dim);
+}
+function drawAdvisorPanel(buf, view, r) {
+  const { advisor } = view.state;
+  box(buf, r, { color: panelBorder(theme.advisor), fill: theme.panel, halo: 0.35 });
+  const inner = r.w - 2;
+  const left = r.x + 1;
+  centerText(buf, left, inner, r.y + 1, advisorName(view).toUpperCase(), theme.advisor, true);
+  centerText(buf, left, inner, r.y + 2, "advisor \xB7 on call", theme.dim);
+  const chip = `[ --advisor ${modelAlias(view.state.advisorModel)} ]`;
+  buf.fill(left + 1, r.y + 3, inner - 2, 1, theme.chip);
+  centerText(buf, left + 1, inner - 2, r.y + 3, chip, theme.dim);
+  const lineX = left;
+  const textWidth = inner - 2;
+  for (let y2 = r.y + 4; y2 < r.y + r.h - 1; y2 += 1) buf.put(lineX, y2, "\u254E", theme.faint);
+  for (const slot of SLOTS) {
+    drawSlot(buf, lineX, slot.row, advisor.consults.filter((c) => slot.reasons.includes(c.reason)), slot.empty, textWidth + 1);
+  }
+  const text = lineX + 2;
+  let y = FULL.arrows.main + 3;
+  for (const line of ["reads the whole", "session, every", "tool call and", "result"]) {
+    buf.text(text, y, line, theme.dim);
+    y += 1;
+  }
+  y = 17;
+  const last = advisor.consults.filter((c) => !c.open).pop();
+  buf.text(text, y, "last consult:", theme.dim);
+  if (last) {
+    buf.text(text, y + 1, fit(`sealed \xB7 ${formatDuration(last.durationMs)}`, textWidth), theme.alert);
+    buf.text(text, y + 2, fit(`${formatTokens(last.tokensRead)} read`, textWidth), theme.alert);
+    buf.text(text, y + 3, fit(`${formatTokens(last.tokensWritten)} written`, textWidth), theme.alert);
+  } else {
+    buf.text(text, y + 1, "none yet", theme.faint);
+  }
+  const stat = (row, label, value) => {
+    buf.text(text, row, label, theme.dim);
+    rightText(buf, r.x + r.w - 3, row, value, theme.text, true);
+  };
+  stat(22, "calls", String(advisor.calls));
+  stat(23, "tokens read", formatTokens(advisor.tokensRead));
+  stat(24, "routine turns", String(advisor.routineTurns));
+  const followUp = last?.followUp;
+  buf.text(text, 29, `then ${mainName(view).toLowerCase()}:`, theme.dim);
+  if (followUp) {
+    wrap(plainText(followUp), textWidth, 4).forEach((line, i) => buf.text(text, 30 + i, line, theme.dim));
+  } else {
+    buf.text(text, 30, "\u2014", theme.faint);
+  }
+}
+function dashedArrow(buf, y, from, to, color) {
+  for (let x = from; x < to; x += 1) buf.put(x, y, "\u254C", color);
+  buf.put(to, y, "\u25B8", color);
+}
+function drawConnectors(buf, view) {
+  const { arrows, spine, cardCenters, metrics, main: main2, lead } = FULL;
+  const { advisor, subagents } = view.state;
+  const hasSubagents = subagents.length > 0;
+  const anyDone = subagents.some((s) => !s.running);
+  const edge = FULL.advisor.x + FULL.advisor.w;
+  const reasonsLit = (reasons) => advisor.consults.some((c) => reasons.includes(c.reason));
+  const arrowColor = (lit) => lit ? theme.advisor : mix(theme.advisor, theme.bgEdge, 0.6);
+  dashedArrow(buf, arrows.main, edge, main2.x - 1, arrowColor(reasonsLit(["before a plan", "check-in"])));
+  dashedArrow(buf, arrows.cards, edge, FULL.cards[0].x - 1, arrowColor(reasonsLit(["after errors", "after subagents"])));
+  dashedArrow(buf, arrows.lead + 1, edge, lead.x - 1, arrowColor(reasonsLit(["before done"])));
+  buf.put(spine, main2.y + main2.h, "\u2503", theme.main);
+  const busColor = hasSubagents ? theme.sub : mix(theme.sub, theme.bgEdge, 0.65);
+  buf.put(spine, metrics.y + metrics.h, "\u2503", mix(theme.metrics, busColor, 0.5));
+  const top = FULL.rows.delegate + 1;
+  const [c0, c1, c2] = cardCenters;
+  for (let x = c0; x <= c2; x += 1) buf.put(x, top, "\u2501", busColor, BOLD);
+  buf.put(c0, top, "\u250F", busColor, BOLD);
+  buf.put(c2, top, "\u2513", busColor, BOLD);
+  buf.put(c1, top, "\u254B", busColor, BOLD);
+  for (const center of cardCenters) buf.put(center, top + 1, "\u25BC", busColor);
+  const bright = anyDone ? theme.subBright : mix(theme.sub, theme.bgEdge, 0.65);
+  const back = FULL.cards[0].y + FULL.cards[0].h;
+  for (const center of cardCenters) buf.put(center, back, "\u2503", bright, BOLD);
+  for (let x = c0; x <= c2; x += 1) buf.put(x, back + 1, "\u2501", bright, BOLD);
+  buf.put(c0, back + 1, "\u2517", bright, BOLD);
+  buf.put(c2, back + 1, "\u251B", bright, BOLD);
+  buf.put(c1, back + 1, "\u254B", bright, BOLD);
+  for (let y = back + 2; y < lead.y; y += 1) buf.put(spine, y, "\u2503", bright, BOLD);
+  if (anyDone) {
+    for (let x = c0; x <= c2; x += 1) buf.tintBg(x, back + 1, theme.sub, 0.08);
+    for (let y = back; y < lead.y; y += 1) {
+      buf.tintBg(spine, y, theme.sub, 0.1);
+      buf.tintBg(spine - 1, y, theme.sub, 0.06);
+      buf.tintBg(spine + 1, y, theme.sub, 0.06);
+    }
+  }
+}
+function drawMainPanel(buf, view, r) {
+  const { state } = view;
+  box(buf, r, { color: panelBorder(theme.main), fill: theme.panel, halo: 0.4 });
+  const inner = r.w - 2;
+  const left = r.x + 1;
+  centerSegments(buf, left, inner, r.y + 1, [
+    { text: mainName(view), color: theme.main, bold: true },
+    { text: " \xB7 main session", color: theme.text }
+  ]);
+  const task = state.title ?? state.lastPrompt;
+  centerText(buf, left, inner - 2, r.y + 2, task ? plainText(task) : "no task yet", task ? theme.text : theme.faint);
+  centerSegments(buf, left, inner, r.y + 3, [
+    { text: "effort ", color: theme.dim },
+    { text: effortMeter(state.effort), color: theme.main },
+    { text: ` ${state.effort ?? "\u2014"}`, color: theme.dim }
+  ]);
+  const active = view.connected && !state.ended && state.status !== "idle";
+  const activity = mainActivity(view, inner - 10);
+  buf.fill(left + 1, r.y + 4, inner - 2, 1, theme.chip);
+  centerSegments(buf, left + 1, inner - 2, r.y + 4, [
+    { text: "[ ", color: theme.faint },
+    { text: activity, color: state.status === "tool" ? theme.metrics : theme.dim },
+    { text: active ? `  ${spinnerFrame(view.now)}` : "", color: theme.main },
+    { text: " ]", color: theme.faint }
+  ]);
+}
+function drawAdvisorState(buf, view, r) {
+  const { state } = view;
+  box(buf, r, { color: theme.advisor, dashed: true, fill: theme.panel, halo: 0.25 });
+  centerText(buf, r.x + 1, r.w - 2, r.y + 1, "ADVISOR", theme.advisor, true);
+  const replaying = state.advisor.consults.some((c) => c.open);
+  const row = (y, label, value, color = theme.text) => {
+    buf.text(r.x + 1, y, label, theme.dim);
+    rightText(buf, r.x + r.w - 3, y, fit(value, r.w - 9), color, true);
+  };
+  row(r.y + 2, "model", advisorName(view).toLowerCase());
+  row(r.y + 3, "mode", state.advisorEnabled || state.advisorModel ? "on call" : "off");
+  row(r.y + 4, "state", replaying ? "replaying" : "silent", replaying ? theme.advisor : theme.text);
+}
+function drawMetrics(buf, view, r) {
+  const { state } = view;
+  box(buf, r, { color: panelBorder(theme.metrics), fill: theme.panel, halo: 0.3 });
+  const left = r.x + 2;
+  const right = r.x + r.w - 3;
+  writeSegments(buf, left, r.y + 1, [
+    { text: "TOOLS", color: theme.metrics, bold: true },
+    { text: " \xB7 real distribution", color: theme.metrics }
+  ]);
+  rightText(buf, right, r.y + 1, String(state.toolCalls), theme.metrics, true);
+  rightText(buf, right - cellLength(String(state.toolCalls)) - 1, r.y + 1, "calls", theme.dim);
+  const sorted = Object.entries(state.tools).sort((a, b) => b[1].count - a[1].count || a[0].localeCompare(b[0]));
+  const top = sorted.slice(0, 3);
+  const max = top[0]?.[1].count ?? 1;
+  const barX = left + 15;
+  const barWidth = 17;
+  top.forEach(([name, stat], i) => {
+    const y = r.y + 2 + i;
+    const failed = stat.errors > 0;
+    buf.text(left, y, fit(toCells(name), 14), failed ? theme.alert : theme.text);
+    thinBar(buf, barX, y, barWidth, stat.count / max, failed ? theme.barAlert : theme.barGood);
+    rightText(buf, barX + barWidth + 4, y, String(stat.count), theme.text);
+    if (failed) rightText(buf, right, y, `${stat.errors} err`, theme.alert);
+  });
+  if (top.length === 0) buf.text(left, r.y + 2, "no tool calls yet", theme.faint);
+  const rest = sorted.slice(3);
+  const footer = rest.length ? `+ ${rest.map(([name, stat]) => `${name} ${stat.count}`).join(" \xB7 ")}` : state.toolErrors > 0 ? `${state.toolErrors} failed \xB7 orange = had errors` : "green = no errors \xB7 orange = had errors";
+  buf.text(left, r.y + 5, fit(toCells(footer), r.w - 4), theme.dim);
+}
+function drawCard(buf, r, sub, index, view) {
+  if (!sub) {
+    box(buf, r, { color: mix(theme.sub, theme.bgEdge, 0.72), dashed: true, fill: mix(theme.panel, theme.bgEdge, 0.4) });
+    centerText(buf, r.x + 1, r.w - 2, r.y + 3, "no subagent", mix(theme.dim, theme.bgEdge, 0.45));
+    return;
+  }
+  const failed = sub.status !== void 0 && sub.status !== "completed";
+  const color = failed ? theme.alert : sub.running ? theme.subBright : theme.sub;
+  box(buf, r, { color, fill: theme.panel, halo: sub.running ? 0.3 : 0.15, bold: true });
+  const inner = r.w - 2;
+  const left = r.x + 1;
+  const name = plainText(subagentName(view.state, sub.id));
+  const label = fit(`${String(index + 1).padStart(2, "0")} ${(sub.agentType ?? "agent").toLowerCase()}`, inner - 2);
+  const chipEnd = left + cellLength(label) + 2;
+  for (let x = left; x < chipEnd; x += 1) buf.setBg(x, r.y, mix(theme.panel, theme.sub, sub.running ? 0.3 : 0.12));
+  buf.text(left, r.y, ` ${label} `, sub.running ? theme.subBright : theme.dim);
+  centerText(buf, left + 1, inner - 2, r.y + 1, name, theme.text, true);
+  const tags = [{ text: displayModel(sub.model), color: theme.main }];
+  if (sub.running) tags.push({ text: ` [ ${spinnerFrame(view.now + index * 40)} ]`, color: theme.sub });
+  centerSegments(buf, left, inner, r.y + 2, tags);
+  const barX = left + 1;
+  const barWidth = inner - 2;
+  if (sub.running) indeterminateBar(buf, barX, r.y + 3, barWidth, view.now / 1800 + index * 0.27, theme.barSub);
+  else bar(buf, barX, r.y + 3, barWidth, 1, failed ? theme.barAlert : theme.barSub);
+  const detail = sub.running ? `tools: ${sub.toolCount}${sub.currentTool ? ` \xB7 ${sub.currentTool}` : ""}` : `${sub.toolCount} tools \xB7 ${formatDuration(sub.durationMs)}`;
+  centerText(buf, left, inner, r.y + 4, detail, failed ? theme.alert : theme.sub);
+  const status = sub.running ? ["\u25D0", "\u25D3", "\u25D1", "\u25D2"][Math.floor(view.now / 160 + index) % 4] : failed ? "\u2715" : "\u25CF";
+  const tokens = !sub.running && sub.totalTokens !== void 0 ? ` ${formatTokens(sub.totalTokens)}` : "";
+  centerSegments(buf, left, inner, r.y + 5, [
+    { text: status, color: failed ? theme.alert : theme.sub },
+    { text: tokens, color: theme.sub },
+    { text: sub.readOnly ? `${tokens ? " \xB7" : ""} read-only` : "", color: theme.dim }
+  ]);
+}
+function visibleSubagents(view, count) {
+  const { subagents } = view.state;
+  const running = subagents.filter((s) => s.running);
+  const done = subagents.filter((s) => !s.running);
+  const picked = [...running.slice(-count), ...done.slice(-Math.max(0, count - running.length))];
+  return subagents.filter((s) => picked.includes(s));
+}
+function drawDelegate(buf, view, y, x, width) {
+  const { subagents } = view.state;
+  const active = subagents.filter((s) => s.running).length;
+  centerSegments(buf, x, width, y, [
+    { text: "delegate to subagents", color: subagents.length ? theme.text : theme.dim },
+    { text: " \xB7 ", color: theme.dim },
+    { text: mainName(view).toLowerCase(), color: theme.main, bold: true },
+    { text: `  [ ${active} / ${subagents.length} ]`, color: theme.dim }
+  ]);
+}
+function drawLead(buf, view, r) {
+  const done = view.state.subagents.filter((s) => !s.running);
+  box(buf, r, { color: done.length ? theme.subBright : mix(theme.sub, theme.bgEdge, 0.5), fill: theme.panel, halo: done.length ? 0.5 : 0.1, bold: true });
+  centerSegments(buf, r.x + 1, r.w - 2, r.y + 1, [
+    { text: "back to ", color: theme.text },
+    { text: mainName(view), color: theme.main, bold: true },
+    { text: " \xB7 lead", color: theme.text }
+  ]);
+  const latest = done[done.length - 1];
+  const summary = latest?.summary ? `${done.length} back \xB7 ${plainText(latest.summary)}` : "no summaries yet";
+  centerText(buf, r.x + 2, r.w - 4, r.y + 2, summary, latest ? theme.dim : theme.faint);
+}
+function drawLog(buf, view, r) {
+  box(buf, r, { color: mix(theme.main, theme.panel, 0.55), fill: mix(theme.panel, theme.bgEdge, 0.3) });
+  const live = view.replay ? view.replay.paused ? "paused" : view.replay.finished ? "replay end" : `replay x${view.replay.speed}` : view.connected ? "live" : "idle";
+  writeSegments(buf, r.x + 3, r.y, [
+    { text: " session log ", color: theme.text },
+    { text: `[ ${live} \xB7 ${spinnerFrame(view.now, 200)} ] `, color: theme.dim }
+  ]);
+  const rows = r.h - 2;
+  const entries = view.log.slice(-rows);
+  entries.forEach((entry, i) => {
+    const y = r.y + 1 + i;
+    buf.text(r.x + 2, y, formatClock(entry.t), theme.faint);
+    buf.text(r.x + 11, y, fit(toCells(entry.who), 13), KIND_COLOR2[entry.kind]);
+    buf.text(r.x + 25, y, fit(toCells(entry.text), r.w - 27), entry.kind === "error" ? theme.alert : theme.text);
+  });
+  if (entries.length === 0) buf.text(r.x + 2, r.y + 1, "nothing yet", theme.faint);
+}
+function drawPrompt(buf, view, y, x, width) {
+  const { state } = view;
+  const main2 = modelAlias(state.mainModel);
+  const adv = modelAlias(state.advisorModel);
+  const end = writeSegments(buf, x + 1, y, [
+    { text: `${fit(toCells(folderName(state.cwd)), 18)} $ `, color: theme.main, bold: true },
+    { text: "claude", color: theme.text },
+    { text: " --model ", color: theme.dim },
+    { text: main2, color: theme.main },
+    { text: " --advisor ", color: theme.dim },
+    { text: adv, color: theme.advisor },
+    { text: " ", color: theme.text }
+  ]);
+  if (Math.floor(view.now / 530) % 2 === 0) buf.put(end, y, "\u2588", theme.text);
+  rightText(buf, x + width - 2, y, "reconstructed, not literal", theme.faint);
+}
+function drawStatus(buf, view, y, x, width) {
+  const chipWidth = Math.floor(width * 0.42);
+  buf.fill(x + 1, y, chipWidth, 1, theme.chip);
+  buf.text(x + 2, y, fit(`# ${toCells(view.queue.last ?? "no events yet")}`, chipWidth - 2), theme.dim);
+  const squares = view.queue.pending.slice(0, 16);
+  squares.forEach((kind, i) => buf.put(x + chipWidth + 3 + i, y, "\u25A0", KIND_COLOR2[kind]));
+  rightText(buf, x + width - 2, y, `${view.queue.pending.length} queued`, theme.dim);
+}
+function renderFull(buf, view) {
+  buf.originX = Math.floor((buf.width - FULL_COLS) / 2);
+  buf.originY = Math.floor((buf.height - FULL_ROWS) / 2);
+  const target = buf;
+  const { rows } = FULL;
+  drawWindowBar(target, view, rows.windowBar, FULL_COLS, 0);
+  centerSegments(target, 0, FULL_COLS, rows.header, headerSegments(view));
+  for (let x = 2; x <= 93; x += 1) target.put(x, rows.separator, "\u2500", mix(theme.main, theme.bgEdge, 0.6));
+  drawLegend(target, view, 0, 0);
+  drawConnectors(target, view);
+  drawAdvisorPanel(target, view, FULL.advisor);
+  drawMainPanel(target, view, FULL.main);
+  drawAdvisorState(target, view, FULL.advisorState);
+  drawMetrics(target, view, FULL.metrics);
+  drawDelegate(target, view, rows.delegate, 28, 67);
+  const visible = visibleSubagents(view, FULL.cards.length);
+  FULL.cards.forEach((rect, i) => drawCard(target, rect, visible[i], view.state.subagents.indexOf(visible[i]), view));
+  drawLead(target, view, FULL.lead);
+  drawLog(target, view, FULL.log);
+  drawPrompt(target, view, rows.prompt, 0, FULL_COLS);
+  drawStatus(target, view, rows.status, 0, FULL_COLS);
+  const bootMs = view.anim?.bootMs;
+  if (bootMs !== void 0 && bootMs < BOOT_MS) {
+    const width = segmentsWidth(headerSegments(view));
+    const { originX, originY } = buf;
+    const base = baseColor(buf, view.flatBackground ?? false);
+    applyBootFull(buf, bootMs, Math.floor((FULL_COLS - width) / 2), width, (x, y) => base(x + originX, y + originY));
+  }
+  buf.originX = 0;
+  buf.originY = 0;
+}
+function renderReduced(buf, view) {
+  const { width, height } = buf;
+  centerSegments(buf, 0, width, 0, headerSegments(view));
+  const advisorRect = { x: 0, y: 1, w: 24, h: height - 8 };
+  const { advisor } = view.state;
+  box(buf, advisorRect, { color: theme.advisor, fill: theme.panel, halo: 0.25 });
+  const ax = advisorRect.x + 2;
+  const aw = advisorRect.w - 4;
+  centerText(buf, advisorRect.x + 1, advisorRect.w - 2, 2, `${advisorName(view).toUpperCase()} \xB7 on call`, theme.advisor, true);
+  const consults = advisor.consults.slice(-(advisorRect.h - 8));
+  consults.forEach((c, i) => {
+    buf.put(ax, 3 + i, "\u25C6", c.isError ? theme.alert : theme.advisor);
+    buf.text(ax + 2, 3 + i, fit(c.reason, aw - 2), theme.text);
+  });
+  if (consults.length === 0) buf.text(ax, 3, "no consults yet", theme.faint);
+  const statsY = advisorRect.y + advisorRect.h - 5;
+  const last = advisor.consults.filter((c) => !c.open).pop();
+  buf.text(ax, statsY, fit(last ? `sealed \xB7 ${formatDuration(last.durationMs)}` : "inferred labels", aw), last ? theme.alert : theme.faint);
+  const stat = (y, label, value) => {
+    buf.text(ax, y, label, theme.dim);
+    rightText(buf, ax + aw - 1, y, value, theme.text, true);
+  };
+  stat(statsY + 1, "calls", String(advisor.calls));
+  stat(statsY + 2, "tokens read", formatTokens(advisor.tokensRead));
+  stat(statsY + 3, "routine turns", String(advisor.routineTurns));
+  const rightX = advisorRect.w + 1;
+  const rightW = width - rightX;
+  const mainRect = { x: rightX, y: 1, w: rightW, h: 5 };
+  box(buf, mainRect, { color: theme.main, fill: theme.panel, halo: 0.25 });
+  centerSegments(buf, rightX + 1, rightW - 2, 2, [
+    { text: mainName(view), color: theme.main, bold: true },
+    { text: " \xB7 main \xB7 effort ", color: theme.dim },
+    { text: view.state.effort ?? "\u2014", color: theme.main }
+  ]);
+  const task = view.state.title ?? view.state.lastPrompt;
+  centerText(buf, rightX + 2, rightW - 4, 3, task ? plainText(task) : "no task yet", task ? theme.text : theme.faint);
+  const active = view.connected && !view.state.ended && view.state.status !== "idle";
+  centerSegments(buf, rightX + 1, rightW - 2, 4, [
+    { text: mainActivity(view, rightW - 12), color: view.state.status === "tool" ? theme.metrics : theme.dim },
+    { text: active ? `  ${spinnerFrame(view.now)}` : "", color: theme.main }
+  ]);
+  const cardCount = 3;
+  const gap = 1;
+  const cardW = Math.floor((rightW - gap * (cardCount - 1)) / cardCount);
+  const visible = visibleSubagents(view, cardCount);
+  for (let i = 0; i < cardCount; i += 1) {
+    const r = { x: rightX + i * (cardW + gap), y: 6, w: cardW, h: 5 };
+    const sub = visible[i];
+    if (!sub) {
+      box(buf, r, { color: mix(theme.sub, theme.bgEdge, 0.72), dashed: true, fill: mix(theme.panel, theme.bgEdge, 0.4) });
+      continue;
+    }
+    const failed = sub.status !== void 0 && sub.status !== "completed";
+    box(buf, r, { color: failed ? theme.alert : sub.running ? theme.subBright : theme.sub, fill: theme.panel, bold: true });
+    const index = view.state.subagents.indexOf(sub);
+    centerText(buf, r.x + 1, r.w - 2, r.y + 1, plainText(subagentName(view.state, sub.id)), theme.text, true);
+    if (sub.running) indeterminateBar(buf, r.x + 2, r.y + 2, r.w - 4, view.now / 1800 + index * 0.27, theme.barSub);
+    else bar(buf, r.x + 2, r.y + 2, r.w - 4, 1, failed ? theme.barAlert : theme.barSub);
+    centerText(buf, r.x + 1, r.w - 2, r.y + 3, sub.running ? `tools: ${sub.toolCount}` : `${sub.toolCount} tools \xB7 ${formatDuration(sub.durationMs)}`, failed ? theme.alert : theme.sub);
+  }
+  const toolsY = 11;
+  const sorted = Object.entries(view.state.tools).sort((a, b) => b[1].count - a[1].count);
+  buf.text(rightX, toolsY, fit(toCells(`tools ${view.state.toolCalls}: ${sorted.map(([n, s]) => `${n} ${s.count}${s.errors ? `!${s.errors}` : ""}`).join(" \xB7 ")}`), rightW), view.state.toolErrors ? theme.alert : theme.metrics);
+  const logRect = { x: 0, y: advisorRect.y + advisorRect.h, w: width, h: height - advisorRect.h - 3 };
+  drawLog(buf, view, logRect);
+  drawPrompt(buf, view, height - 2, 0, width);
+  drawStatus(buf, view, height - 1, 0, width);
+}
+function renderTooSmall(buf) {
+  const lines = ["Agranda la ventana", `M\xEDnimo ${MIN_COLS}x${MIN_ROWS} \xB7 ahora ${buf.width}x${buf.height}`];
+  const y = Math.floor((buf.height - lines.length) / 2);
+  lines.forEach((line, i) => centerText(buf, 0, buf.width, y + i, line, i === 0 ? theme.text : theme.dim, i === 0));
+}
+function renderScene(buf, view) {
+  const flat = view.flatBackground ?? false;
+  paintBackground(buf, flat);
+  buf.tintsEnabled = !flat;
+  const kind = layoutKind(buf.width, buf.height);
+  if (kind === "full") renderFull(buf, view);
+  else if (kind === "reduced") {
+    renderReduced(buf, view);
+    const bootMs = view.anim?.bootMs;
+    if (bootMs !== void 0 && bootMs < BOOT_MS) applyBootFade(buf, bootMs, baseColor(buf, flat));
+  } else renderTooSmall(buf);
+}
+
+// src/tui/ansi.ts
+var SYNC_BEGIN = "\x1B[?2026h";
+var SYNC_END = "\x1B[?2026l";
+var ENTER_SCREEN = "\x1B[?1049h\x1B[?25l\x1B[?7l\x1B[2J";
+var LEAVE_SCREEN = "\x1B[0m\x1B[?7h\x1B[?25h\x1B[?1049l";
+var colorCode = (ground, color, mode) => mode === "truecolor" ? `${ground};2;${color >> 16 & 255};${color >> 8 & 255};${color & 255}` : `${ground};5;${to256(color)}`;
+function encodeFrame(prev, next, mode) {
+  const sameSize = prev !== null && prev.width === next.width && prev.height === next.height;
+  const parts = [];
+  const { width, height, chars, fg, bg, attrs } = next;
+  let cursorX = -1;
+  let cursorY = -1;
+  let currentFg = -1;
+  let currentBg = -1;
+  let currentAttrs = -1;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const i = y * width + x;
+      const char = chars[i];
+      const cellFg = fg[i];
+      const cellBg = bg[i];
+      const cellAttrs = attrs[i];
+      if (sameSize && char === prev.chars[i] && cellBg === prev.bg[i] && cellAttrs === prev.attrs[i]) {
+        if (char === 32 || cellFg === prev.fg[i]) continue;
+      }
+      if (x !== cursorX || y !== cursorY) parts.push(`\x1B[${y + 1};${x + 1}H`);
+      if (cellAttrs !== currentAttrs || cellFg !== currentFg || cellBg !== currentBg) {
+        const codes = [];
+        if (cellAttrs !== currentAttrs) codes.push(cellAttrs & BOLD ? "1" : "22");
+        if (cellFg !== currentFg) codes.push(colorCode(38, cellFg, mode));
+        if (cellBg !== currentBg) codes.push(colorCode(48, cellBg, mode));
+        parts.push(`\x1B[${codes.join(";")}m`);
+        currentAttrs = cellAttrs;
+        currentFg = cellFg;
+        currentBg = cellBg;
+      }
+      parts.push(String.fromCodePoint(char));
+      cursorX = x + 1;
+      cursorY = y;
+    }
+  }
+  if (parts.length === 0) return "";
+  return `${SYNC_BEGIN}${parts.join("")}\x1B[0m${SYNC_END}`;
+}
+
+// src/tui/terminal.ts
+var RESTORE_SEQUENCE = `${SYNC_END}${LEAVE_SCREEN}`;
+var TerminalSession = class {
+  constructor(output, input, writeSync2 = (data) => {
+    output.write(data);
+  }) {
+    this.output = output;
+    this.input = input;
+    this.writeSync = writeSync2;
+  }
+  output;
+  input;
+  writeSync;
+  restored = false;
+  keyListener;
+  enter(onKey) {
+    this.output.write(ENTER_SCREEN);
+    if (this.input?.isTTY) this.input.setRawMode?.(true);
+    if (this.input) {
+      this.keyListener = (data) => onKey(typeof data === "string" ? data : data.toString("utf8"));
+      this.input.on("data", this.keyListener);
+      this.input.resume();
+    }
+  }
+  /** Se puede llamar varias veces: solo la primera hace algo. */
+  restore() {
+    if (this.restored) return;
+    this.restored = true;
+    try {
+      this.writeSync(RESTORE_SEQUENCE);
+    } catch {
+    }
+    try {
+      if (this.input) {
+        if (this.keyListener) this.input.off("data", this.keyListener);
+        if (this.input.isTTY) this.input.setRawMode?.(false);
+        this.input.pause();
+      }
+    } catch {
+    }
+  }
+  get isRestored() {
+    return this.restored;
+  }
+};
+
+// src/app.ts
+var MAX_FPS = 60;
+var MIN_FPS = 30;
+var IDLE_FPS = 20;
+function runApp(options) {
+  const now = options.now ?? (() => performance.now());
+  const director = new Director({ boot: true });
+  const session = new TerminalSession(options.output, options.input, options.writeSync);
+  const { source, replay, output } = options;
+  let front = null;
+  let back = null;
+  let fps = options.fps ?? MAX_FPS;
+  let timer;
+  let waitingDrain = false;
+  let stopped = false;
+  let frames = 0;
+  let lastKey = "";
+  let unsubscribeResize;
+  let finish = () => void 0;
+  let fail = () => void 0;
+  const done = new Promise((resolve2, reject) => {
+    finish = resolve2;
+    fail = reject;
+  });
+  function stop() {
+    if (stopped) return;
+    stopped = true;
+    if (timer) clearTimeout(timer);
+    unsubscribeResize?.();
+    session.restore();
+    void source.stop().finally(finish);
+  }
+  function onKey(key) {
+    if (key === "q" || key === "Q" || key === "") {
+      stop();
+      return;
+    }
+    if (!replay) return;
+    if (key === " ") replay.togglePause();
+    else if (key === "+" || key === "=") replay.setSpeed(replay.speed * 2);
+    else if (key === "-" || key === "_") replay.setSpeed(replay.speed / 2);
+    lastKey = "";
+  }
+  function frameKey(time, size) {
+    const status = replay ? `${replay.speed}|${replay.paused}|${replay.finished}` : "";
+    const moving = director.isBusy(time) ? time : Math.floor(time / 50);
+    return `${size.cols}x${size.rows}|${director.version}|${moving}|${status}`;
+  }
+  function frame() {
+    const time = now();
+    const size = options.size();
+    for (const update of source.tick(time)) director.ingest(update, time);
+    director.update(time);
+    const key = frameKey(time, size);
+    if (key !== lastKey) {
+      lastKey = key;
+      const started = performance.now();
+      if (!back || back.width !== size.cols || back.height !== size.rows) back = new CellBuffer(size.cols, size.rows);
+      const status = replay ? { speed: replay.speed, paused: replay.paused, finished: replay.finished } : void 0;
+      renderScene(back, director.view(time, status, options.colorMode === "256"));
+      const bytes = encodeFrame(front, back, options.colorMode);
+      const computeMs = performance.now() - started;
+      if (bytes) {
+        if (!output.write(bytes)) {
+          waitingDrain = true;
+          if (!options.fps) fps = Math.max(MIN_FPS, fps - 10);
+          output.once("drain", () => {
+            waitingDrain = false;
+            schedule();
+          });
+        } else if (!options.fps && fps < MAX_FPS) {
+          fps = Math.min(MAX_FPS, fps + 0.25);
+        }
+      }
+      options.onFrame?.({ computeMs, bytes: bytes.length });
+      const swap = front;
+      front = back;
+      back = swap;
+    }
+    frames += 1;
+    if (options.crashAtFrame !== void 0 && frames >= options.crashAtFrame) throw new Error(`Fallo forzado en el frame ${frames}`);
+    if (options.exitWhenDone && replay?.finished && director.settled && !director.isBusy(time)) stop();
+  }
+  function schedule() {
+    if (stopped || waitingDrain) return;
+    const rate = options.fps ?? (director.isBusy(now()) ? fps : IDLE_FPS);
+    timer = setTimeout(tick, 1e3 / rate);
+  }
+  function tick() {
+    if (stopped) return;
+    try {
+      frame();
+    } catch (error) {
+      stopped = true;
+      unsubscribeResize?.();
+      session.restore();
+      void source.stop().finally(() => fail(error));
+      return;
+    }
+    schedule();
+  }
+  session.enter(onKey);
+  unsubscribeResize = options.onResize?.(() => {
+    front = null;
+    back = null;
+    lastKey = "";
+  });
+  tick();
+  return { done, stop, session, director };
+}
 
 // src/args.ts
 var USAGE = `sinapsis: visor animado de consola para el modo advisor de Claude Code
@@ -392,6 +2150,7 @@ function createParser() {
       mainStarted = true;
       events.push({ type: "session_start", t, sessionId: str(line.sessionId) });
     }
+    if (!agentId) events.push(...sessionInfo(t, { cwd: str(line.cwd) }));
     if (agentId) {
       const record = subagentRecord(agentId);
       const message = isObject(line.message) ? line.message : void 0;
@@ -692,12 +2451,12 @@ function clock(t) {
 }
 function formatEvent(event) {
   const { type, t, agentId, ...rest } = event;
-  const who = agentId ? `[${agentId.slice(0, 8)}] ` : "";
+  const who2 = agentId ? `[${agentId.slice(0, 8)}] ` : "";
   const details = Object.entries(rest).filter(([, value]) => value !== void 0).map(([key, value]) => {
     const text = typeof value === "string" ? value.replace(/\s+/g, " ") : String(value);
     return `${key}=${text.length > 60 ? `${text.slice(0, 59)}\u2026` : text}`;
   }).join(" ");
-  return `${clock(t)} ${who}${type}${details ? ` ${details}` : ""}`;
+  return `${clock(t)} ${who2}${type}${details ? ` ${details}` : ""}`;
 }
 function printEvents(source, options) {
   let timer;
@@ -836,6 +2595,62 @@ function createSource(args) {
   if (!existsSync(file)) throw new ArgsError(`No existe el archivo: ${file}`);
   return createReplay(loadTranscript(file), { speed: args.speed });
 }
+function forcedSize(env) {
+  const match = /^(\d+)x(\d+)$/.exec(env.SINAPSIS_FORCE_TTY ?? "");
+  return match ? { cols: Number(match[1]), rows: Number(match[2]) } : void 0;
+}
+async function runInterface(args, source) {
+  const { stdout, stdin, env } = process;
+  const forced = forcedSize(env);
+  if (!stdout.isTTY && !forced) {
+    await source.stop();
+    process.stderr.write("sinapsis necesita una terminal: la salida no es una TTY. Usa --print-events para ver los eventos como texto.\n");
+    process.exitCode = 1;
+    return;
+  }
+  const replay = args.command.kind === "follow" ? void 0 : source;
+  const fd = stdout.fd;
+  const app = runApp({
+    source,
+    replay,
+    output: stdout,
+    input: stdin.isTTY ? stdin : void 0,
+    // Al morir el proceso no se alcanza a vaciar una escritura asíncrona.
+    writeSync: (data) => {
+      writeSync(fd, data);
+    },
+    size: () => forced ?? { cols: stdout.columns || 80, rows: stdout.rows || 24 },
+    onResize: (listener) => {
+      stdout.on("resize", listener);
+      return () => stdout.off("resize", listener);
+    },
+    colorMode: forced ? env.SINAPSIS_COLOR === "256" ? "256" : "truecolor" : detectColorMode(stdout.getColorDepth()),
+    fps: args.fps,
+    crashAtFrame: env.SINAPSIS_CRASH_AT_FRAME ? Number(env.SINAPSIS_CRASH_AT_FRAME) : void 0,
+    exitWhenDone: env.SINAPSIS_EXIT_WHEN_DONE === "1"
+  });
+  const restoreAndExit = (code) => {
+    app.session.restore();
+    process.exit(code);
+  };
+  process.once("SIGINT", () => app.stop());
+  process.once("SIGTERM", () => app.stop());
+  process.once("SIGHUP", () => app.stop());
+  process.once("exit", () => app.session.restore());
+  process.once("uncaughtException", (error) => {
+    app.session.restore();
+    process.stderr.write(`${error.stack ?? error.message}
+`);
+    restoreAndExit(1);
+  });
+  process.once("unhandledRejection", (reason) => {
+    app.session.restore();
+    process.stderr.write(`${reason instanceof Error ? reason.stack ?? reason.message : String(reason)}
+`);
+    restoreAndExit(1);
+  });
+  await app.done;
+}
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.command.kind === "help") {
@@ -859,9 +2674,7 @@ async function main() {
     await printing.done;
     return;
   }
-  await source.stop();
-  process.stderr.write("La interfaz todav\xEDa no est\xE1 disponible. Usa --print-events.\n");
-  process.exitCode = 1;
+  await runInterface(args, source);
 }
 main().catch((error) => {
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}

@@ -283,10 +283,9 @@ describe('cola', () => {
     expect(started).toHaveLength(2);
     expect(queue.active?.start).toBe(100_000);
     collect(101_000);
-    collect(102_000);
     expect(started).toHaveLength(3);
     expect(queue.isEmpty).toBe(false);
-    collect(103_000);
+    collect(102_000);
     expect(queue.isEmpty).toBe(true);
   });
 });

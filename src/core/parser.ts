@@ -385,6 +385,8 @@ export function createParser(): Parser {
       mainStarted = true;
       events.push({ type: 'session_start', t, sessionId: str(line.sessionId) });
     }
+    // La carpeta viene en casi todas las líneas: se toma de la primera que la traiga.
+    if (!agentId) events.push(...sessionInfo(t, { cwd: str(line.cwd) }));
 
     if (agentId) {
       const record = subagentRecord(agentId);

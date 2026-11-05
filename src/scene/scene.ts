@@ -3,9 +3,10 @@
 import { displayModel, formatDuration, formatTokens, modelAlias, plainText, subagentName } from '../core/describe.js';
 import type { ConsultReason } from '../core/events.js';
 import type { ConsultState, SubagentState } from '../core/state.js';
+import { BOOT_MS, applyBootFade, applyBootFull } from './boot.js';
 import { BOLD, type CellBuffer, cellLength, fit, toCells } from '../tui/buffer.js';
 import { type Rgb, mix } from '../tui/color.js';
-import { type Rect, type Segment, bar, box, centerSegments, centerText, indeterminateBar, rightText, spinnerFrame, thinBar, wrap, writeSegments } from './draw.js';
+import { type Rect, type Segment, bar, box, centerSegments, centerText, indeterminateBar, rightText, segmentsWidth, spinnerFrame, thinBar, wrap, writeSegments } from './draw.js';
 import { FULL, FULL_COLS, FULL_ROWS, MIN_COLS, MIN_ROWS, layoutKind } from './layout.js';
 import { theme } from './theme.js';
 import type { SceneView } from './view.js';
@@ -36,6 +37,13 @@ function paintBackground(buf: CellBuffer, flat: boolean): void {
   buf.chars.fill(0x20);
   buf.attrs.fill(0);
   buf.fg.set(cached);
+}
+
+/** Color del fondo sin paneles en una celda. */
+function baseColor(buf: CellBuffer, flat: boolean): (x: number, y: number) => number {
+  const cached = backgroundCache.get(`${buf.width}x${buf.height}`);
+  if (flat || !cached) return () => theme.bgEdge;
+  return (x, y) => cached[y * buf.width + x] ?? theme.bgEdge;
 }
 
 const folderName = (cwd: string | undefined): string => (cwd ? (cwd.split(/[\\/]/).filter(Boolean).pop() ?? cwd) : 'no session');
@@ -467,10 +475,10 @@ function drawStatus(buf: CellBuffer, view: SceneView, y: number, x: number, widt
 // --- Layouts ---
 
 function renderFull(buf: CellBuffer, view: SceneView): void {
-  // Dibuja a 96x48 en un buffer mayor, centrado: los rectángulos son absolutos, así que se usa un subbuffer.
-  const ox = Math.floor((buf.width - FULL_COLS) / 2);
-  const oy = Math.floor((buf.height - FULL_ROWS) / 2);
-  const target = ox === 0 && oy === 0 ? buf : offsetBuffer(buf, ox, oy);
+  // Los rectángulos son absolutos para 96x48: en una terminal mayor se desplaza el origen para centrarlos.
+  buf.originX = Math.floor((buf.width - FULL_COLS) / 2);
+  buf.originY = Math.floor((buf.height - FULL_ROWS) / 2);
+  const target = buf;
   const { rows } = FULL;
   drawWindowBar(target, view, rows.windowBar, FULL_COLS, 0);
   centerSegments(target, 0, FULL_COLS, rows.header, headerSegments(view));
@@ -488,20 +496,15 @@ function renderFull(buf: CellBuffer, view: SceneView): void {
   drawLog(target, view, FULL.log);
   drawPrompt(target, view, rows.prompt, 0, FULL_COLS);
   drawStatus(target, view, rows.status, 0, FULL_COLS);
-}
-
-/** Vista desplazada del buffer. Los paneles usan coordenadas absolutas de 96x48. */
-function offsetBuffer(buf: CellBuffer, ox: number, oy: number): CellBuffer {
-  return new Proxy(buf, {
-    get(target, prop, receiver) {
-      const value = Reflect.get(target, prop, receiver);
-      if (typeof value !== 'function') return value;
-      if (prop === 'put' || prop === 'setBg' || prop === 'tintBg' || prop === 'clearCell' || prop === 'text' || prop === 'fill') {
-        return (x: number, y: number, ...rest: unknown[]) => (value as (...a: unknown[]) => unknown).call(target, x + ox, y + oy, ...rest);
-      }
-      return value.bind(target);
-    },
-  });
+  const bootMs = view.anim?.bootMs;
+  if (bootMs !== undefined && bootMs < BOOT_MS) {
+    const width = segmentsWidth(headerSegments(view));
+    const { originX, originY } = buf;
+    const base = baseColor(buf, view.flatBackground ?? false);
+    applyBootFull(buf, bootMs, Math.floor((FULL_COLS - width) / 2), width, (x, y) => base(x + originX, y + originY));
+  }
+  buf.originX = 0;
+  buf.originY = 0;
 }
 
 function renderReduced(buf: CellBuffer, view: SceneView): void {
@@ -591,6 +594,9 @@ export function renderScene(buf: CellBuffer, view: SceneView): void {
   buf.tintsEnabled = !flat;
   const kind = layoutKind(buf.width, buf.height);
   if (kind === 'full') renderFull(buf, view);
-  else if (kind === 'reduced') renderReduced(buf, view);
-  else renderTooSmall(buf);
+  else if (kind === 'reduced') {
+    renderReduced(buf, view);
+    const bootMs = view.anim?.bootMs;
+    if (bootMs !== undefined && bootMs < BOOT_MS) applyBootFade(buf, bootMs, baseColor(buf, flat));
+  } else renderTooSmall(buf);
 }

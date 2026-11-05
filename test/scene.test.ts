@@ -1,6 +1,7 @@
 import { Terminal } from '@xterm/headless';
 import { describe, expect, it } from 'vitest';
 import { describeEvent, displayModel, formatDuration, formatTokens, modelAlias, plainText } from '../src/core/describe.js';
+import { BOOT_MS } from '../src/scene/boot.js';
 import { renderScene } from '../src/scene/scene.js';
 import { FULL_COLS, FULL_ROWS, layoutKind } from '../src/scene/layout.js';
 import { theme } from '../src/scene/theme.js';
@@ -267,6 +268,61 @@ describe('diff ANSI', () => {
     await feed(term, `\x1b[?7l${bytes}`);
     expectMatch(term, render());
     term.dispose();
+  });
+});
+
+describe('animación 1: arranque', () => {
+  const frame = (bootMs: number | undefined): CellBuffer => {
+    const buf = new CellBuffer(FULL_COLS, FULL_ROWS);
+    renderScene(buf, { ...fixtureView(), now: 1100, anim: { bootMs } });
+    return buf;
+  };
+  const sameCells = (a: CellBuffer, b: CellBuffer): boolean =>
+    a.chars.every((c, i) => c === b.chars[i]) && a.fg.every((c, i) => c === b.fg[i]) && a.bg.every((c, i) => c === b.bg[i]);
+
+  it('termina exactamente en el frame estático: solo oculta, no cambia datos', () => {
+    const still = frame(undefined);
+    expect(sameCells(frame(BOOT_MS), still)).toBe(true);
+    expect(sameCells(frame(BOOT_MS + 5000), still)).toBe(true);
+    expect(sameCells(frame(BOOT_MS / 2), still)).toBe(false);
+  });
+
+  it('al empezar no hay paneles ni encabezado completo', () => {
+    const buf = frame(0);
+    expect(buf.rowText(2)).not.toContain('CLAUDE');
+    expect(buf.charAt(2, 5)).toBe(' ');
+    expect(buf.charAt(39, 5)).toBe(' ');
+    expect(buf.rowText(0)).toContain('sinapsis');
+  });
+
+  it('el encabezado se escribe de izquierda a derecha', () => {
+    const lengths = [100, 300, 500, 700, 900].map((ms) => frame(ms).rowText(2).trim().length);
+    for (let i = 1; i < lengths.length; i += 1) expect(lengths[i]).toBeGreaterThanOrEqual(lengths[i - 1] as number);
+    expect(lengths[0]).toBeLessThan(lengths[4] as number);
+  });
+
+  it('un borde se dibuja recorriendo el panel: arriba antes que abajo', () => {
+    const early = frame(400);
+    expect(early.charAt(2, 5)).toBe('┏');
+    expect(early.charAt(2, 38)).toBe(' ');
+    const later = frame(800);
+    expect(later.charAt(23, 5)).toBe('┓');
+    expect(later.charAt(23, 30)).toBe('┃');
+  });
+
+  it('los paneles entran en cascada: el advisor antes que el log', () => {
+    const buf = frame(700);
+    expect(buf.charAt(2, 5)).toBe('┏');
+    expect(buf.charAt(2, 39)).toBe(' ');
+    expect(frame(2000).charAt(2, 39)).toBe('┏');
+  });
+
+  it('funciona en una terminal mayor y en el layout reducido', () => {
+    const big = new CellBuffer(120, 60);
+    renderScene(big, { ...fixtureView(), anim: { bootMs: 500 } });
+    expect(big.originX).toBe(0);
+    const small = new CellBuffer(80, 24);
+    expect(() => renderScene(small, { ...fixtureView(), anim: { bootMs: 100 } })).not.toThrow();
   });
 });
 
