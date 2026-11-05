@@ -354,6 +354,68 @@ describe('animación 6: log', () => {
   });
 });
 
+describe('animación 7: spinners y cursor', () => {
+  const FRAMES = /[|/\\-]/;
+  const running: SinapsisEvent[] = [
+    models,
+    { type: 'request_start', t: 1 },
+    { type: 'tool_call', t: 1, id: 't', name: 'Read', summary: 'a.ts' },
+    { type: 'subagent_start', t: 1, subagentId: 's', model: 'claude-haiku-5-5' },
+    { type: 'tool_call', t: 1, id: 'u', name: 'Grep', agentId: 's' },
+  ];
+  const historicalView = (events: SinapsisEvent[], now: number): SceneView => {
+    const director = new Director();
+    director.ingest({ kind: 'events', events, historical: true }, 0);
+    return director.view(now);
+  };
+  const spinnerCell = (buf: CellBuffer, y: number, from: number, to: number): string => {
+    const match = /\[ ([|/\\-]) \]/.exec(buf.rowText(y, from, to));
+    return match?.[1] ?? '';
+  };
+
+  it('cada elemento activo tiene su spinner, y todos giran', () => {
+    const at = (now: number): CellBuffer => bufferOf(historicalView(running, now));
+    const main = FULL.main;
+    const metrics = FULL.metrics;
+    const card = FULL.cards[0];
+    const places: Array<(buf: CellBuffer) => string> = [
+      (buf) => /([|/\\-]) \]/.exec(buf.rowText(main.y + 4, main.x, main.x + main.w))?.[1] ?? '',
+      (buf) => spinnerCell(buf, metrics.y + 1, metrics.x, metrics.x + metrics.w),
+      (buf) => spinnerCell(buf, card.y + 2, card.x, card.x + card.w),
+      (buf) => /([|/\\-])\s*$/.exec(buf.rowText(FULL.rows.delegate, 28, 95).trimEnd())?.[1] ?? '',
+      (buf) => /· ([|/\\-]) \]/.exec(buf.rowText(FULL.log.y, FULL.log.x, FULL.log.x + FULL.log.w))?.[1] ?? '',
+    ];
+    for (const place of places) {
+      const seen = new Set([0, 130, 260, 390, 520].map((now) => place(at(now))));
+      for (const frame of seen) expect(frame).toMatch(FRAMES);
+      expect(seen.size).toBeGreaterThan(1);
+    }
+  });
+
+  it('sin actividad no hay spinners salvo el del log', () => {
+    const finished: SinapsisEvent[] = [...running, { type: 'tool_result', t: 2, id: 't', isError: false }, { type: 'tool_result', t: 2, id: 'u', isError: false, agentId: 's' }, { type: 'subagent_end', t: 3, subagentId: 's', status: 'completed' }, { type: 'turn_end', t: 4 }];
+    const buf = bufferOf(historicalView(finished, 300));
+    expect(buf.rowText(FULL.main.y + 4, FULL.main.x, FULL.main.x + FULL.main.w)).toContain('[ idle ]');
+    expect(spinnerCell(buf, FULL.metrics.y + 1, FULL.metrics.x, FULL.metrics.x + FULL.metrics.w)).toBe('');
+    expect(spinnerCell(buf, FULL.cards[0].y + 2, FULL.cards[0].x, FULL.cards[0].x + FULL.cards[0].w)).toBe('');
+    expect(buf.rowText(FULL.rows.delegate, 28, 95).trimEnd()).toMatch(/\]$/);
+  });
+
+  it('el cursor parpadea', () => {
+    const cursorIn = (now: number): boolean => bufferOf(historicalView(running, now)).rowText(FULL.rows.prompt).includes('█');
+    expect(cursorIn(0)).toBe(true);
+    expect(cursorIn(600)).toBe(false);
+    expect(cursorIn(1100)).toBe(true);
+  });
+
+  it('los spinners de las tarjetas no giran sincronizados', () => {
+    const events: SinapsisEvent[] = [models, ...['a', 'b', 'c'].map((id): SinapsisEvent => ({ type: 'subagent_start', t: 1, subagentId: id, model: 'claude-haiku-5-5' }))];
+    const buf = bufferOf(historicalView(events, 100));
+    const frames = FULL.cards.map((c) => spinnerCell(buf, c.y + 2, c.x, c.x + c.w));
+    expect(new Set(frames).size).toBeGreaterThan(1);
+  });
+});
+
 describe('animación 3: consulta al advisor', () => {
   const batch = [models, consult(), reply()];
   const total = (): number => {

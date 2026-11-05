@@ -1581,9 +1581,11 @@ function drawMetrics(buf, view, r) {
   box(buf, r, { color: panelBorder(theme.metrics), fill: theme.panel, halo: 0.3 });
   const left = r.x + 2;
   const right = r.x + r.w - 3;
+  const toolRunning = view.connected && (state.status === "tool" || state.subagents.some((s) => s.currentTool));
   writeSegments(buf, left, r.y + 1, [
     { text: "TOOLS", color: theme.metrics, bold: true },
-    { text: " \xB7 real distribution", color: theme.metrics }
+    { text: " \xB7 real distribution", color: theme.metrics },
+    { text: toolRunning ? `  [ ${spinnerFrame(view.now, 140)} ]` : "", color: theme.metrics }
   ]);
   const numbers = view.anim?.numbers;
   const totalCalls = String(Math.round(numbers?.toolCalls ?? state.toolCalls));
@@ -1684,7 +1686,8 @@ function drawDelegate(buf, view, y, x, width) {
     { text: "delegate to subagents", color: subagents.length ? theme.text : theme.dim },
     { text: " \xB7 ", color: theme.dim },
     { text: mainName(view).toLowerCase(), color: theme.main, bold: true },
-    { text: `  [ ${active} / ${subagents.length} ]`, color: theme.dim }
+    { text: `  [ ${active} / ${subagents.length} ]`, color: theme.dim },
+    { text: active > 0 ? ` ${spinnerFrame(view.now, 110)}` : "", color: theme.sub }
   ]);
 }
 function drawLead(buf, view, r) {

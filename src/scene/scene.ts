@@ -337,9 +337,12 @@ function drawMetrics(buf: CellBuffer, view: SceneView, r: Rect): void {
   box(buf, r, { color: panelBorder(theme.metrics), fill: theme.panel, halo: 0.3 });
   const left = r.x + 2;
   const right = r.x + r.w - 3;
+  // Gira si alguna herramienta está corriendo, en el proceso principal o en un subagente.
+  const toolRunning = view.connected && (state.status === 'tool' || state.subagents.some((s) => s.currentTool));
   writeSegments(buf, left, r.y + 1, [
     { text: 'TOOLS', color: theme.metrics, bold: true },
     { text: ' · real distribution', color: theme.metrics },
+    { text: toolRunning ? `  [ ${spinnerFrame(view.now, 140)} ]` : '', color: theme.metrics },
   ]);
   const numbers = view.anim?.numbers;
   const totalCalls = String(Math.round(numbers?.toolCalls ?? state.toolCalls));
@@ -479,6 +482,7 @@ function drawDelegate(buf: CellBuffer, view: SceneView, y: number, x: number, wi
     { text: ' · ', color: theme.dim },
     { text: mainName(view).toLowerCase(), color: theme.main, bold: true },
     { text: `  [ ${active} / ${subagents.length} ]`, color: theme.dim },
+    { text: active > 0 ? ` ${spinnerFrame(view.now, 110)}` : '', color: theme.sub },
   ]);
 }
 
