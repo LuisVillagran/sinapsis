@@ -32,7 +32,7 @@ Corrida de solo lectura con `builder`, `debugger` y `reviewer` en segundo plano,
 - Caja del advisor con consultas y tokens completos, también a 80x30 y 120x30, con el estado sobre el borde.
 - De la revisión de `reviewer` sobre el retoque de Gemini: la hora de un hito pisaba `agents` o se perdía en compacto; la lista de archivos recortaba el nombre con horas de sesión; y README, `CLAUDE.md` y `docs/eventos.md` desfasados.
 
-Una revisión acotada de `reviewer` sobre estas correcciones (`336e292`) no encontró defectos nuevos. Verificado: 320 tests y `tsc`, los tests nuevos fallan con la escena anterior, y capturas y GIF regenerados. Falta una ventana real de terminal.
+Una revisión acotada de `reviewer` sobre estas correcciones (`336e292`) no encontró defectos nuevos. Verificado: 321 tests y `tsc`, los tests nuevos de esas correcciones fallan con la escena anterior, y capturas y GIF regenerados. Falta una ventana real de terminal. La rama está subida a `origin` a pedido del usuario; `main` y el comando instalado siguen con el diseño anterior hasta que confirme la prueba.
 
 **Hallazgos de `reviewer` que se dejaron sin corregir, por menores:**
 
