@@ -3,8 +3,8 @@
 // Uso: npx tsx tools/gif.ts <salida.gif> [--speed N] [--fps N]
 
 import { writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { join } from 'node:path';
-import { GIFEncoder, applyPalette, quantize } from 'gifenc';
 import { PNG } from 'pngjs';
 import { Director } from '../src/engine/director.js';
 import { renderScene } from '../src/scene/scene.js';
@@ -12,6 +12,9 @@ import { createReplay, loadTranscript } from '../src/sources/replay.js';
 import { encodeFrame } from '../src/tui/ansi.js';
 import { CellBuffer } from '../src/tui/buffer.js';
 import { XtermCapture } from './lib/xterm-capture.js';
+
+// `gifenc` es CommonJS y su salida no se puede importar por nombre desde un módulo ES.
+const { GIFEncoder, applyPalette, quantize } = createRequire(import.meta.url)('gifenc') as typeof import('gifenc');
 
 function option(name: string, fallback: string): string {
   const index = process.argv.indexOf(`--${name}`);
@@ -43,7 +46,7 @@ for (let t = 0; t < MAX_MS; t += 1000 / fps) {
     for (const update of replay.tick(now)) director.ingest(update, now);
     director.update(now);
   }
-  renderScene(buffer, director.view(t));
+  renderScene(buffer, director.view(t, { speed: replay.speed, paused: replay.paused, finished: replay.finished }));
   await capture.write(encodeFrame(previous, buffer, 'truecolor'));
   previous = new CellBuffer(COLS, ROWS);
   previous.copyFrom(buffer);
