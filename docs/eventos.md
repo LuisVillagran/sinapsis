@@ -42,7 +42,7 @@ Cada línea es un objeto JSON con un `type`. Los que importan al visor:
 | `ai-title` | Título de la sesión | `aiTitle` |
 | `last-prompt` | Último prompt del usuario | `lastPrompt` |
 | `cost-state` | Totales acumulados | `totalCostUSD`, `totalLinesAdded`, `totalLinesRemoved`, `modelUsage` |
-| `mode` | Primera línea de todo archivo (33 de 33) | `mode`, `sessionId` |
+| `mode` | Primera línea en los 33 transcripts interactivos. **No existe** con `claude -p` | `mode`, `sessionId` |
 
 Tipos que el visor puede ignorar: `permission-mode`, `session-owner`, `atis-latch`,
 `file-history-*`, `queue-operation`, `tools-used`, `agent-name`, `frame-link`,
@@ -52,7 +52,7 @@ Tipos que el visor puede ignorar: `permission-mode`, `session-owner`, `atis-latc
 
 | Evento | Fuente | Confianza |
 | --- | --- | --- |
-| `session_start` | Archivo nuevo. Su primera línea es `mode`, sin `timestamp` | Observado |
+| `session_start` | Primera línea de un archivo principal nuevo, sea del tipo que sea (`mode`, `session-owner`). Puede no tener `timestamp` | Observado |
 | `tool_call` | Bloque `tool_use` (`id`, `name`, `input`) en una línea `assistant` | Observado (~6.000) |
 | `tool_result` | Bloque `tool_result` (`tool_use_id`, `content`, `is_error`) en una línea `user` | Observado (~4.600) |
 | `advisor_consult` | Bloque `server_tool_use` con `name: "advisor"` en una línea `assistant` | Observado (4 muestras), siempre a posteriori |
@@ -261,9 +261,11 @@ consulta ocurre dentro de ese mismo mensaje porque es una herramienta de servido
 - **A posteriori:** consulta y respuesta llegan juntas, con sus `timestamp` reales. La
   animación de ida y vuelta se puede reproducir con la duración real, pero siempre
   después de ocurrida.
-- **Herramientas:** una herramienta lenta sí se ve mientras corre, porque su `tool_use`
-  llega al terminar el mensaje y antes de ejecutarse el comando (166 ms en la prueba
-  de 25 s).
+- **Herramientas:** en un mensaje con una sola herramienta lenta, su `tool_use` llegó antes de
+  terminar el comando (166 ms en la prueba de 25 s). **No es una garantía:** en un mensaje con varias
+  herramientas, estas empiezan a correr mientras el mensaje sigue generándose, y el disco se atrasa
+  respecto de la ejecución. El primer `Agent` de la sesión Haiku se ejecutó en 00:35:08,8 y su `tool_use`
+  llegó en 00:35:11,5.
 - **Mensajes largos:** todos sus bloques llegan juntos, con retrasos de decenas de
   segundos. La cola de animación debe absorber esos lotes.
 
@@ -304,12 +306,18 @@ Referencia: `referencia/diseño.png`.
 
 **Motivo de la consulta.** Inferirlo con reglas y mostrarlo como inferido:
 
-| Etiqueta | Regla |
+| Etiqueta | Regla, en orden de prioridad |
 | --- | --- |
+| `after errors` | Hubo resultados con `is_error: true` desde la consulta anterior del turno |
+| `after subagents` | Volvieron resultados de `Agent` desde la consulta anterior del turno |
+| `before done` | El propio mensaje de la consulta termina con `end_turn` |
 | `before a plan` | Primera consulta del turno, sin `Edit` ni `Write` previos |
-| `after errors` | Resultados recientes con `is_error: true` |
-| `before done` | El mensaje termina con `end_turn` sin más herramientas |
 | `check-in` | Cualquier otro caso |
+
+Las reglas solo miran el pasado y el propio mensaje, que ya trae su `stop_reason` en cada línea. Así la
+etiqueta se decide al llegar la consulta y no se reescribe después. En los datos reales, `before done` no
+coincide con ninguna de las 4 consultas: incluso la pedida justo antes de terminar va seguida de una
+herramienta. Las 4 quedan como `check-in`, `after errors`, `before a plan` y `after subagents`.
 
 **Último consejo.** Mostrar lo que sí se sabe: `sealed · 42 s · 64.7k read · 4.0k written`.
 Debajo se puede citar el texto con el que sigue el modelo principal, rotulado con su

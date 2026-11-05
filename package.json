@@ -1,0 +1,30 @@
+{
+  "name": "sinapsis",
+  "version": "0.1.0",
+  "description": "Visor animado de consola para el modo advisor de Claude Code",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "sinapsis": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "fixtures/sesion-haiku-advisor-opus.jsonl",
+    "fixtures/sesion-haiku-advisor-opus"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "prepare": "tsup",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "tsup": "^9.0.0",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
+  }
+}
