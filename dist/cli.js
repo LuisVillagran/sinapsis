@@ -783,6 +783,7 @@ var PULSE_PERIOD_MS = 170;
 var TYPE_CHARS_PER_MS = 0.03;
 var QUEUE_AFTER_BOOT_MS = 1600;
 var LEAD_GLOW_MS = 900;
+var LOG_MOTION_MS = 800;
 var COUNT_MS = 500;
 var TOKENS_MS = 900;
 var Director = class {
@@ -804,6 +805,7 @@ var Director = class {
   waitingCards = [];
   leadGlowStart;
   tweens = new TweenSet();
+  lastLogBorn;
   constructor(options = {}) {
     this.animateBoot = options.boot ?? false;
   }
@@ -865,6 +867,7 @@ var Director = class {
     applyEvent(this.shown, event);
     const entry = repeated ? void 0 : describeEvent(event, this.shown);
     if (entry) {
+      if (bornAt !== void 0) this.lastLogBorn = bornAt;
       this.log.push({ ...entry, bornAt });
       if (this.log.length > LOG_LIMIT) this.log.shift();
       this.last = `${entry.who} \xB7 ${entry.text}`;
@@ -995,7 +998,7 @@ var Director = class {
   /** Hay algo moviéndose que exige la frecuencia alta. */
   isBusy(now) {
     const boot = this.bootElapsed(now);
-    return !this.queue.isEmpty || this.packets.length > 0 || this.tweens.isActive(now) || this.cardsMoving(now) || boot !== void 0 && boot < BOOT_MS;
+    return !this.queue.isEmpty || this.packets.length > 0 || this.tweens.isActive(now) || this.cardsMoving(now) || this.lastLogBorn !== void 0 && now < this.lastLogBorn + LOG_MOTION_MS || boot !== void 0 && boot < BOOT_MS;
   }
   animFrame(now) {
     const boot = this.bootElapsed(now);
@@ -1702,6 +1705,10 @@ function drawLead(buf, view, r) {
   const summary = latest?.summary ? `${done.length} back \xB7 ${plainText(latest.summary)}` : "no summaries yet";
   centerText(buf, r.x + 2, r.w - 4, r.y + 2, summary, latest ? theme.dim : theme.faint);
 }
+var LOG_SLIDE_MS = 260;
+var LOG_SLIDE_CELLS = 8;
+var LOG_TYPE_MS = 600;
+var LOG_TYPE_MIN_RATE = 0.05;
 function drawLog(buf, view, r) {
   box(buf, r, { color: mix(theme.main, theme.panel, 0.55), fill: mix(theme.panel, theme.bgEdge, 0.3) });
   const live = view.replay ? view.replay.paused ? "paused" : view.replay.finished ? "replay end" : `replay x${view.replay.speed}` : view.connected ? "live" : "idle";
@@ -1713,9 +1720,17 @@ function drawLog(buf, view, r) {
   const entries = view.log.slice(-rows);
   entries.forEach((entry, i) => {
     const y = r.y + 1 + i;
-    buf.text(r.x + 2, y, formatClock(entry.t), theme.faint);
-    buf.text(r.x + 11, y, fit(toCells(entry.who), 13), KIND_COLOR2[entry.kind]);
-    buf.text(r.x + 25, y, fit(toCells(entry.text), r.w - 27), entry.kind === "error" ? theme.alert : theme.text);
+    const text = fit(toCells(entry.text), r.w - 27);
+    const age = entry.bornAt === void 0 ? Number.POSITIVE_INFINITY : Math.max(0, view.now - entry.bornAt);
+    const slide = Math.round((1 - easeOutCubic(age / LOG_SLIDE_MS)) * LOG_SLIDE_CELLS);
+    const headFade = 1 - easeOutCubic(age / LOG_SLIDE_MS);
+    const length = cellLength(text);
+    const typed = age === Number.POSITIVE_INFINITY ? length : Math.min(length, Math.floor(age * Math.max(LOG_TYPE_MIN_RATE, length / LOG_TYPE_MS)));
+    const fadeTo = mix(theme.panel, theme.bgEdge, 0.3);
+    buf.text(r.x + 2 + slide, y, formatClock(entry.t), mix(theme.faint, fadeTo, headFade));
+    buf.text(r.x + 11 + slide, y, fit(toCells(entry.who), 13), mix(KIND_COLOR2[entry.kind], fadeTo, headFade));
+    const end = buf.text(r.x + 25 + slide, y, [...text].slice(0, typed).join(""), entry.kind === "error" ? theme.alert : theme.text);
+    if (typed < length && end < r.x + r.w - 1) buf.put(end, y, "\u258C", KIND_COLOR2[entry.kind]);
   });
   if (entries.length === 0) buf.text(r.x + 2, r.y + 1, "nothing yet", theme.faint);
 }

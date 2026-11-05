@@ -24,6 +24,8 @@ const TYPE_CHARS_PER_MS = 0.03;
 const QUEUE_AFTER_BOOT_MS = 1600;
 
 const LEAD_GLOW_MS = 900;
+/** Lo que tarda una línea del log en terminar de entrar. */
+const LOG_MOTION_MS = 800;
 const COUNT_MS = 500;
 const TOKENS_MS = 900;
 
@@ -62,6 +64,7 @@ export class Director {
   private waitingCards: string[] = [];
   private leadGlowStart: number | undefined;
   private readonly tweens = new TweenSet();
+  private lastLogBorn: number | undefined;
 
   constructor(options: DirectorOptions = {}) {
     this.animateBoot = options.boot ?? false;
@@ -130,6 +133,7 @@ export class Director {
     applyEvent(this.shown, event);
     const entry = repeated ? undefined : describeEvent(event, this.shown);
     if (entry) {
+      if (bornAt !== undefined) this.lastLogBorn = bornAt;
       this.log.push({ ...entry, bornAt });
       if (this.log.length > LOG_LIMIT) this.log.shift();
       this.last = `${entry.who} · ${entry.text}`;
@@ -283,7 +287,14 @@ export class Director {
   /** Hay algo moviéndose que exige la frecuencia alta. */
   isBusy(now: number): boolean {
     const boot = this.bootElapsed(now);
-    return !this.queue.isEmpty || this.packets.length > 0 || this.tweens.isActive(now) || this.cardsMoving(now) || (boot !== undefined && boot < BOOT_MS);
+    return (
+      !this.queue.isEmpty ||
+      this.packets.length > 0 ||
+      this.tweens.isActive(now) ||
+      this.cardsMoving(now) ||
+      (this.lastLogBorn !== undefined && now < this.lastLogBorn + LOG_MOTION_MS) ||
+      (boot !== undefined && boot < BOOT_MS)
+    );
   }
 
   private animFrame(now: number): AnimFrame {

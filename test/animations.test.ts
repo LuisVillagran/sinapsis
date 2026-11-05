@@ -75,7 +75,7 @@ describe('animación 2: paquetes', () => {
     for (let i = 1; i < seen.length; i += 1) expect(seen[i]).toBeGreaterThan(seen[i - 1] as number);
     director.update(500);
     expect(director.view(500).anim?.packets).toEqual([]);
-    expect(director.isBusy(500)).toBe(false);
+    expect(director.isBusy(2000)).toBe(false);
   });
 
   it('solo las herramientas del proceso principal envían un paquete', () => {
@@ -299,6 +299,58 @@ describe('animación 5: contadores y barras', () => {
   it('el estado final coincide con el reductor', () => {
     const events = [models, ...calls(3)];
     expect(play(events, 8000).view.state).toEqual(reduce(events));
+  });
+});
+
+describe('animación 6: log', () => {
+  const prompt: SinapsisEvent = { type: 'user_prompt', t: 1000, text: 'una línea bastante larga para que se note cómo se escribe' };
+  const row = FULL.log.y + 1;
+  const textAt = (ms: number): string => play([prompt], ms).buf.rowText(row, FULL.log.x + 1, FULL.log.x + FULL.log.w - 1);
+
+  it('el texto se escribe de izquierda a derecha', () => {
+    expect(textAt(10)).not.toContain('bastante');
+    expect(textAt(300)).toContain('una línea');
+    expect(textAt(300)).not.toContain('se escribe');
+    expect(textAt(700)).toContain('se escribe');
+  });
+
+  it('la línea desliza desde la derecha y queda en su columna', () => {
+    const columnOf = (ms: number): number => textAt(ms).indexOf('you');
+    expect(columnOf(0)).toBeGreaterThan(columnOf(100));
+    expect(columnOf(100)).toBeGreaterThan(columnOf(800));
+    expect(columnOf(800)).toBe(10);
+    expect(columnOf(5000)).toBe(10);
+  });
+
+  it('terminada, es igual a una línea sin animar', () => {
+    const { view } = play([prompt], 5000);
+    const animated = bufferOf(view);
+    const plain = bufferOf({ ...view, log: view.log.map(({ bornAt: _bornAt, ...entry }) => entry) });
+    expect(animated.rowText(row)).toBe(plain.rowText(row));
+    expect(animated.fgAt(FULL.log.x + 3, row)).toBe(plain.fgAt(FULL.log.x + 3, row));
+  });
+
+  it('el historial entra completo, sin animar', () => {
+    const director = new Director();
+    director.ingest({ kind: 'events', events: [prompt], historical: true }, 100);
+    expect(bufferOf(director.view(100)).rowText(row)).toContain('se escribe');
+  });
+
+  it('el texto no se sale del panel mientras desliza', () => {
+    const long: SinapsisEvent = { type: 'user_prompt', t: 1, text: 'x'.repeat(200) };
+    for (const ms of [0, 50, 100, 200]) {
+      const buf = play([long], ms).buf;
+      expect(buf.charAt(FULL.log.x + FULL.log.w - 1, row)).toBe('┃');
+    }
+  });
+
+  it('mientras entra pide la frecuencia alta, y después no', () => {
+    const director = new Director();
+    director.ingest({ kind: 'events', events: [prompt], historical: false }, 0);
+    director.update(0);
+    expect(director.isBusy(100)).toBe(true);
+    director.update(500);
+    expect(director.isBusy(5000)).toBe(false);
   });
 });
 
