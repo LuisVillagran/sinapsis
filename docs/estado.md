@@ -4,7 +4,7 @@ Bitácora para retomar el trabajo solo con este archivo. Ver `CLAUDE.md` para el
 
 ## Fase actual
 
-**Retoque visual funcional (2026-11-05), fusionado en `main` con la aprobación del usuario.** Probado por el usuario con subagentes reales en su terminal, con `replay`. Tras las correcciones posteriores (ver la sección siguiente) confirmó que "funciona perfecto", sin precisar si probó también el seguimiento en vivo con subagentes. No se creó tag: `v0.1.0` sigue apuntando al diseño anterior y `package.json` dice `0.1.0`. Comprobado tras fusionar: instalación con `npm install -g --prefix <tmp> github:LuisVillagran/sinapsis`, `dist/cli.js` idéntico al del repositorio, `--version` responde y `demo` funciona en un emulador a 120x30 y 90x46, sale con código 0 y restaura la terminal. Se eliminaron todos los adornos de las imágenes de referencia que no tenían respaldo funcional (barra falsa de ventana con botones de colores, separador grueso, textos fijos de `PROJECT MEMORY`, filas vacías `—`, barra que rebota sin dato, `integrate + verify`, prompt falso con cursor parpadeante y estados repetidos en la línea inferior) y se sacó `AGENT MEMORY` del camino del tronco de delegación. Según informó el usuario, lo hizo con Gemini, así que no consta que pasara por `builder` ni `reviewer`. 309 tests comprobados de forma independiente con Claude Code.
+**Retoque visual funcional (2026-11-05), fusionado en `main` con la aprobación del usuario.** Probado por el usuario con subagentes reales en su terminal, con `replay`. Tras las correcciones posteriores (ver la sección siguiente) confirmó que "funciona perfecto", sin precisar si probó también el seguimiento en vivo con subagentes. Publicado como `v0.2.0`, con tag y release, a pedido del usuario; `v0.1.0` sigue apuntando al diseño anterior. Comprobado tras fusionar: instalación con `npm install -g --prefix <tmp> github:LuisVillagran/sinapsis`, `dist/cli.js` idéntico al del repositorio, `--version` responde y `demo` funciona en un emulador a 120x30 y 90x46, sale con código 0 y restaura la terminal. Se eliminaron todos los adornos de las imágenes de referencia que no tenían respaldo funcional (barra falsa de ventana con botones de colores, separador grueso, textos fijos de `PROJECT MEMORY`, filas vacías `—`, barra que rebota sin dato, `integrate + verify`, prompt falso con cursor parpadeante y estados repetidos en la línea inferior) y se sacó `AGENT MEMORY` del camino del tronco de delegación. Según informó el usuario, lo hizo con Gemini, así que no consta que pasara por `builder` ni `reviewer`. 309 tests comprobados de forma independiente con Claude Code.
 
 ## Retoque visual funcional (2026-11-05)
 
@@ -45,7 +45,6 @@ Una revisión acotada de `reviewer` sobre estas correcciones (`336e292`) no enco
 
 - **Bash no se cuenta como memoria:** la sesión antigua tiene 5 comandos `Bash` que mencionan `agent-memory`. Quedan fuera del panel, como dice el README.
 - **Fixture de esta corrida:** es la primera grabación real con subagentes en segundo plano y sigue sin entrar a `fixtures/`. El sanitizador borra `systemPrompt`, así que `indexed` seguiría sin poder probarse desde el repositorio.
-- **Versión:** el diseño nuevo se instala desde `main` con el número `0.1.0`, igual que el tag anterior. Crear `v0.2.0` queda a decisión del usuario.
 
 ## Fase anterior (`rediseno-referencia`)
 
